@@ -91,8 +91,9 @@ impl ProjectResourceCache {
     ) -> Result<ProductInputs> {
         let products = self.products.load(project, scope, progress)?;
         let needs_catalog = products.values().any(|product| product.product().master_data().is_none());
-        // Watch explicit fallback bytes before reading. Complete packages do
-        // not touch an unused fallback; automatic sources retain their resolver.
+        // Watch an explicit installation catalog's bytes before reading. Only
+        // products with an explicitly bound catalog leave it unused; automatic
+        // sources retain their resolver.
         let catalogs = if let Some(path) = master_data.filter(|_| needs_catalog) {
             let digest = file_digest(path)?;
             files.0.insert(path.to_path_buf(), digest);

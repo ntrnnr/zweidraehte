@@ -61,16 +61,17 @@ pub enum MasterDataError {
     #[error("master-data download support is disabled")]
     DownloadDisabled,
 
-    #[error(
-        "product `{product}` has no unambiguous project-schema provenance ({namespace:?}); supply an explicit Master Data document"
-    )]
-    MissingProductSchema { product: String, namespace: Option<String> },
-
     #[error("Master Data has no unambiguous project-schema namespace ({namespace:?})")]
     MissingSchema { namespace: Option<String> },
 
     #[error("requested project-{expected} Master Data, but the resolver supplied project-{actual}")]
     SchemaMismatch { expected: u16, actual: u16 },
+
+    #[error("Master Data version {version:?} is not a decimal table version")]
+    InvalidTableVersion { version: String },
+
+    #[error("package Master Data uses project-{package}, newer than the installation's project-{installation}")]
+    NewerPackageSchema { package: u16, installation: u16 },
 }
 
 /// A malformed or unsupported resource location from Master Data.

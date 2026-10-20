@@ -38,7 +38,7 @@ flowchart LR
 | Module | Responsibility |
 |---|---|
 | `schema` | Serde DTOs, shared KNX namespace parsing, and generation schema versions |
-| `master_data` | Shared file/XML/product-document acquisition, source identity, exact-generation validation and optional versioned download/cache |
+| `master_data` | Shared file/XML acquisition, source identity, exact-generation validation, optional versioned download/cache, and the installation catalog every product compiles against |
 | `xml` | Canonical UTF-8 XML serialization with a declaration and two-space indentation |
 | `runtime` | Editable product-configuration model, dynamic-page traversal, translations, and baggage lookup |
 | `runtime::presentation` | Shared form tree, controls, table cells and serializable page snapshots; no terminal or HTML dependency |
@@ -97,8 +97,25 @@ Base and evaluated object flags use the protocol's named `ComObjectFlagFields`
 conversion; bit 5 remains uninterpreted until the table realization is known.
 
 `master_data::MasterDataLoadRequest` loads a parsed document for inspection or
-commissioning. Product requests reuse the associated `Arc<MasterData>` or resolve
-the loose product's declared generation; explicit files and XML never fall back.
+commissioning. Explicit files and XML never fall back.
+
+`master_data::MasterDataInstallation` is the single place that selects the
+catalog a product compiles against. An installation starts from its own
+catalog: an explicit file, or the newest generation (`KnxSchemaVersion::LATEST`)
+from the cache/download. Installing a package offers the package's own
+`knx_master.xml`, which the installation adopts only when it is a strictly
+higher table version of the installation's project schema. A package for an
+older schema keeps the installation's catalog; table versions are numbered per
+schema, so they are not compared across schemas. An application or package for
+a newer schema fails with `NewerPackageSchema`. The selected catalog depends on
+the set of offered documents, not their order.
+
+Product requests (`Product`, or `InstalledProduct` with an explicit
+installation file; `MasterDataLoadRequest::for_product` chooses between them)
+reuse a catalog already bound to the product, and otherwise select it from an
+installation offered that product's package document. The client's
+`ProjectProgrammingCatalogs` offers every product in a project to one
+installation.
 The shared loader checks namespace identity. The client separately limits live
 commissioning to its supported schemas and computes catalog fingerprints.
 Its `ProgrammingCatalogLoadError::MasterData` retains this crate's original
@@ -153,12 +170,12 @@ catalogue relationship. Neither operation verifies signatures or creates a
 store. `KnxprodArchive` remains the eager preservation/editing view; its
 catalogue listing delegates to the same index.
 
-Call `PackageArchive::load_product_unbound` when the caller must bind an exact
-external Master Data document. It loads the selected AP1 and declared AP2 but
-does not bind bundled Master Data; bind the authoritative document on the
-returned `SelectedProduct` before commissioning. `master_data_xml` reads the
-exact bundled document separately when needed. Neither method caches inflated
-members, and unrelated application bodies are not fully validated.
+`load_product` records the package's bundled Master Data as
+`ProductData::package_master_data` without selecting it for compilation; bind
+the installation catalog on the returned `SelectedProduct` before
+commissioning. `master_data_xml` reads the exact bundled document separately
+when needed. Neither method caches inflated members, and unrelated application
+bodies are not fully validated.
 
 Standalone indexing defaults to a 512 MiB aggregate expanded-size limit.
 `from_bytes_with_expanded_size_limit` allows a caller to explicitly accept a
@@ -175,8 +192,8 @@ policies stay separate from the shared relationship rules.
 
 Both `PackageArchive::load_product` and `StoredPackage::load_product` return
 `product::SelectedProduct`: the parsed application document, normalized `ProductData`,
-and selected catalogue/hardware relationship. AP2 absent/present metadata and
-bundled Master Data are bound by ETS-files, before client evaluation. Stored
+and selected catalogue/hardware relationship. AP2 absent/present metadata is bound and
+bundled Master Data recorded by ETS-files, before client evaluation. Stored
 project loading also enforces the leaf's instantiation status; standalone
 inspection can read products whose registration blocks project instantiation.
 Generated fixtures use `SelectedProduct::from_document` with an explicit

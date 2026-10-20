@@ -659,7 +659,8 @@ impl StoredPackage {
         zip::ZipArchive::new(source).map_err(|source| PackageStoreError::Archive(ArchiveError::Zip(source)))
     }
 
-    /// Load the exact catalogue leaf, its document, AP1/AP2 binding and Master Data.
+    /// Load the exact catalogue leaf, its document, AP1/AP2 binding and package
+    /// Master Data. The package document is recorded, not selected.
     pub fn load_product(&self, selector: &PackageCatalogSelector) -> Result<SelectedProduct, PackageStoreError> {
         let leaf = self
             .leaves()
@@ -2732,19 +2733,12 @@ fn read_master_data_xml<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> Res
     .transpose()
 }
 
+/// Load the leaf's application and relation with the package's own Master
+/// Data recorded, not selected: callers select the installation catalog.
 fn load_selected_product<R: Read + Seek>(
     archive: &mut zip::ZipArchive<R>,
     applications: &BTreeMap<String, String>,
     leaf: &PackageCatalogLeaf,
-) -> Result<SelectedProduct, PackageStoreError> {
-    load_selected_product_inner(archive, applications, leaf, true)
-}
-
-fn load_selected_product_inner<R: Read + Seek>(
-    archive: &mut zip::ZipArchive<R>,
-    applications: &BTreeMap<String, String>,
-    leaf: &PackageCatalogLeaf,
-    bind_bundled_master: bool,
 ) -> Result<SelectedProduct, PackageStoreError> {
     let id = leaf.application_program_id().ok_or_else(|| PackageStoreError::NotInstantiable {
         catalog_item: leaf.selector.catalog_item_id.clone(),
@@ -2765,7 +2759,7 @@ fn load_selected_product_inner<R: Read + Seek>(
             has_individual_address: leaf.has_individual_address,
         },
     };
-    let master = if bind_bundled_master { read_master_data_xml(archive)? } else { None };
+    let master = read_master_data_xml(archive)?;
     let selected = SelectedProduct::from_document(document, Some(relation), master.as_deref())?;
     bind_secondary_application(archive, applications, selected)
 }
@@ -2872,25 +2866,14 @@ impl PackageArchive {
         read_master_data_xml(&mut self.open_zip()?)
     }
 
-    /// Load an exact catalogue selection for binding to caller-selected Master Data.
-    ///
-    /// AP1 and its declared AP2 are parsed on demand; catalogue and hardware
-    /// identity are checked as for [`Self::load_product`]. Bundled Master Data
-    /// is intentionally not read or bound. The caller must bind its authoritative
-    /// document before commissioning. Missing/invalid selected entries return
-    /// errors; unrelated member bodies are not validated by this operation.
-    pub fn load_product_unbound(&self, catalog_item: &str) -> Result<SelectedProduct, PackageStoreError> {
-        let leaf = self.leaves().find(|leaf| leaf.selector.catalog_item_id == catalog_item).ok_or_else(|| {
-            PackageStoreError::UnknownCatalogItem(PackageCatalogSelector {
-                package: self.index.package,
-                catalog_item_id: catalog_item.to_owned(),
-            })
-        })?;
-
-        load_selected_product_inner(&mut self.open_zip()?, &self.index.application_programs, leaf, false)
-    }
-
     /// Inspect a catalogue item, including items blocked for project instantiation.
+    ///
+    /// AP1 and its declared AP2 are parsed on demand. The package's Master Data
+    /// is recorded as [`ProductData::package_master_data`]; the caller selects
+    /// the compilation catalog before commissioning. Missing/invalid selected
+    /// entries return errors; unrelated member bodies are not validated.
+    ///
+    /// [`ProductData::package_master_data`]: crate::product::ProductData::package_master_data
     pub fn load_product(&self, catalog_item: &str) -> Result<SelectedProduct, PackageStoreError> {
         let leaf = self.leaves().find(|leaf| leaf.selector.catalog_item_id == catalog_item).ok_or_else(|| {
             PackageStoreError::UnknownCatalogItem(PackageCatalogSelector {
@@ -3239,7 +3222,8 @@ mod index_tests {
                 .expect("exact stored selection");
             assert_eq!(direct.relation().expect("selected relation").catalog_item_id.as_deref(), Some(item));
             assert_eq!(direct.product().application_program_2(), stored.product().application_program_2());
-            assert_eq!(direct.product().master_data().expect("bundled master").document_version(), "168");
+            assert_eq!(direct.product().package_master_data().expect("bundled master").document_version(), "168");
+            assert!(direct.product().master_data().is_none());
             assert_eq!(direct.program().id, AP1);
         }
     }
@@ -3264,25 +3248,26 @@ mod index_tests {
         assert!(matches!(error, PackageStoreError::ArchiveTotalSizeLimit { limit } if limit == total - 1));
 
         let reader = PackageArchive::from_bytes_with_expanded_size_limit(bytes, total).expect("exact limit");
-        assert_eq!(reader.load_product_unbound(ITEM).expect("selected application").program().id, AP1);
+        assert_eq!(reader.load_product(ITEM).expect("selected application").program().id, AP1);
     }
 
     #[test]
-    fn unbound_selection_preserves_identity_and_caller_master_data() {
+    fn loaded_selection_records_package_document_and_binds_caller_selection() {
         let bundled = master_data(23, 168, "Bundled");
         let bytes = product_archive(application(AP1, false, None), Some(bundled.clone()));
         let reader = PackageArchive::from_bytes(bytes).expect("package index");
-        assert_eq!(reader.master_data_xml().expect("bundled document"), Some(bundled));
+        assert_eq!(reader.master_data_xml().expect("bundled document"), Some(bundled.clone()));
 
-        let selected = reader.load_product_unbound(ITEM).expect("unbound selection");
+        let selected = reader.load_product(ITEM).expect("unbound selection");
         assert_eq!(selected.program().id, AP1);
         assert_eq!(selected.relation().expect("relation").hardware.hardware2program_id, RELATION);
+        assert_eq!(selected.product().package_master_data().expect("package document").source_xml(), bundled);
         assert!(selected.product().master_data().is_none());
         let caller = master_data(23, 169, "Caller");
         let document = std::sync::Arc::new(caller.parse().expect("caller document"));
         let bound = selected.bind_master_data(document).expect("bind caller document once");
         assert_eq!(bound.product().master_data().expect("bound document").source_xml(), caller);
-        assert!(reader.load_product_unbound("missing").is_err());
+        assert!(reader.load_product("missing").is_err());
     }
 
     #[test]
@@ -3312,12 +3297,12 @@ mod index_tests {
         unrelated_corrupt[unused_offset] ^= 1;
         assert!(super::super::RawArchive::from_bytes(&unrelated_corrupt).is_err());
         let reader = PackageArchive::from_bytes(unrelated_corrupt).expect("metadata only index");
-        assert_eq!(reader.load_product_unbound(ITEM).expect("unrelated payload is not read").program().id, AP1);
+        assert_eq!(reader.load_product(ITEM).expect("unrelated payload is not read").program().id, AP1);
 
         let mut selected_corrupt = original;
         selected_corrupt[selected_end] ^= 1;
         let reader = PackageArchive::from_bytes(selected_corrupt).expect("header remains readable");
-        assert!(reader.load_product_unbound(ITEM).is_err());
+        assert!(reader.load_product(ITEM).is_err());
     }
 
     #[test]
@@ -3362,8 +3347,8 @@ mod index_tests {
                         .load_product(ITEM)
                         .expect("selected product")
                         .product()
-                        .master_data()
-                        .expect("bound master")
+                        .package_master_data()
+                        .expect("package master")
                         .document_version(),
                     "168"
                 );

@@ -78,8 +78,8 @@ impl SelectedProduct {
             .expect("one application validated")
     }
 
-    /// Bind an explicitly selected catalogue without changing the product identity.
-    /// An existing conflicting catalogue is rejected by the product boundary.
+    /// Bind the catalogue selected for compilation without changing the product
+    /// identity. A conflicting earlier selection is rejected by the product boundary.
     pub fn bind_master_data(mut self, document: std::sync::Arc<crate::MasterData>) -> Result<Self, ProductError> {
         self.product = self.product.bind_master_data(document)?;
         Ok(self)
@@ -124,7 +124,7 @@ pub(crate) fn extract_product(
         product = product.bind_hardware_individual_address(has_individual_address);
     }
     if let Some(xml) = master_data_xml {
-        product = product.bind_master_data(std::sync::Arc::new(xml.parse()?))?;
+        product = product.with_package_master_data(std::sync::Arc::new(xml.parse()?));
     }
     Ok(product)
 }
@@ -249,14 +249,23 @@ mod tests {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23"><MasterData Id="bundled" Version="1"/></KNX>"#;
         let selected = SelectedProduct::from_document(document(), Some(relation.clone()), Some(xml))
             .expect("selection with bundled catalogue");
+
+        // The package document is retained for installation selection, but a
+        // product is not compiled against it until a catalog is selected.
+        assert_eq!(selected.product().package_master_data().expect("package document").source_xml(), xml);
+        assert!(selected.product().master_data().is_none());
+
+        let installed = xml.replace("bundled", "installed").replace("Version=\"1\"", "Version=\"2\"");
         let selected = selected
-            .bind_master_data(std::sync::Arc::new(xml.parse().expect("master data")))
+            .bind_master_data(std::sync::Arc::new(installed.parse().expect("master data")))
+            .expect("installation catalogue binds");
+        let selected = selected
+            .bind_master_data(std::sync::Arc::new(installed.parse().expect("master data")))
             .expect("same catalogue is idempotent");
         assert_eq!(selected.relation(), Some(&relation));
         assert_eq!(selected.product().application_program_2(), &relation.into());
-        let conflicting = xml.replace("bundled", "different");
         assert!(matches!(
-            selected.bind_master_data(std::sync::Arc::new(conflicting.parse().expect("master data"))),
+            selected.bind_master_data(std::sync::Arc::new(xml.parse().expect("master data"))),
             Err(ProductError::MasterDataAlreadyBound)
         ));
     }

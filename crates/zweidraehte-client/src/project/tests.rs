@@ -252,7 +252,7 @@ area 1 bench {
         <Features><Feature Name="FirstAppObjectIdx" Value="3"/></Features>
         <Resources><Resource Name="ManagementStyle"><Location AddressSpace="Constant" StartAddress="2"/><ResourceType Length="1"/></Resource><Resource Name="GroupObjectTable"><Location AddressSpace="StandardMemory" StartAddress="16896"/><ResourceType Length="31" Flavour="GroupObjectTable_M112"/><AccessRights Read="Configuration" Write="Configuration"/></Resource></Resources>
       </HawkConfigurationData></MaskVersion></MaskVersions></MasterData></KNX>"#).expect("catalog parses");
-    let catalogs = ProjectProgrammingCatalogs::with_fallback(catalog.clone());
+    let catalogs = ProjectProgrammingCatalogs::with_installation(catalog.clone());
     let sender = IndividualAddress::new(1, 1, 11);
     let keyring = Keyring::new("bench".into(), "test".into(), "test".into())
         .with_group_keys(BTreeMap::from([(0x0801, [0x33; 16])]))

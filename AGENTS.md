@@ -1114,7 +1114,8 @@ Key modules:
   loose/multi-program selector used
   by low-level consumers and `knx-config`. `PackageArchive` shares the store's
   header-only index for standalone inspection. Its selected-product loader and
-  `StoredPackage::load_product` bind AP1/AP2 relations and bundled Master Data;
+  `StoredPackage::load_product` bind AP1/AP2 relations and record bundled Master
+  Data, which `master_data::MasterDataInstallation` may adopt;
   the TUI and client use that common format boundary. Reading/indexing needs
   `archives`; explicit store import still needs `signing`
 - `project.rs` - `ProjectDefinition`, vector topology, device ID references,

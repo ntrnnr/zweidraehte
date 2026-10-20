@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::Arc;
 use zweidraehte_ets_files::product::ProductData;
+use zweidraehte_ets_files::schema::KnxSchemaVersion;
 use zweidraehte_ets_files::schema::master_data::MaskVersion;
 use zweidraehte_ets_files::{MasterData, MasterDataError};
 
@@ -13,6 +14,8 @@ use zweidraehte_ets_files::{MasterData, MasterDataError};
 pub use zweidraehte_ets_files::master_data::{
     MasterDataLoadRequest as ProgrammingCatalogLoadRequest, MasterDataOrigin as ProgrammingCatalogSource,
 };
+
+const LATEST_SCHEMA: u16 = KnxSchemaVersion::LATEST.as_u16();
 
 /// Acquiring a catalog can fail before any target is selected or compiled.
 /// Keep the original file/XML/network error separate from commissioning policy
@@ -57,7 +60,7 @@ impl LoadedProgrammingCatalog {
 
 pub(super) fn supported_master_data_schema(version: u16) -> Result<(), CompileError> {
     match version {
-        10..=23 => Ok(()),
+        10..=LATEST_SCHEMA => Ok(()),
         version => Err(CompileError::unsupported(format!(
             "Master Data uses unsupported project schema {version}; live commissioning supports project-10 through project-23"
         ))),
@@ -77,13 +80,14 @@ impl ProgrammingCatalog {
         Self { master_data, fingerprint }
     }
 
-    /// Access only the product's associated document. This never performs I/O.
+    /// Access only the product's bound catalog. This never performs I/O.
     pub fn for_product(product: &ProductData) -> Result<Self, CompileError> {
-        product
-            .master_data()
-            .cloned()
-            .map(Self::from_document)
-            .ok_or_else(|| CompileError::missing_evidence(format!("product `{}` has no associated Master Data; bind its package document or supply one before compilation", product.id())))
+        product.master_data().cloned().map(Self::from_document).ok_or_else(|| {
+            CompileError::missing_evidence(format!(
+                "product `{}` has no selected Master Data; select its installation catalog before compilation",
+                product.id()
+            ))
+        })
     }
 
     /// Share this exact document with a loose product or evaluated device.
@@ -127,7 +131,11 @@ pub(super) fn select_source(
     request: ProgrammingCatalogLoadRequest<'_>,
 ) -> Result<ProgrammingCatalogSource, ProgrammingCatalogLoadError> {
     let source = request.source()?;
-    if let ProgrammingCatalogSource::VersionedResolver(version) = &source {
+    let resolver = match &source {
+        ProgrammingCatalogSource::Installation(baseline) => baseline.as_ref(),
+        source => source,
+    };
+    if let ProgrammingCatalogSource::VersionedResolver(version) = resolver {
         supported_master_data_schema(*version)?;
     }
     Ok(source)

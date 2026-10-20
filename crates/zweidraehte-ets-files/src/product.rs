@@ -974,7 +974,12 @@ pub struct ProductData {
     mask_version: Option<MaskVersion>,
     /// Source document identity used to select matching versioned master data.
     schema_provenance: ProductSchemaProvenance,
-    /// The exact package document, or one explicitly associated with loose XML.
+    /// The document shipped in the product's package. It is offered to the
+    /// installation catalog (`master_data::MasterDataInstallation`) but is
+    /// never compiled against directly: packages carry the catalog they were
+    /// built with, which is usually older than the installation's.
+    package_master_data: Option<std::sync::Arc<crate::MasterData>>,
+    /// The catalog selected for compilation, bound once before commissioning.
     master_data: Option<std::sync::Arc<crate::MasterData>>,
     /// Product-level switches that influence compilation and commissioning.
     programming_options: ProductProgrammingOptions,
@@ -1166,12 +1171,24 @@ impl ProductData {
         &self.schema_provenance
     }
 
+    /// The catalog selected for compilation, if one has been bound.
     pub fn master_data(&self) -> Option<&std::sync::Arc<crate::MasterData>> {
         self.master_data.as_ref()
     }
 
-    /// Associate a document once. Rebinding the same content is harmless;
-    /// replacing package-owned Master Data is an error.
+    /// The document shipped in this product's package, if any.
+    pub fn package_master_data(&self) -> Option<&std::sync::Arc<crate::MasterData>> {
+        self.package_master_data.as_ref()
+    }
+
+    /// Record the package's own document without selecting it for compilation.
+    pub fn with_package_master_data(mut self, document: std::sync::Arc<crate::MasterData>) -> Self {
+        self.package_master_data = Some(document);
+        self
+    }
+
+    /// Bind the selected catalog once. Rebinding the same content is harmless;
+    /// replacing a different selection is an error.
     pub fn bind_master_data(mut self, document: std::sync::Arc<crate::MasterData>) -> Result<Self> {
         if let Some(current) = &self.master_data {
             if current.source_xml() != document.source_xml() {
@@ -1637,6 +1654,7 @@ impl ProductData {
             mask_version_id: program.mask_version.clone(),
             mask_version: parse_mask_version(&program.mask_version),
             schema_provenance,
+            package_master_data: None,
             master_data: None,
             programming_options,
             application_program_2: ApplicationProgram2Binding::Unbound,

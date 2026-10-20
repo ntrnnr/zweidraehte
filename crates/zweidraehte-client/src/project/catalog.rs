@@ -2,54 +2,40 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
+use zweidraehte_ets_files::master_data::MasterDataInstallation;
 use zweidraehte_ets_files::product::ProductData;
 
-use crate::commissioning::{
-    ProgrammingCatalog, ProgrammingCatalogLoadError, ProgrammingCatalogLoadRequest, ProgrammingCatalogSource,
-};
+use crate::commissioning::{ProgrammingCatalog, ProgrammingCatalogLoadError};
 use crate::project::error::{Error, Result};
 
-/// Supplied Master Data for loose products; packaged products retain their own document.
+/// The installation catalog every product of a project compiles against.
 ///
-/// Selection is complete before preparation starts. Looking up a product never
-/// reads files or downloads Master Data.
-#[derive(Clone)]
+/// Loading starts from the installation's own catalog, an explicit file or the
+/// newest generation from the cache/download, and offers each product's
+/// package document as installing that package would
+/// ([`MasterDataInstallation`]). A product with an explicitly bound catalog
+/// keeps it. Selection is complete before preparation starts: looking up a
+/// product never reads files or downloads Master Data.
+#[derive(Clone, Default)]
 pub struct ProjectProgrammingCatalogs {
-    selection: CatalogSelection,
-}
-
-impl Default for ProjectProgrammingCatalogs {
-    fn default() -> Self {
-        Self { selection: CatalogSelection::ProductSchemas(BTreeMap::new()) }
-    }
-}
-
-#[derive(Clone)]
-enum CatalogSelection {
-    Fallback(ProgrammingCatalog),
-    ProductSchemas(BTreeMap<u16, ProgrammingCatalog>),
+    installation: Option<ProgrammingCatalog>,
 }
 
 impl std::fmt::Debug for ProjectProgrammingCatalogs {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.selection {
-            CatalogSelection::Fallback(catalog) => formatter
-                .debug_struct("ProjectProgrammingCatalogs")
-                .field("fallback_fingerprint", &catalog.fingerprint())
-                .finish(),
-            CatalogSelection::ProductSchemas(catalogs) => formatter
-                .debug_struct("ProjectProgrammingCatalogs")
-                .field("product_schemas", &catalogs.keys().collect::<Vec<_>>())
-                .finish(),
-        }
+        formatter
+            .debug_struct("ProjectProgrammingCatalogs")
+            .field("installation_fingerprint", &self.installation.as_ref().map(ProgrammingCatalog::fingerprint))
+            .finish()
     }
 }
 
 impl ProjectProgrammingCatalogs {
-    /// Supply a document for products which have no associated Master Data.
-    pub fn with_fallback(catalog: ProgrammingCatalog) -> Self {
-        Self { selection: CatalogSelection::Fallback(catalog) }
+    /// Use a catalog already selected for every product in scope.
+    pub fn with_installation(catalog: ProgrammingCatalog) -> Self {
+        Self { installation: Some(catalog) }
     }
 
     /// Retrieve the catalog selected for this product, without performing I/O.
@@ -58,72 +44,43 @@ impl ProjectProgrammingCatalogs {
             return ProgrammingCatalog::for_product(product).map_err(Error::Catalog);
         }
 
-        match &self.selection {
-            CatalogSelection::Fallback(catalog) => Ok(catalog.clone()),
-            CatalogSelection::ProductSchemas(catalogs) => {
-                let version = product
-                    .schema_provenance()
-                    .schema_version()
-                    .ok_or_else(|| Error::MissingCatalog { product: product.id().into(), schema: None })?;
-
-                catalogs
-                    .get(&version)
-                    .cloned()
-                    .ok_or_else(|| Error::MissingCatalog { product: product.id().into(), schema: Some(version) })
-            }
-        }
+        self.installation.clone().ok_or_else(|| Error::MissingCatalog { product: product.id().into() })
     }
 }
 
-/// Load missing associations from the cache/server, or an explicitly supplied file.
+/// Select the installation catalog from an explicit file or the cache/server.
 impl ProjectProgrammingCatalogs {
     /// Explicit acquisition for the same loaded inputs supplied to a planner.
     pub fn load_for(
         products: &BTreeMap<zweidraehte_project::ProjectDeviceId, super::ProjectProduct>,
-        explicit_file: Option<&Path>,
+        installation: Option<&Path>,
     ) -> Result<Self> {
-        Self::load(products.values().map(|product| product.product()), explicit_file)
+        Self::load(products.values().map(|product| product.product()), installation)
     }
 
+    /// Offer every unbound product's package document to one installation.
+    ///
+    /// An explicit installation file never falls back to the cache/download.
+    /// A package for a newer project schema than the installation fails.
     pub fn load<'a>(
         products: impl IntoIterator<Item = &'a ProductData>,
-        explicit_file: Option<&Path>,
+        installation: Option<&Path>,
     ) -> Result<ProjectProgrammingCatalogs> {
-        let products: Vec<_> = products.into_iter().collect();
+        let products: Vec<_> = products.into_iter().filter(|product| product.master_data().is_none()).collect();
         if products.is_empty() {
             return Ok(Self::default());
         }
 
-        if products.iter().all(|product| product.master_data().is_some()) {
-            return Ok(ProjectProgrammingCatalogs { selection: CatalogSelection::ProductSchemas(BTreeMap::new()) });
+        let mut selected = MasterDataInstallation::load(installation).map_err(ProgrammingCatalogLoadError::from)?;
+        for product in products {
+            selected.offer_product(product).map_err(ProgrammingCatalogLoadError::from)?;
         }
 
-        // An explicit source fills a missing association. It cannot replace a
-        // package document, even when both documents use the same schema version.
-        if let Some(path) = explicit_file {
-            let loaded = ProgrammingCatalog::load(ProgrammingCatalogLoadRequest::File(path))?;
-            return Ok(ProjectProgrammingCatalogs::with_fallback(loaded.into_catalog()));
-        }
-
-        // Group using the loader's provenance rules so missing schema evidence
-        // has the same typed cause here and when loading a catalog directly.
-        let mut products_by_schema = BTreeMap::new();
-        for product in products.into_iter().filter(|product| product.master_data().is_none()) {
-            let source =
-                ProgrammingCatalogLoadRequest::Product(product).source().map_err(ProgrammingCatalogLoadError::from)?;
-            let ProgrammingCatalogSource::VersionedResolver(version) = source else {
-                unreachable!("unassociated products resolve their schema generation");
-            };
-            products_by_schema.entry(version).or_insert(product);
-        }
-
-        let mut catalogs = BTreeMap::new();
-        for (version, product) in products_by_schema {
-            let loaded = ProgrammingCatalog::load(ProgrammingCatalogLoadRequest::Product(product))?;
-            catalogs.insert(version, loaded.into_catalog());
-        }
-
-        Ok(ProjectProgrammingCatalogs { selection: CatalogSelection::ProductSchemas(catalogs) })
+        // Adoption never changes the installation's schema, so checking the
+        // selected catalog also covers the installation's own document.
+        let catalog = ProgrammingCatalog::from_document(Arc::clone(selected.document()));
+        catalog.validate_for_live_commissioning().map_err(ProgrammingCatalogLoadError::from)?;
+        Ok(Self::with_installation(catalog))
     }
 }
 
@@ -135,22 +92,20 @@ mod tests {
     use zweidraehte_ets_files::MasterDataError;
     use zweidraehte_ets_files::schema::KnxSchemaVersion;
 
-    fn catalog(version: u16) -> ProgrammingCatalog {
-        ProgrammingCatalog::from_xml(&format!(
-            r#"<KNX xmlns="http://knx.org/xml/project/{version}"><MasterData Version="1" /></KNX>"#
-        ))
-        .expect("catalog fixture")
+    fn xml(schema: u16, version: u64) -> String {
+        format!(r#"<KNX xmlns="http://knx.org/xml/project/{schema}"><MasterData Version="{version}" /></KNX>"#)
+    }
+
+    fn catalog(schema: u16, version: u64) -> ProgrammingCatalog {
+        ProgrammingCatalog::from_xml(&xml(schema, version)).expect("catalog fixture")
+    }
+
+    fn packaged(schema: u16, version: u64) -> ProductData {
+        ProductData::default().with_package_master_data(catalog(schema, version).document())
     }
 
     #[test]
     fn project_catalog_loading_preserves_file_xml_and_policy_failures() {
-        assert!(matches!(
-            ProjectProgrammingCatalogs::load([&ProductData::default()], None),
-            Err(Error::CatalogLoad(ProgrammingCatalogLoadError::MasterData(MasterDataError::MissingProductSchema {
-                namespace: None,
-                ..
-            })))
-        ));
         let product = ProductData::default().bind_schema_version(KnxSchemaVersion::V20).expect("schema binds");
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("knx_master.xml");
@@ -166,16 +121,15 @@ mod tests {
         }) if retained == &path && source.kind() == std::io::ErrorKind::NotFound));
         assert!(cause.source().expect("I/O cause").is::<std::io::Error>());
 
-        // An explicit invalid file must fail in place, never fall back to the
-        // product's supported schema or a downloaded/cached document.
+        // An explicit invalid file must fail in place, never fall back to a
+        // downloaded/cached document.
         std::fs::write(&path, "<KNX><MasterData").expect("malformed fixture writes");
         assert!(matches!(
             ProjectProgrammingCatalogs::load([&product], Some(&path)),
             Err(Error::CatalogLoad(ProgrammingCatalogLoadError::MasterData(MasterDataError::Xml(_))))
         ));
 
-        std::fs::write(&path, r#"<KNX xmlns="http://knx.org/xml/project/24"><MasterData Version="1" /></KNX>"#)
-            .expect("unsupported fixture writes");
+        std::fs::write(&path, xml(24, 1)).expect("unsupported fixture writes");
         assert!(matches!(
             ProjectProgrammingCatalogs::load([&product], Some(&path)),
             Err(Error::CatalogLoad(ProgrammingCatalogLoadError::Policy(error)))
@@ -184,59 +138,50 @@ mod tests {
     }
 
     #[test]
-    fn associated_revisions_are_distinct_and_never_replaced_by_a_fallback() {
-        let first = catalog(23);
-        let second = ProgrammingCatalog::from_xml(
-            r#"<KNX xmlns="http://knx.org/xml/project/23"><MasterData Version="2" /></KNX>"#,
-        )
-        .expect("second revision");
-        let first_product = ProductData::default().bind_master_data(first.document()).expect("first binding");
-        let second_product = ProductData::default().bind_master_data(second.document()).expect("second binding");
-        let catalogs = ProjectProgrammingCatalogs::with_fallback(catalog(20));
+    fn package_documents_advance_one_shared_installation_catalog() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("knx_master.xml");
+        std::fs::write(&path, xml(23, 198)).expect("installation catalog writes");
 
-        assert_eq!(catalogs.for_product(&first_product).expect("first document").fingerprint(), first.fingerprint());
-        assert_eq!(catalogs.for_product(&second_product).expect("second document").fingerprint(), second.fingerprint());
-        assert_ne!(first.fingerprint(), second.fingerprint());
+        // Older schemas and older tables keep the installation's catalog.
+        let old = [packaged(14, 1658), packaged(23, 168), ProductData::default()];
+        let catalogs = ProjectProgrammingCatalogs::load(&old, Some(&path)).expect("installation selects");
+        let installed = catalog(23, 198);
+        for product in &old {
+            assert_eq!(catalogs.for_product(product).expect("installation").fingerprint(), installed.fingerprint());
+        }
+
+        // One newer table of the installation's schema serves every product.
+        let mixed = [packaged(14, 1658), packaged(23, 199)];
+        let catalogs = ProjectProgrammingCatalogs::load(&mixed, Some(&path)).expect("installation advances");
+        let newer = catalog(23, 199);
+        for product in &mixed {
+            assert_eq!(catalogs.for_product(product).expect("advanced").fingerprint(), newer.fingerprint());
+        }
+
+        assert!(matches!(
+            ProjectProgrammingCatalogs::load([&packaged(24, 1)], Some(&path)),
+            Err(Error::CatalogLoad(ProgrammingCatalogLoadError::MasterData(MasterDataError::NewerPackageSchema {
+                package: 24,
+                installation: 23,
+            })))
+        ));
     }
 
     #[test]
-    fn complete_package_associations_do_not_read_a_fallback_file() {
-        let expected = catalog(23);
-        let product = ProductData::default().bind_master_data(expected.document()).expect("package binding");
+    fn bound_catalogs_are_kept_and_never_read_an_installation_file() {
+        let first = catalog(23, 1);
+        let second = catalog(23, 2);
+        let first_product = ProductData::default().bind_master_data(first.document()).expect("first binding");
+        let second_product = ProductData::default().bind_master_data(second.document()).expect("second binding");
         let directory = tempfile::tempdir().expect("temporary directory");
         let missing = directory.path().join("unused-master-data.xml");
 
-        let catalogs = ProjectProgrammingCatalogs::load([&product], Some(&missing))
-            .expect("the package is complete without a fallback");
-        assert_eq!(catalogs.for_product(&product).expect("package document").fingerprint(), expected.fingerprint());
-    }
-
-    #[test]
-    fn mixed_products_keep_distinct_catalogs_and_missing_generations_fail() {
-        let old_product = ProductData::default().bind_schema_version(KnxSchemaVersion::V20).expect("schema binds");
-        let new_product = ProductData::default().bind_schema_version(KnxSchemaVersion::V23).expect("schema binds");
-        let unexpected = ProductData::default().bind_schema_version(KnxSchemaVersion::V21).expect("schema binds");
-        let old_catalog = catalog(20);
-        let new_catalog = catalog(23);
-        let catalogs = ProjectProgrammingCatalogs {
-            selection: CatalogSelection::ProductSchemas(BTreeMap::from([
-                (20, old_catalog.clone()),
-                (23, new_catalog.clone()),
-            ])),
-        };
-
-        assert_eq!(catalogs.for_product(&old_product).expect("old catalog").fingerprint(), old_catalog.fingerprint());
-        assert_eq!(catalogs.for_product(&new_product).expect("new catalog").fingerprint(), new_catalog.fingerprint());
-        assert!(catalogs.for_product(&unexpected).is_err());
-    }
-
-    #[test]
-    fn explicit_catalog_supplies_loose_products_across_generations() {
-        let selected = catalog(23);
-        let catalogs = ProjectProgrammingCatalogs::with_fallback(selected.clone());
-        let product = ProductData::default().bind_schema_version(KnxSchemaVersion::V20).expect("schema binds");
-
-        assert_eq!(catalogs.for_product(&product).expect("override selected").fingerprint(), selected.fingerprint());
+        let catalogs = ProjectProgrammingCatalogs::load([&first_product, &second_product], Some(&missing))
+            .expect("bound products need no installation");
+        assert_eq!(catalogs.for_product(&first_product).expect("first document").fingerprint(), first.fingerprint());
+        assert_eq!(catalogs.for_product(&second_product).expect("second document").fingerprint(), second.fingerprint());
+        assert_ne!(first.fingerprint(), second.fingerprint());
     }
 
     #[test]
@@ -244,7 +189,7 @@ mod tests {
         let product = ProductData::default().bind_schema_version(KnxSchemaVersion::V23).expect("schema binds");
         assert!(matches!(
             ProjectProgrammingCatalogs::default().for_product(&product),
-            Err(Error::MissingCatalog { schema: Some(23), .. })
+            Err(Error::MissingCatalog { .. })
         ));
         let loaded = ProjectProgrammingCatalogs::load([], Some(Path::new("/missing/catalog.xml")))
             .expect("empty scope never reads the supplied file");

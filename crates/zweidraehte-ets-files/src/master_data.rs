@@ -1,9 +1,13 @@
 //! Master Data acquisition shared by packaging, inspection and commissioning.
 //!
-//! Local sources and product-owned documents work without optional features.
-//! Only versioned cache/download access needs `master-data-download`. Consumers
-//! decide which schema generations they can interpret; this module verifies
-//! that a requested generation matches the document's own namespace.
+//! This is also the single place which selects the catalog a product compiles
+//! against: [`MasterDataInstallation`] applies the installation rule, and
+//! [`MasterDataLoadRequest::Product`] composes it for one product. Explicit
+//! files and supplied XML work without optional features; versioned
+//! cache/download access, including a `Product` request's default
+//! installation catalog, needs `master-data-download`. Consumers decide which
+//! schema generations they can interpret; this module verifies that a
+//! requested generation matches the document's own namespace.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,9 +32,9 @@ pub enum MasterDataSource {
 
 /// Borrowed request for a parsed, self-identifying Master Data document.
 ///
-/// Unlike a package builder's `Download` default, product loading never guesses
-/// a generation. An associated document is authoritative even when the product
-/// uses another schema; loose products must declare their own generation.
+/// Unlike a package builder's `Download` default, explicit sources never guess
+/// a generation. A product compiles against its installation's catalog, not
+/// the document its package was built with; see [`MasterDataInstallation`].
 ///
 /// ```no_run
 /// use std::path::Path;
@@ -42,8 +46,11 @@ pub enum MasterDataSource {
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub enum MasterDataLoadRequest<'a> {
-    /// Reuse the associated document, or resolve the loose product's generation.
+    /// Reuse the product's bound catalog, or select it from an installation of
+    /// the newest generation, resolved through the shared cache/download.
     Product(&'a ProductData),
+    /// As `Product`, with this file as the installation's own catalog.
+    InstalledProduct { product: &'a ProductData, installation: &'a Path },
     /// Resolve exactly this project-schema generation, including legacy schemas.
     Version(u16),
     /// Read an explicit file which identifies its own schema.
@@ -55,7 +62,7 @@ pub enum MasterDataLoadRequest<'a> {
 /// Source identity, available before loading so callers can apply their policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MasterDataOrigin {
-    /// Document already bound to a product, usually by its archive.
+    /// Catalog already bound to the product for compilation.
     ProductDocument,
     /// Explicitly selected file; its name does not imply a generation.
     ExplicitFile(PathBuf),
@@ -63,51 +70,80 @@ pub enum MasterDataOrigin {
     SuppliedXml,
     /// Exact generation selected for the shared cache/download resolver.
     VersionedResolver(u16),
+    /// An installation catalog loaded from this baseline, which the product's
+    /// package document may have advanced.
+    Installation(Box<MasterDataOrigin>),
 }
 
-impl MasterDataLoadRequest<'_> {
+impl<'a> MasterDataLoadRequest<'a> {
+    /// Select `product`'s catalog, from an explicit installation catalog file
+    /// when one is supplied.
+    pub fn for_product(product: &'a ProductData, installation: Option<&'a Path>) -> Self {
+        match installation {
+            Some(installation) => Self::InstalledProduct { product, installation },
+            None => Self::Product(product),
+        }
+    }
+
     /// Select a source without file or network I/O.
-    ///
-    /// Returns an error if a loose product has no unambiguous schema namespace.
     pub fn source(self) -> Result<MasterDataOrigin, MasterDataError> {
         match self {
             Self::File(path) => Ok(MasterDataOrigin::ExplicitFile(path.to_owned())),
             Self::Xml(_) => Ok(MasterDataOrigin::SuppliedXml),
             Self::Version(version) => Ok(MasterDataOrigin::VersionedResolver(version)),
-            Self::Product(product) => {
-                if product.master_data().is_some() {
-                    return Ok(MasterDataOrigin::ProductDocument);
-                }
-                let provenance = product.schema_provenance();
-                let version = provenance.schema_version().ok_or_else(|| MasterDataError::MissingProductSchema {
-                    product: product.id().to_owned(),
-                    namespace: provenance.namespace().map(str::to_owned),
-                })?;
-                Ok(MasterDataOrigin::VersionedResolver(version))
+            Self::Product(product) | Self::InstalledProduct { product, .. } if product.master_data().is_some() => {
+                Ok(MasterDataOrigin::ProductDocument)
+            }
+            Self::Product(_) => Ok(MasterDataOrigin::Installation(Box::new(installation_origin(None)))),
+            Self::InstalledProduct { installation, .. } => {
+                Ok(MasterDataOrigin::Installation(Box::new(installation_origin(Some(installation)))))
             }
         }
     }
 
     /// Load and parse one exact document, retaining an existing product `Arc`.
     ///
-    /// Fails on I/O, malformed XML, a missing document namespace, or a versioned
-    /// resolver returning another generation. Explicit sources never fall back.
+    /// Fails on I/O, malformed XML, a missing document namespace, a versioned
+    /// resolver returning another generation, or a package document which the
+    /// installation cannot accept. Explicit sources never fall back.
     pub fn load(self) -> Result<Arc<MasterData>, MasterDataError> {
         let source = self.source()?;
-        let document = match (self, &source) {
-            (Self::Product(product), MasterDataOrigin::ProductDocument) => {
-                Arc::clone(product.master_data().expect("associated source selected"))
+        match (self, &source) {
+            (Self::Product(product) | Self::InstalledProduct { product, .. }, MasterDataOrigin::ProductDocument) => {
+                Ok(Arc::clone(product.master_data().expect("bound source selected")))
             }
-            (Self::Xml(xml), _) => Arc::new(xml.parse()?),
-            (_, MasterDataOrigin::ExplicitFile(path)) => Arc::new(MasterData::from_file(path)?),
-            (_, MasterDataOrigin::VersionedResolver(version)) => {
-                Arc::new(get_master_data_for_schema(*version)?.parse()?)
+            (
+                Self::Product(product) | Self::InstalledProduct { product, .. },
+                MasterDataOrigin::Installation(baseline),
+            ) => {
+                let mut installation = MasterDataInstallation::new(load_origin(baseline, None)?)?;
+                installation.offer_product(product)?;
+                Ok(Arc::clone(installation.document()))
             }
-            _ => unreachable!("source belongs to the request"),
-        };
-        validate_document(&document, &source)?;
-        Ok(document)
+            (Self::Xml(xml), _) => load_origin(&source, Some(xml)),
+            _ => load_origin(&source, None),
+        }
     }
+}
+
+/// An installation's own catalog: an explicit file, or the newest generation.
+fn installation_origin(catalog: Option<&Path>) -> MasterDataOrigin {
+    match catalog {
+        Some(path) => MasterDataOrigin::ExplicitFile(path.to_owned()),
+        None => MasterDataOrigin::VersionedResolver(KnxSchemaVersion::LATEST.as_u16()),
+    }
+}
+
+/// Load a single-document source; installation selection composes these.
+fn load_origin(source: &MasterDataOrigin, xml: Option<&str>) -> Result<Arc<MasterData>, MasterDataError> {
+    let document = match (source, xml) {
+        (MasterDataOrigin::SuppliedXml, Some(xml)) => Arc::new(xml.parse()?),
+        (MasterDataOrigin::ExplicitFile(path), _) => Arc::new(MasterData::from_file(path)?),
+        (MasterDataOrigin::VersionedResolver(version), _) => Arc::new(get_master_data_for_schema(*version)?.parse()?),
+        _ => unreachable!("only single-document sources load directly"),
+    };
+    validate_document(&document, source)?;
+    Ok(document)
 }
 
 fn validate_document(document: &MasterData, source: &MasterDataOrigin) -> Result<(), MasterDataError> {
@@ -120,6 +156,113 @@ fn validate_document(document: &MasterData, source: &MasterDataOrigin) -> Result
         return Err(MasterDataError::SchemaMismatch { expected: *expected, actual });
     }
     Ok(())
+}
+
+// ================================================================================
+// Installation catalog
+// ================================================================================
+
+/// One installation-wide catalog which product packages can only advance.
+///
+/// A package ships the Master Data it was built against, which is usually
+/// older than the installation's. Installing the package offers that document
+/// to the installation, which adopts it only when it is a strictly newer table
+/// of the installation's own project schema. A package for an older schema is
+/// converted on installation and its document replaced by the installation's
+/// catalog, so it changes nothing; a package for a newer schema cannot be
+/// installed at all.
+///
+/// The catalog depends only on the set of offered documents, never on their
+/// order, because it advances only to a strictly higher table version.
+#[derive(Debug, Clone)]
+pub struct MasterDataInstallation {
+    document: Arc<MasterData>,
+    schema: u16,
+    version: u64,
+}
+
+/// The effect of offering one package document to an installation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MasterDataOffer {
+    /// A newer table of the installation's schema replaced its catalog.
+    Adopted,
+    /// The package uses an older schema; conversion keeps the installed catalog.
+    OlderSchema,
+    /// The package document is not newer than the installed catalog.
+    NotNewer,
+    /// The product has no package document to offer.
+    NoPackageDocument,
+}
+
+impl MasterDataInstallation {
+    /// Start from the installation's own catalog, which fixes the project
+    /// schema the installation implements.
+    pub fn new(catalog: Arc<MasterData>) -> Result<Self, MasterDataError> {
+        let (schema, version) = table_identity(&catalog)?;
+        Ok(Self { document: catalog, schema, version })
+    }
+
+    /// Load the installation's own catalog from this file, or the newest
+    /// generation through the shared cache/download when none is given.
+    pub fn load(catalog: Option<&Path>) -> Result<Self, MasterDataError> {
+        Self::new(load_origin(&installation_origin(catalog), None)?)
+    }
+
+    /// The catalog every product of this installation compiles against.
+    pub fn document(&self) -> &Arc<MasterData> {
+        &self.document
+    }
+
+    /// Offer a package's own document as installing that package would.
+    ///
+    /// Returns an error for a newer project schema, or for a document whose
+    /// table version cannot be compared.
+    pub fn offer(&mut self, package: &Arc<MasterData>) -> Result<MasterDataOffer, MasterDataError> {
+        let (schema, version) = table_identity(package)?;
+
+        if schema > self.schema {
+            return Err(MasterDataError::NewerPackageSchema { package: schema, installation: self.schema });
+        }
+        if schema < self.schema {
+            return Ok(MasterDataOffer::OlderSchema);
+        }
+        if version <= self.version {
+            return Ok(MasterDataOffer::NotNewer);
+        }
+
+        self.document = Arc::clone(package);
+        self.version = version;
+        Ok(MasterDataOffer::Adopted)
+    }
+
+    /// Offer the document shipped with `product`'s package, if any.
+    ///
+    /// An application written for a newer project schema cannot be installed
+    /// either, even when its package ships no Master Data.
+    pub fn offer_product(&mut self, product: &ProductData) -> Result<MasterDataOffer, MasterDataError> {
+        if let Some(schema) = product.schema_provenance().schema_version()
+            && schema > self.schema
+        {
+            return Err(MasterDataError::NewerPackageSchema { package: schema, installation: self.schema });
+        }
+
+        match product.package_master_data() {
+            Some(document) => self.offer(document),
+            None => Ok(MasterDataOffer::NoPackageDocument),
+        }
+    }
+}
+
+/// The two values that order catalogs: a table version is numbered per schema.
+fn table_identity(document: &MasterData) -> Result<(u16, u64), MasterDataError> {
+    let schema = document
+        .schema_version()
+        .ok_or_else(|| MasterDataError::MissingSchema { namespace: document.namespace().map(str::to_owned) })?;
+    let version = document
+        .document_version()
+        .parse()
+        .map_err(|_| MasterDataError::InvalidTableVersion { version: document.document_version().to_owned() })?;
+    Ok((schema, version))
 }
 
 pub(crate) fn read_xml(path: &Path) -> Result<String, MasterDataError> {
@@ -242,8 +385,16 @@ mod tests {
         assert!(matches!(MasterDataLoadRequest::Xml("<broken>").load(), Err(MasterDataError::Xml(_))));
     }
 
+    fn document(schema: u16, version: u64) -> Arc<MasterData> {
+        Arc::new(
+            format!(r#"<KNX xmlns="http://knx.org/xml/project/{schema}"><MasterData Id="MD-{schema}-{version}" Version="{version}"/></KNX>"#)
+                .parse()
+                .expect("fixture document"),
+        )
+    }
+
     #[test]
-    fn associated_document_keeps_its_arc_and_overrides_the_products_generation() {
+    fn bound_catalog_keeps_its_arc_and_overrides_installation_selection() {
         let document = Arc::new(XML.parse::<MasterData>().expect("fixture document"));
         let product = ProductData::default()
             .bind_schema_version(KnxSchemaVersion::V20)
@@ -259,17 +410,85 @@ mod tests {
     }
 
     #[test]
-    fn source_selection_requires_provenance_without_imposing_a_consumers_schema_limit() {
-        assert!(matches!(
-            MasterDataLoadRequest::Product(&ProductData::default()).source(),
-            Err(MasterDataError::MissingProductSchema { .. })
-        ));
-        let product = ProductData::default().bind_schema_version(KnxSchemaVersion::V21).expect("product generation");
-        assert_eq!(
-            MasterDataLoadRequest::Product(&product).source().expect("declared generation"),
-            MasterDataOrigin::VersionedResolver(21)
-        );
+    fn installation_adopts_only_a_newer_table_of_its_own_schema() {
+        let installed = document(23, 198);
+        for (package, expected) in [
+            // Table versions are numbered per schema: 1658 is not newer than 198.
+            (document(14, 1658), MasterDataOffer::OlderSchema),
+            (document(20, 447), MasterDataOffer::OlderSchema),
+            (document(23, 168), MasterDataOffer::NotNewer),
+            (document(23, 198), MasterDataOffer::NotNewer),
+            (document(23, 199), MasterDataOffer::Adopted),
+        ] {
+            let mut installation = MasterDataInstallation::new(Arc::clone(&installed)).expect("installed catalog");
+            assert_eq!(installation.offer(&package).expect("importable package"), expected);
 
+            let selected = if expected == MasterDataOffer::Adopted { &package } else { &installed };
+            assert!(Arc::ptr_eq(installation.document(), selected), "{}", package.document_version());
+        }
+
+        let mut installation = MasterDataInstallation::new(installed).expect("installed catalog");
+        assert!(matches!(
+            installation.offer(&document(24, 1)),
+            Err(MasterDataError::NewerPackageSchema { package: 24, installation: 23 })
+        ));
+        let unversioned = Arc::new(
+            r#"<KNX xmlns="http://knx.org/xml/project/23"><MasterData Version="draft"/></KNX>"#
+                .parse::<MasterData>()
+                .expect("fixture document"),
+        );
+        assert!(matches!(installation.offer(&unversioned), Err(MasterDataError::InvalidTableVersion { .. })));
+    }
+
+    #[test]
+    fn installation_outcome_is_independent_of_offer_order() {
+        let packages = [document(23, 201), document(20, 900), document(23, 199), document(23, 200)];
+        for order in [[0, 1, 2, 3], [3, 2, 1, 0], [2, 0, 3, 1]] {
+            let mut installation = MasterDataInstallation::new(document(23, 198)).expect("installed catalog");
+            for index in order {
+                installation.offer(&packages[index]).expect("importable package");
+            }
+            assert_eq!(installation.document().document_version(), "201");
+        }
+    }
+
+    #[test]
+    fn product_requests_offer_the_package_document_to_the_installation() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("installed.xml");
+        fs::write(&path, document(23, 198).source_xml()).expect("installation catalog writes");
+
+        let unpackaged = ProductData::default();
+        let old = ProductData::default().with_package_master_data(document(14, 1658));
+        let newer = ProductData::default().with_package_master_data(document(23, 199));
+        for (product, expected) in [(&unpackaged, "198"), (&old, "198"), (&newer, "199")] {
+            let request = MasterDataLoadRequest::InstalledProduct { product, installation: &path };
+            assert_eq!(
+                request.source().expect("installation source"),
+                MasterDataOrigin::Installation(Box::new(MasterDataOrigin::ExplicitFile(path.clone())))
+            );
+            assert_eq!(request.load().expect("installation selection").document_version(), expected);
+        }
+
+        assert_eq!(
+            MasterDataLoadRequest::Product(&unpackaged).source().expect("default installation"),
+            MasterDataOrigin::Installation(Box::new(MasterDataOrigin::VersionedResolver(23)))
+        );
+        let future = ProductData::default().with_package_master_data(document(24, 1));
+        assert!(matches!(
+            MasterDataLoadRequest::InstalledProduct { product: &future, installation: &path }.load(),
+            Err(MasterDataError::NewerPackageSchema { .. })
+        ));
+        let mut installation = MasterDataInstallation::new(document(20, 447)).expect("older installation");
+        let application = ProductData::default().bind_schema_version(KnxSchemaVersion::V23).expect("schema binds");
+        assert!(matches!(
+            installation.offer_product(&application),
+            Err(MasterDataError::NewerPackageSchema { package: 23, installation: 20 })
+        ));
+    }
+
+    #[test]
+    fn inspection_parses_generations_which_installations_may_not_accept() {
         // Inspection may parse generations that live commissioning cannot use.
         let future = XML.replace("/project/23", "/project/24");
         assert_eq!(

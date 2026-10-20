@@ -84,11 +84,8 @@ impl EditorDocument {
         let product_data = selected.product();
 
         let programming_catalog =
-            ProgrammingCatalog::load(match master_data.filter(|_| product_data.master_data().is_none()) {
-                Some(path) => ProgrammingCatalogLoadRequest::File(path),
-                None => ProgrammingCatalogLoadRequest::Product(product_data),
-            })?
-            .into_catalog();
+            ProgrammingCatalog::load(ProgrammingCatalogLoadRequest::for_product(product_data, master_data))?
+                .into_catalog();
         let selected = Arc::new(selected.bind_master_data(programming_catalog.document())?);
 
         // Keep the original text for later language changes; translated text

@@ -45,14 +45,13 @@ pub fn load_program_selection(
         .map_err(Into::into)
 }
 
-/// Use associated Master Data, or supply a document for a loose product.
-pub fn load_programming_catalog(product: &ProductData, explicit: Option<&Path>) -> Result<LoadedProgrammingCatalog> {
-    let request = match explicit.filter(|_| product.master_data().is_none()) {
-        Some(path) => ProgrammingCatalogLoadRequest::File(path),
-        None => ProgrammingCatalogLoadRequest::Product(product),
-    };
-
-    ProgrammingCatalog::load(request).context("while attempting to load product Master Data")
+/// Select the product's installation catalog, from `installation` when supplied.
+pub fn load_programming_catalog(
+    product: &ProductData,
+    installation: Option<&Path>,
+) -> Result<LoadedProgrammingCatalog> {
+    ProgrammingCatalog::load(ProgrammingCatalogLoadRequest::for_product(product, installation))
+        .context("while attempting to load product Master Data")
 }
 
 #[cfg(test)]

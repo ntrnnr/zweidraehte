@@ -260,7 +260,7 @@ fn bcu1_and_unknown_masks_keep_serial_metadata_without_selecting_serial_manageme
                 if mask.is_empty() { "MV-07B0" } else { mask }
             ))
             .expect("catalog");
-            inputs.resources.catalogs = ProjectProgrammingCatalogs::with_fallback(catalog);
+            inputs.resources.catalogs = ProjectProgrammingCatalogs::with_installation(catalog);
 
             let plan = inputs.plan().expect("management-only plan");
             let device = plan.device(&id).expect("target");

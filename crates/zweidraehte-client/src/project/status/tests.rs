@@ -41,7 +41,7 @@ fn snapshot_retains_the_catalog_resolution_diagnostic() {
     let catalog =
         ProgrammingCatalog::from_xml(r#"<KNX xmlns="http://knx.org/xml/project/23"><MasterData Version="1" /></KNX>"#)
             .expect("inspectable empty catalog");
-    let catalogs = ProjectProgrammingCatalogs::with_fallback(catalog);
+    let catalogs = ProjectProgrammingCatalogs::with_installation(catalog);
     let scope = fixture.project.devices.keys().cloned().collect();
     let error = ProjectPlanner::new(&fixture.project, None, &fixture.products, None, Some(&fixture.keyring))
         .with_catalogs(Some(&catalogs))
@@ -77,7 +77,7 @@ fn revision_tracks_drafts_catalog_bytes_and_redacted_keyring_credentials() {
         &fixture.catalog.document().source_xml().replace("Version=\"1\"", "Version=\"2\""),
     )
     .expect("another catalog revision");
-    let changed_catalogs = ProjectProgrammingCatalogs::with_fallback(changed_catalog);
+    let changed_catalogs = ProjectProgrammingCatalogs::with_installation(changed_catalog);
     assert_ne!(original.revision(), snapshot(&fixture.project, &changed_catalogs, &fixture.keyring).revision());
     fixture.keyring.devices[0] = fixture.keyring.devices[0].clone().with_tool_key(Some([0x55; 16]));
     let changed = snapshot(&fixture.project, &fixture.catalogs, &fixture.keyring);

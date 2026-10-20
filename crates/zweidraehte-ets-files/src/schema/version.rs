@@ -20,6 +20,9 @@ pub enum KnxSchemaVersion {
 }
 
 impl KnxSchemaVersion {
+    /// The newest revision, which an installation's own Master Data uses.
+    pub const LATEST: Self = Self::V23;
+
     /// Get the numeric project-schema version.
     pub const fn as_u16(self) -> u16 {
         match self {

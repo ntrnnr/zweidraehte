@@ -40,6 +40,8 @@ impl Serialize for ProductIdentity<'_> {
             mask_version: _,
             schema_provenance,
             master_data: _,
+            // Only the selected catalog shapes compilation, with its own identity.
+            package_master_data: _,
             programming_options,
             application_program_2,
             secondary_application,

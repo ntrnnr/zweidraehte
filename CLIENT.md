@@ -340,8 +340,10 @@ and decrypted keyring for one `ProjectInputRequest`. CLI load/unload/dry-run and
 TUI load/unload use this path. Loading and `plan()` leave project files untouched;
 the bundle lends its planner for inspection and `ProjectProgrammingInputs` for execution.
 Status and operation acquisition share product caching and catalog selection.
-Complete packages retain their own Master Data; an explicit fallback is read
-and watched only when a product needs it. Automatic Master Data acquisition
+Every product compiles against one installation catalog: an explicit
+installation file, read and watched when an unbound product needs it, or the
+newest cached/downloaded generation, advanced by newer package documents of
+the same schema. Automatic Master Data acquisition
 retains the existing external cache/download policy.
 
 `ProjectSetupRequirement` identifies initialization, recovery, missing credentials,
@@ -407,7 +409,8 @@ and TUI refreshes. A draft is paired with its exact saved base. Content checks
 bracket loading and evaluation; changed inputs return `StatusInputsChanged`.
 `ProjectStatusCache` shares products by package store, digest and catalogue leaf,
 and caches explicit Master Data by content through the same resource acquisition
-code as project operations. Complete packages retain their own Master Data.
+code as project operations. Packages offer their own Master Data to the
+project's installation catalog.
 
 `ProgrammingSnapshot` keeps its view, computed scope and input revision together.
 The ephemeral revision covers authored model/source, products, selected catalogues,

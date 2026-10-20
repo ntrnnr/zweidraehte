@@ -2818,11 +2818,17 @@ mod project_editor_tests {
         editor_fixture(xml, master).prepare(&ProductConfiguration::default(), [], None, None).expect("prepared fixture")
     }
 
+    /// Fixtures select their catalog explicitly, as an installation would.
     fn editor_fixture(xml: &str, master: &str) -> EditorDocument {
         let knx = parse_application_program(xml).expect("fixture document");
-        let selected =
-            SelectedProduct::from_document(knx, None, Some(master)).expect("fixture selection with Master Data");
-        EditorDocument::new(selected, None)
+        EditorDocument::new(with_catalog(knx, master), None)
+    }
+
+    fn with_catalog(knx: zweidraehte_ets_files::schema::Knx, master: &str) -> SelectedProduct {
+        SelectedProduct::from_document(knx, None, None)
+            .expect("fixture selection")
+            .bind_master_data(std::sync::Arc::new(master.parse().expect("fixture Master Data")))
+            .expect("fixture catalog binds")
     }
 
     fn open_fixture(app: &mut App, product: PreparedEditorProduct) {
@@ -3315,9 +3321,7 @@ mod project_editor_tests {
           <HawkConfigurationData><Procedures><Procedure ProcedureType="Load" ProcedureSubType="all">
           <LdCtrlConnect/><LdCtrlDisconnect/></Procedure></Procedures></HawkConfigurationData></MaskVersion>
           </MaskVersions></MasterData></KNX>"#;
-        let selected =
-            SelectedProduct::from_document(parse_application_program(xml).expect("document"), None, Some(master))
-                .expect("selected fixture");
+        let selected = with_catalog(parse_application_program(xml).expect("document"), master);
         let product = ProjectProduct::new(selected);
         let products = project.devices.keys().map(|id| (id.clone(), product.clone())).collect();
         ProjectPlanner::new(&project, None, &products, None, None).programming_snapshot_for(&scope).expect("status")

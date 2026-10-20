@@ -53,30 +53,24 @@ fn loads_an_explicit_file_with_exact_versioned_provenance() {
 }
 
 #[test]
-fn product_selects_its_own_generation() {
-    for (version, expected) in [(11, 11), (20, 20), (21, 21), (22, 22), (23, 23)] {
-        let product = product_with_schema(version, "MV-0900", "DefaultProcedure", false);
-        let selected = super::super::loading::select_source(ProgrammingCatalogLoadRequest::Product(&product))
-            .expect("supported product generation");
-
-        assert_eq!(selected, ProgrammingCatalogSource::VersionedResolver(expected));
-    }
-}
-
-#[test]
-fn product_selection_never_guesses_a_generation() {
+fn products_of_every_generation_select_the_newest_installation() {
+    // The product's own generation never chooses its catalog: an installation
+    // compiles every product against its own, newest-generation catalog.
     let missing = ProductData::default();
-    assert!(matches!(
-        super::super::loading::select_source(ProgrammingCatalogLoadRequest::Product(&missing)),
-        Err(ProgrammingCatalogLoadError::MasterData(MasterDataError::MissingProductSchema { namespace: None, .. }))
-    ));
+    let products: Vec<_> = [11, 20, 23]
+        .into_iter()
+        .map(|version| product_with_schema(version, "MV-0900", "DefaultProcedure", false))
+        .chain([missing])
+        .collect();
+    for product in &products {
+        let selected = super::super::loading::select_source(ProgrammingCatalogLoadRequest::Product(product))
+            .expect("installation source");
 
-    let unsupported = product_with_schema(24, "MV-0900", "DefaultProcedure", false);
-    assert!(matches!(
-        super::super::loading::select_source(ProgrammingCatalogLoadRequest::Product(&unsupported)),
-        Err(ProgrammingCatalogLoadError::Policy(error))
-            if error.kind == CompileErrorKind::Unsupported && error.message.contains("schema 24")
-    ));
+        assert_eq!(
+            selected,
+            ProgrammingCatalogSource::Installation(Box::new(ProgrammingCatalogSource::VersionedResolver(23)))
+        );
+    }
 }
 
 #[test]

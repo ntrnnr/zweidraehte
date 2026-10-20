@@ -166,30 +166,37 @@ follows the selected program. An unused declaration does not introduce a new
 service dependency. Raw public constructors cannot bypass the namespace check
 at the live commissioning boundary.
 
-The selected application document's schema provenance chooses the Master Data
-generation by default. `ProgrammingCatalogLoadRequest::Product(&product)`
-is an alias for the shared ETS-files `master_data::MasterDataLoadRequest`.
-Source selection, parsing and namespace identity live there; the client applies
+A product compiles against its installation's catalog, never directly
+against the Master Data its package was built with.
+`ProgrammingCatalogLoadRequest::Product(&product)` is an alias for the shared
+ETS-files `master_data::MasterDataLoadRequest`, whose
+`MasterDataInstallation` applies the selection rule: start from the
+installation's own catalog and adopt a package document only when it is a
+strictly newer table of the same project schema. Source selection, parsing,
+namespace identity and installation selection live there; the client applies
 its supported-generation policy and computes catalog provenance/fingerprints.
-An associated product document retains its existing `Arc`. A cache
+A catalog already bound to a product retains its existing `Arc`.
+
+By default the installation's own catalog is the newest generation. A cache
 miss downloads `https://update.knx.org/data/XML/project-{version}/knx_master.xml`
 and stores it as `knx_master_v{version}.xml` in the existing platform cache
 (on Linux, `~/.cache/knxprod/`). A failed fetch never selects another generation.
+`InstalledProduct { product, installation }` uses an explicit installation file
+instead.
 
-Callers can override this with `Version(version)`, `File(path)`, or supplied
-`Xml(xml)`. These are explicit alternatives, with no hidden current-version,
-environment, or archive precedence. An explicit document identifies its own
-schema; a versioned resolver must return the requested schema. Each artifact
-records the exact source and fingerprint.
+Callers can bypass installation selection with `Version(version)`,
+`File(path)`, or supplied `Xml(xml)`. These are explicit alternatives, with no
+hidden current-version, environment, or archive precedence. An explicit
+document identifies its own schema; a versioned resolver must return the
+requested schema. Each artifact records the exact source and fingerprint.
 
-Mixed-version project batches use `ProjectProgrammingCatalogs` to retain one
-catalog per participating product generation. Preparation binds the selected
-catalog to each device, and execution reuses it without selecting or loading
-another catalog. `ProjectPlanner::with_catalogs` applies the same selection
-to status, previews, and project planning; the frontends propagate their
-explicit override to those paths as well as live preparation. An explicit
-project override applies to all participating products. Switching the selected
-product in the TUI also replaces its preview catalog.
+Project batches use `ProjectProgrammingCatalogs` to offer every participating
+product's package document to one installation catalog. Preparation binds the
+selected catalog to each device, and execution reuses it without selecting or
+loading another catalog. `ProjectPlanner::with_catalogs` applies the same
+selection to status, previews, and project planning; the frontends propagate
+their explicit installation file to those paths as well as live preparation.
+Switching the selected product in the TUI also replaces its preview catalog.
 
 Product provenance also retains the XML grammar and defaults of each package.
 An explicit catalog override does not rewrite that provenance, and a

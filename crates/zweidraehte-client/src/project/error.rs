@@ -23,8 +23,8 @@ pub enum Error {
     #[error("managed SIAT sender `{device}` at {address} needs loaded product and serial input before planning")]
     MissingSenderInput { device: String, address: crate::IndividualAddress },
 
-    #[error("product `{product}` has no loaded Master Data for schema {schema:?}")]
-    MissingCatalog { product: String, schema: Option<u16> },
+    #[error("product `{product}` has no selected installation Master Data")]
+    MissingCatalog { product: String },
 
     #[error(transparent)]
     KeyMaterial(#[from] zweidraehte_project::KeyStoreError),
