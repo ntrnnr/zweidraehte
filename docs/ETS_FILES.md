@@ -177,7 +177,8 @@ commissioning. `master_data_xml` reads the exact bundled document separately
 when needed. Neither method caches inflated members, and unrelated application
 bodies are not fully validated.
 
-Standalone indexing defaults to a 512 MiB aggregate expanded-size limit.
+Standalone indexing defaults to a 512 MiB aggregate expanded-size limit, and
+one member may expand to at most 512 MiB.
 `from_bytes_with_expanded_size_limit` allows a caller to explicitly accept a
 larger multi-product package without changing store-import defaults, per-member
 size limits or the other ZIP checks. The aggregate limit describes ZIP members;

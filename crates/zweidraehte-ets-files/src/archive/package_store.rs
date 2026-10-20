@@ -54,8 +54,11 @@ const SHA256_BYTES: usize = 32;
 // Product databases routinely carry large plug-ins and baggages.  These caps
 // are intentionally far above ordinary packages while still preventing an
 // untrusted ZIP from allocating an unbounded amount before path validation.
+// Single application documents reach about 300 MB (witness: M-0001
+// `A-9A1C-30-6CC7` expands to 314,394,279 bytes), so one member may use the
+// whole default aggregate allowance.
 const MAX_ARCHIVE_ENTRIES: usize = 100_000;
-const MAX_ENTRY_UNCOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_ENTRY_UNCOMPRESSED_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_TOTAL_UNCOMPRESSED_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_COMPRESSION_RATIO: u64 = 1_000;
 const COMPRESSION_RATIO_FLOOR_BYTES: u64 = 1024 * 1024;
@@ -1827,20 +1830,30 @@ fn preflight_archive_with_size_limit(bytes: &[u8], max_expanded_bytes: u64) -> R
     let mut total = 0_u64;
     let mut kinds = BTreeMap::new();
     let mut portable_paths = BTreeMap::<String, String>::new();
+    let mut aliases = Vec::new();
     for index in 0..archive.len() {
         let member = archive.by_index_raw(index).map_err(ArchiveError::from)?;
         let name = validate_member_path(member.name(), member.is_dir())?;
         if kinds.insert(name.clone(), member.is_dir()).is_some() {
             return Err(PackageStoreError::DuplicateEntry(name));
         }
+
+        // Published packages can repeat a file under a differently cased name
+        // (witness: M-00B6 `Baggages/Icons.zip` and `Baggages/icons.zip`).
+        // Extraction onto a case-insensitive filesystem then keeps one file.
+        // That is harmless only when both members hold the same bytes, which
+        // is checked below once every member's resource limits are known.
         let portable = portable_path_key(&name);
         if let Some(existing) = portable_paths.insert(portable, name.clone())
             && existing != name
         {
-            return Err(PackageStoreError::UnsafeEntry {
-                path: name,
-                reason: "path aliases another member on a case-insensitive filesystem",
-            });
+            if member.is_dir() || kinds.get(&existing).copied().unwrap_or(true) {
+                return Err(PackageStoreError::UnsafeEntry {
+                    path: name,
+                    reason: "path aliases another member on a case-insensitive filesystem",
+                });
+            }
+            aliases.push((existing, name.clone()));
         }
         if let Some(mode) = member.unix_mode() {
             let file_type = mode & 0o170000;
@@ -1875,6 +1888,19 @@ fn preflight_archive_with_size_limit(bytes: &[u8], max_expanded_bytes: u64) -> R
             if kinds.get(&prefix).is_some_and(|directory| !directory) {
                 return Err(PackageStoreError::EntryKindConflict { path: path.clone(), ancestor: prefix });
             }
+        }
+    }
+
+    // Compare the inflated bytes rather than the central-directory CRC and
+    // size: CRC-32 is not collision resistant, and a crafted package must not
+    // pass a different payload off as the member that was validated. Every
+    // member already passed the per-member and aggregate limits above.
+    for (existing, alias) in aliases {
+        if read_zip_member(&mut archive, &existing)? != read_zip_member(&mut archive, &alias)? {
+            return Err(PackageStoreError::UnsafeEntry {
+                path: alias,
+                reason: "path aliases a different member on a case-insensitive filesystem",
+            });
         }
     }
     Ok(())
@@ -3692,6 +3718,28 @@ mod index_tests {
         assert_eq!(manufacturer.name.as_deref(), Some("Newest Name"));
         assert_eq!(manufacturer.name_source_schema_version, Some(23));
         assert_eq!(manufacturer.name_source_version, Some(169));
+    }
+
+    #[test]
+    fn case_aliases_import_only_when_their_bytes_agree() {
+        let package = |alias: Vec<u8>| {
+            archive(vec![
+                (format!("{MANUFACTURER}/{AP1}.xml"), application(AP1, false, None).into_bytes()),
+                (format!("{MANUFACTURER}/Hardware.xml"), hardware("", "", true).into_bytes()),
+                (format!("{MANUFACTURER}/Catalog.xml"), catalog(ITEM).into_bytes()),
+                (format!("{MANUFACTURER}/Baggages/Icons.zip"), vec![1, 2, 3]),
+                (format!("{MANUFACTURER}/Baggages/icons.zip"), alias),
+            ])
+        };
+
+        let (_temporary, store) = store();
+        store.import_bytes(&package(vec![1, 2, 3])).expect("identical alias imports");
+
+        let error = PackageStore::new("unused").import_bytes(&package(vec![1, 2, 4])).expect_err("alias differs");
+        assert!(matches!(
+            error,
+            PackageStoreError::UnsafeEntry { reason, .. } if reason.contains("different member")
+        ));
     }
 
     #[test]
