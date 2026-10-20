@@ -201,7 +201,11 @@ impl ProgramCompiler<'_> {
                 )
                 .expect("builtin property selector"),
                 data: vec![0, 0, family, version],
-                effect: crate::commissioning::procedure::LoadEffect::InvalidateAll,
+                // The command carries its payload inline and discards the
+                // response, so it changes no image bytes or ownership, like an
+                // authored inline `LdCtrlInvokeFunctionProp`. Only the
+                // service family's protection changes, which no image tracks.
+                effect: crate::commissioning::procedure::LoadEffect::None,
             }),
         );
 

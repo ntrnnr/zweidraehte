@@ -628,3 +628,40 @@ fn service_family(operation: &ProcedureOperation) -> Option<u8> {
         _ => None,
     }
 }
+
+#[test]
+fn ip_secure_keys_are_never_split_across_telegrams() {
+    // Each backbone key, device authentication code and password hash is one
+    // 16-byte property element. Splitting one across telegrams could leave a
+    // partially overwritten key, so every secret write requires a complete
+    // element plus the five-byte property header, however many users it holds.
+    let product = product(true);
+    let mut profile = profile("MV-57B0");
+    let configuration = configuration(&product, basic_secure_intent());
+    prepare_classic_ip_profile(&mut profile, &product, configuration.topology.ip.as_ref())
+        .expect("standard OT11 facts resolve");
+    let secrets = ResolvedIpSecureConfiguration {
+        backbone_key: Some([0xa1; 16].into()),
+        device_authentication_code: Some([0xb2; 16].into()),
+        password_hashes: vec![
+            (NonZeroU8::new(1).expect("nonzero"), [0xc3; 16].into()),
+            (NonZeroU8::new(2).expect("nonzero"), [0xd4; 16].into()),
+        ],
+    };
+    let (_image, operations) =
+        super::super::compile_fixture(&profile, &product, &configuration, None, Some(&secrets), |compiler| {
+            compiler.contribute_ip()
+        });
+
+    let requirements: BTreeMap<_, _> = operations
+        .iter()
+        .filter_map(|step| match &step.operation {
+            ProcedureOperation::Write { target, data: OperationData::Secret(_), extent, .. } => Some((
+                secret_write_pid(&step.operation).expect("secret writes target OT11"),
+                (extent.property_elements, target.fitted_minimum_apdu(*extent).expect("sized key")),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(requirements, BTreeMap::from([(91, (Some(1), 21)), (92, (Some(1), 21)), (93, (Some(2), 21))]));
+}

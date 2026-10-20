@@ -186,4 +186,26 @@ mod tests {
 
         assert!(resolve_profile_authorization(&profile, 4, &ManagementAccessOptions::default()).is_err());
     }
+
+    #[test]
+    fn secure_management_reserves_the_envelope_on_top_of_a_complete_key_row() {
+        use crate::commissioning::compiler::binding::tests::preparation_support::partial_plan;
+        use crate::commissioning::input::ProgramSections;
+
+        // A group-key row write needs 5 + 18 plaintext bytes. Under secure
+        // management its envelope adds 13, so the path must carry 36.
+        let plan = partial_plan(authorization_profile("SystemB", None), ProgramSections::GROUP_COMMUNICATION)
+            .with_procedure_apdu(23);
+        let check = |interface, target, configured, secure| {
+            validate_apdu_requirements(&plan, interface, target, configured, secure, false)
+        };
+
+        check(36, 36, None, true).expect("the envelope fits around a complete row");
+        let error = check(35, 254, None, true).expect_err("one byte short of the envelope");
+        assert!(error.to_string().contains("procedure requires wire APDU 36"), "{error}");
+        check(254, 35, None, true).expect_err("the target limits the path as well");
+        check(254, 254, Some(35), true).expect_err("the project ceiling limits the path as well");
+        // Plaintext management needs no envelope.
+        check(23, 23, None, false).expect("plaintext needs only the row and header");
+    }
 }

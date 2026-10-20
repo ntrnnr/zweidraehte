@@ -639,3 +639,41 @@ fn group_key_exposure_identities_follow_encoded_rows_not_input_order() {
     assert_eq!(&encoded[..18], [&[0, 1][..], &[0x11; 16]].concat());
     assert_eq!(&encoded[18..], [&[0, 2][..], &[0x22; 16]].concat());
 }
+
+#[test]
+fn group_key_rows_are_never_split_across_telegrams() {
+    // A key row is a property element: its group-address index and its key
+    // must arrive in one telegram, or an interrupted transfer could leave a
+    // partially overwritten key. The requirement is therefore one complete
+    // 18-byte row plus the five-byte property header, independent of how many
+    // rows the table holds.
+    let product = ProductData::from_mtxml_str(SYSTEM7_MTXML)
+        .expect("fixture parses")
+        .with_fixture_data_secure(true)
+        .with_fixture_security_capacities(4, 4, 0);
+    let first = GroupAddress::from_three_level(1, 0, 1);
+    let second = GroupAddress::from_three_level(1, 0, 2);
+    let mut project = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 10), Some(15));
+    project.links =
+        vec![GroupLink { group_address: first, com_object: 1 }, GroupLink { group_address: second, com_object: 1 }];
+    let security =
+        Some(SecurityConfig::new(vec![(first, [0x11; 16]), (second, [0x22; 16])], vec![], vec![GroupObjectSecurity {
+            com_object: 1,
+            protection: GroupObjectProtection::AuthenticationConfidentiality,
+        }]));
+    let configuration = project.with_com_objects(product.com_objects().to_vec());
+    let (_, operations) =
+        super::super::compile_fixture(&profile(), &product, &configuration, security.as_ref(), None, |compiler| {
+            compiler.contribute_data_secure()
+        });
+
+    let (target, extent) = operations
+        .iter()
+        .find_map(|step| match &step.operation {
+            ProcedureOperation::Write { target, data: OperationData::Secret(_), extent, .. } => Some((target, *extent)),
+            _ => None,
+        })
+        .expect("compiled GKT transfer");
+    assert_eq!((extent.byte_length, extent.property_elements), (36, Some(2)));
+    assert_eq!(target.fitted_minimum_apdu(extent).expect("sized row"), 5 + 18);
+}

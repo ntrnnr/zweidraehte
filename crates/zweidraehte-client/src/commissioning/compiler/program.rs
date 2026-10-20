@@ -99,6 +99,14 @@ pub struct CompiledProgram {
 }
 
 impl CompiledProgram {
+    /// Replace the sealed procedure requirement so policy tests can check
+    /// their wire arithmetic without compiling a procedure of that size.
+    #[cfg(test)]
+    pub(in crate::commissioning) fn with_procedure_apdu(mut self, length: u16) -> Self {
+        self.apdu_requirements.procedure = Some(length);
+        self
+    }
+
     pub(in crate::commissioning) fn full_image_stamp_coverage(&self) -> bool {
         self.full_image_stamp_coverage
     }

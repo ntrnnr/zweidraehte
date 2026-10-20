@@ -3316,3 +3316,58 @@ async fn program_version_mismatch_escapes_its_compare_mismatch_handler() {
     let error = result.expect_err("the program-version mismatch is not handled");
     assert_eq!(error.load_control_cause, None);
 }
+
+#[tokio::test]
+async fn secure_key_row_that_cannot_fit_one_telegram_is_refused_before_sending() {
+    use crate::commissioning::procedure::operands::PropertyAddress;
+
+    // An 18-byte group-key row plus the five-byte property header and the
+    // 13-byte secure envelope needs 36. A 35-byte path cannot carry a whole
+    // row, and splitting it would allow a partially overwritten key, so the
+    // write must fail without transmitting any part of either row.
+    let (bus, mut channel) =
+        KnxBus::scripted(ConnectorInfo { assigned_address: IndividualAddress::new(1, 1, 1), max_apdu: 64 });
+    let mut options = config(false);
+    options.target_max_apdu = 35;
+    let mut session =
+        ExecutionSession::new(&bus, address(), options, ManagementAccess::ToolKey([0xA7; 16].into())).expect("valid");
+    session.begin_execution();
+    let rows = ProcedureOperation::Write {
+        target: OperationTarget::Property {
+            address: PropertyAddress::Indexed { object_index: 5, property_id: pid::security::GROUP_KEY_TABLE as u8 },
+            start_element: 1,
+        },
+        data: OperationData::Inline(vec![0x5A; 36]),
+        extent: OperationExtent::property(36, 2),
+        policy: WriteIntent::Property { verify: false },
+    };
+    let controls = procedure(vec![ProcedureOperation::Connect, rows, ProcedureOperation::Disconnect]);
+    let image = SparseDeviceImage::new();
+
+    let wire = async {
+        let BusCommand::SetDeviceSecurity { tx, .. } = channel.recv().await.expect("install Tool Key") else {
+            panic!("expected credential installation");
+        };
+        tx.send(()).expect("credential installed");
+        let BusCommand::TlOpen { tx, .. } = channel.recv().await.expect("open") else {
+            panic!("expected open");
+        };
+        assert!(
+            tx.send(Ok(TlOpenResult {
+                connection: crate::bus::driver::ConnectionId::TEST,
+                secure_management: true,
+                remote_next_sequence: None
+            }))
+            .is_ok()
+        );
+        let BusCommand::TlClose { tx, .. } = channel.recv().await.expect("close after refusal") else {
+            panic!("no part of the key rows may be sent");
+        };
+        tx.send(Ok(())).expect("closed");
+    };
+    let (result, ()) =
+        tokio::join!(ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}), wire);
+    let error = result.expect_err("a row cannot be split");
+    assert!(error.message.contains("cannot carry one complete property element"), "{}", error.message);
+    assert!(!session.mutated());
+}
