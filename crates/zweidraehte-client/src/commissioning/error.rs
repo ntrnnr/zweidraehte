@@ -76,8 +76,8 @@ pub enum CompileErrorKind {
     /// (`HasIndividualAddress="false"`), so no management service can reach
     /// it: neither address assignment, download nor unload.
     NoIndividualAddress,
-    /// The configuration needs more entries than a communication table's
-    /// authored capacity provides. The reference tool refuses such a
+    /// The configuration needs more entries than a communication or IP
+    /// security table's authored capacity provides. The reference tool refuses such a
     /// download rather than truncating the table.
     TableOverflow(OverflowedTable),
     /// The product's download is refused outright; see
@@ -85,7 +85,7 @@ pub enum CompileErrorKind {
     Unprogrammable(crate::commissioning::Unprogrammable),
 }
 
-/// The communication table whose capacity a configuration exceeds.
+/// The table whose capacity a configuration exceeds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OverflowedTable {
@@ -94,6 +94,12 @@ pub enum OverflowedTable {
     /// One dynamically managed pool holding both the group address and the
     /// association table, so either can borrow the other's nominal space.
     SharedAddressAssociation,
+    /// The KNXnet/IP password-hash table (one row per IP Secure user,
+    /// bounded by `MaxUserEntries`).
+    IpPasswordUsers,
+    /// The KNXnet/IP tunnelling-user table (bounded by
+    /// `MaxTunnelingUserEntries`).
+    IpTunnellingUsers,
 }
 
 /// A compilation diagnostic retains the authored control that caused it.

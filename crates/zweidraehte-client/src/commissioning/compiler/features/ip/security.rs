@@ -2,7 +2,7 @@
 
 use super::KEY_LENGTH;
 use crate::commissioning::compiler::ProgramCompiler;
-use crate::commissioning::error::CompileError;
+use crate::commissioning::error::{CompileError, OverflowedTable};
 
 use super::{property_target, secret_property_write};
 use crate::commissioning::compiler::secrets::{CredentialTransition, SecretCommissioningPayload};
@@ -257,11 +257,14 @@ pub(super) fn validate_secure_intent(
     }
     let user_capacity = product.programming_options().max_user_entries().value;
     if intent.password_users.len() > usize::from(user_capacity) {
-        return Err(CompileError::invalid(format!(
-            "configured {configured} password users, exceeding product capacity {capacity}",
-            configured = intent.password_users.len(),
-            capacity = user_capacity
-        )));
+        return Err(CompileError::table_overflow(
+            OverflowedTable::IpPasswordUsers,
+            format!(
+                "configured {configured} password users, exceeding product capacity {capacity}",
+                configured = intent.password_users.len(),
+                capacity = user_capacity
+            ),
+        ));
     }
 
     let needs_credentials =
@@ -279,11 +282,14 @@ pub(super) fn validate_secure_intent(
 
     let binding_capacity = product.programming_options().max_tunneling_user_entries().value;
     if security.tunnelling_users.len() > usize::from(binding_capacity) {
-        return Err(CompileError::invalid(format!(
-            "configured {configured} tunnelling bindings, exceeding product capacity {capacity}",
-            configured = security.tunnelling_users.len(),
-            capacity = binding_capacity
-        )));
+        return Err(CompileError::table_overflow(
+            OverflowedTable::IpTunnellingUsers,
+            format!(
+                "configured {configured} tunnelling bindings, exceeding product capacity {capacity}",
+                configured = security.tunnelling_users.len(),
+                capacity = binding_capacity
+            ),
+        ));
     }
     if security.tunnelling != IpServiceSecurity::Secure && !security.tunnelling_users.is_empty() {
         return Err(CompileError::invalid("tunnelling-user bindings were supplied while tunnelling is plain"));

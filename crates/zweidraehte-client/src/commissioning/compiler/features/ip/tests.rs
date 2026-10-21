@@ -507,6 +507,33 @@ fn tunnelling_bindings_are_one_to_one() {
     assert_eq!(error.message, "tunnelling address index 1 is bound to more than one user");
 }
 
+#[test]
+fn ip_security_tables_beyond_product_capacity_are_typed_overflows() {
+    use crate::commissioning::error::{CompileErrorKind, OverflowedTable};
+
+    // The fixture holds two users and two tunnelling bindings. A third of
+    // either is a declared table overflow, like a full group address table,
+    // rather than an ordinary invalid configuration.
+    let product = product(true);
+    let mut users = basic_secure_intent();
+    users.password_users.push(NonZeroU8::new(3).expect("nonzero"));
+    let error = validate_secure_intent(&product, &users, users.security.as_ref().expect("security intent exists"))
+        .expect_err("three password users exceed MaxUserEntries=2");
+    assert_eq!(error.kind, CompileErrorKind::TableOverflow(OverflowedTable::IpPasswordUsers), "{error}");
+
+    let mut bindings = basic_secure_intent();
+    let security = bindings.security.as_mut().expect("security intent exists");
+    for address_index in [2, 3] {
+        security
+            .tunnelling_users
+            .push(IpTunnellingUserBinding { user_id: NonZeroU8::new(address_index).expect("nonzero"), address_index });
+    }
+    let error =
+        validate_secure_intent(&product, &bindings, bindings.security.as_ref().expect("security intent exists"))
+            .expect_err("three bindings exceed MaxTunnelingUserEntries=2");
+    assert_eq!(error.kind, CompileErrorKind::TableOverflow(OverflowedTable::IpTunnellingUsers), "{error}");
+}
+
 fn product(secure: bool) -> ProductData {
     product_with_procedures(secure, "DefaultProcedure", "<LoadProcedures />")
 }
