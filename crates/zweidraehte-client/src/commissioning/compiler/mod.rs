@@ -16,12 +16,6 @@ use crate::commissioning::procedure::operands::StandardMemoryService;
 use application_identity::validate_application_metadata;
 use zweidraehte_ets_files::product::NotLoadableBehavior;
 
-/// Completed compilation retains secrets only for the private preparation path.
-pub(in crate::commissioning) struct CompilationOutput {
-    pub(in crate::commissioning) program: CompiledProgram,
-    pub(in crate::commissioning) secret_payload: crate::commissioning::compiler::secrets::SecretCommissioningPayload,
-}
-
 pub(super) struct ProgramCompiler<'a> {
     input: &'a ProgrammingInput,
     profile: ResolvedProfile,
@@ -156,16 +150,10 @@ impl<'a> ProgramCompiler<'a> {
         })
     }
 
-    pub(crate) fn compile_with_secrets(mut self) -> Result<CompilationOutput, CompileError> {
+    pub(crate) fn compile(mut self) -> Result<CompiledProgram, CompileError> {
         self.select_controls()?;
         self.build_image()?;
         self.bind_operands()
-    }
-
-    pub(crate) fn compile(self) -> Result<CompiledProgram, CompileError> {
-        let CompilationOutput { program, secret_payload } = self.compile_with_secrets()?;
-        drop(secret_payload);
-        Ok(program)
     }
 
     pub(crate) fn preview(mut self) -> Result<ProgramImage, CompileError> {
@@ -190,7 +178,6 @@ impl<'a> ProgramCompiler<'a> {
         }
         self.select_controls()?;
         self.build_image()?;
-        self.image.secret_payload = Default::default();
         Ok(self.image)
     }
 }
@@ -212,4 +199,4 @@ pub mod program;
 
 pub(in crate::commissioning) mod features;
 
-pub(crate) mod secrets;
+pub(crate) mod credentials;

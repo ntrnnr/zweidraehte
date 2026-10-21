@@ -53,7 +53,6 @@ fn preview_retains_every_property_occurrence_and_ownership_mask() {
         regions,
         manifest: Default::default(),
         table_spans: Vec::new(),
-        secret_payload: Default::default(),
         product_fingerprint: [0; 32],
         requirements: Vec::new(),
     };

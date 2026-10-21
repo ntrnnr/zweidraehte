@@ -80,11 +80,9 @@ impl Commissioner<'_> {
             // Discovery resolves this exact product against the validated catalog
             // and adds observed geometry. Reuse that selection, then apply the same
             // policy and module checks as offline compilation.
-            let compiled = ProgramCompiler::from_profile(&input, profile)?.compile_with_secrets()?;
+            let plan = ProgramCompiler::from_profile(&input, profile)?.compile()?;
 
             let configuration = input.device.configuration();
-            let plan = compiled.program;
-            let secret_payload = compiled.secret_payload;
             let secure_management = plan.management_secure();
 
             let management_style = self.validate_installed_realization(&plan, target, &mut session).await?;
@@ -126,7 +124,6 @@ impl Commissioner<'_> {
                 session.access,
                 session.config.authorization,
                 session.replacement_tool_key,
-                secret_payload,
             )
         }
         .await

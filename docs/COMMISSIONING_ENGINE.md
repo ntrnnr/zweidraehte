@@ -75,7 +75,7 @@ explicitly conservative rather than a claimed exact minimum.
 An Automatic preview can return pending observations with no image bytes.
 Once its required facts are available, it builds the complete desired image
 before section selection. Scoped unload previews use only their selected
-controls' image demand. Public previews discard private secret payloads.
+controls' image demand. Previews include key material like any other owned image byte.
 `ProgramImage::projected_regions` exposes the same result in display order,
 including reserved bytes and ownership masks; `table_spans` and `requirements`
 retain placement and pending observations. Frontends borrow these views without
@@ -634,13 +634,13 @@ a 16-byte output:
 
 Equal project-store and keyring values merge; conflicting values fail during
 key resolution. PID 91 uses the keyring's binary backbone key directly.
-Secret bytes are held in zeroizing private payload entries and the public plan
-contains only `SecretPayloadReference` values. After each secret property
-write succeeds, execution records the corresponding non-secret
-`CredentialTransition` (`IpBackboneKey`, `IpDeviceAuthenticationCode`, or
-`IpPasswordHash { user_id }`). Successful reports and partial-failure errors
-therefore identify exactly which credential changes were confirmed without
-revealing their bytes. A sent write whose result is unknown is reflected by
+These credentials are ordinary owned image bytes of their properties. Each is
+written from the image by an `OperationData::Credential` write, which never
+skips an equal element. After the whole write succeeds, execution records the
+`CredentialTransition` its `CredentialEffects` name (`IpBackboneKey`,
+`IpDeviceAuthenticationCode`, or `IpPasswordHash { user_id }`). Successful
+reports and partial-failure errors therefore identify exactly which credential
+changes were confirmed. A sent write whose result is unknown is reflected by
 the mutation status, not falsely promoted to a confirmed transition.
 
 This overlay commissions a device's stored KNX/IP and IP Secure policy through
@@ -1002,17 +1002,20 @@ names tool-key rotation and application-security mode changes separately.
 Authenticated management may preserve an observed disabled application mode;
 mode selection is never inferred from the selected key alone.
 
-## Public plan and private preparation state
+## Compiled plan and preparation state
 
-The inspectable `CompiledProgram` deliberately contains no secrets. It may
-be logged, compared, fingerprinted, or shown in a TUI preview. In particular,
-group keys and management credentials never enter its sparse image, debug
-output, or fingerprints.
-
-When a normalized operation needs secret bytes, the public plan carries only
-an opaque `SecretPayloadReference`. The corresponding zeroizing byte buffer
-is private to `PreparedProgram`. Management credentials are retained at
-the same private boundary and have redacted debug output.
+The compiler and the client are trusted, and project storage is secured at
+another level. Key material written to the device (group keys, IP Secure
+credentials) is therefore ordinary compiled image content: it appears in the
+sparse image, its fingerprints, previews and debug output, and in the confirmed
+image that deployment records persist. A credential write
+(`OperationData::Credential`) differs from an image write only in its
+`CredentialEffects`: the credential transitions it confirms and, for the
+group-key table, the group address of each row so split transfers report
+exactly the keys that may have reached the device. Session management
+credentials (the selected Tool Key, FDSK and a replacement Tool Key) are not
+written from the image; they stay with `PreparedProgram` and have redacted
+debug output.
 
 ```rust
 let prepared = commissioner.prepare(input, options, &cancellation, on_event).await?;
@@ -1023,8 +1026,8 @@ let report = commissioner.execute(prepared, &cancellation, on_event).await?;
 
 `PreparedProgram` cannot be assembled by a caller from unrelated
 parts. It privately binds an immutable plan, the discovered target
-fingerprint, the originating process-local `KnxBus` instance, selected
-credentials, and secret payloads. The bus identity is absent from the public
+fingerprint, the originating process-local `KnxBus` instance and the selected
+session credentials. The bus identity is absent from the public
 plan and from debug output.
 Execution on another bus is rejected before credentials are installed or any
 bus I/O occurs. Execution on the originating bus consumes the value and
@@ -1033,13 +1036,11 @@ a device could be swapped after preview or a plan could be paired with
 credentials selected for another target.
 
 Offline compilation remains useful for diagnostics and previews. A plan
-containing secret references becomes executable only through commissioner
-preparation, which supplies their private payloads.
+becomes executable only through commissioner preparation.
 
 `ProgrammingInput::compile` and `PlannedProjectDevice::compile_preview` use
 the same input and stage contracts as live preparation. Input adapters resolve
-key material explicitly; the compiler builds private payloads only while
-validating their references, then exposes the non-secret program. An offline
+key material explicitly and the compiler places it in the image. An offline
 program cannot manufacture a `PreparedProgram` or select credentials by
 changing a flag.
 

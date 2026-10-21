@@ -1,6 +1,6 @@
 use super::security::validate_secure_intent;
 use crate::commissioning::catalog::profile::ResolvedProfile;
-use crate::commissioning::compiler::secrets::CredentialTransition;
+use crate::commissioning::compiler::credentials::CredentialTransition;
 use crate::commissioning::image::ImageSpace;
 use crate::commissioning::procedure::FunctionPropertyOperation;
 use crate::commissioning::procedure::OperationData;
@@ -75,7 +75,7 @@ fn plain_management_binds_public_ip_settings_with_dormant_security_controls() {
     let error = protected.bind_operands().err().expect("Data Secure still requires secure management");
     assert_eq!(error.message, "Data Secure programming requires secure management access");
     let output = compiler.bind_operands().expect("plain credentials permit dormant IP security controls");
-    let procedure = output.program.procedure.expect("IP procedure");
+    let procedure = output.procedure.expect("IP procedure");
     let guarded: Vec<_> = procedure
         .steps
         .iter()
@@ -241,7 +241,7 @@ fn authored_ip_property_writes_take_the_configured_feature_image() {
     let mut compiler = super::super::fixture_compiler(&input, &profile);
     compiler.select_controls().expect("product procedure selection");
     compiler.build_image().expect("IP feature image");
-    let program = compiler.bind_operands().expect("authored IP write binds").program;
+    let program = compiler.bind_operands().expect("authored IP write binds");
     let procedure = program.procedure.clone().expect("download procedure");
 
     let authored: Vec<_> = procedure
@@ -360,13 +360,13 @@ fn all_plain_ip_secure_families_need_no_private_payload_and_keep_order() {
     assert!(family5 < family3 && family3 < family4);
     assert!(!operations.iter().any(|operation| { matches!(property_write_pid(&operation.operation), Some(95 | 96)) }));
     assert!(!operations.iter().any(|operation| matches!(&operation.operation, ProcedureOperation::Write {
-        data: OperationData::Secret(_),
+        data: OperationData::Credential { .. },
         ..
     })));
 }
 
 #[test]
-fn secure_service_credentials_are_redacted_and_ordered_by_family() {
+fn secure_service_credentials_are_image_bytes_ordered_by_family() {
     let product = product(true);
     let mut profile = profile("MV-57B0");
     let configuration = configuration(&product, basic_secure_intent());
@@ -385,7 +385,6 @@ fn secure_service_credentials_are_redacted_and_ordered_by_family() {
         super::super::compile_fixture(&profile, &product, &configuration, None, Some(&secrets), |compiler| {
             compiler.contribute_ip()
         });
-    let payload = &image.secret_payload;
     let pid91 = operation_index(&operations, |operation| secret_write_pid(operation) == Some(91));
     let pid95 = operation_index(&operations, |operation| property_write_pid(operation) == Some(95));
     let pid96 = operation_index(&operations, |operation| property_write_pid(operation) == Some(96));
@@ -418,10 +417,10 @@ fn secure_service_credentials_are_redacted_and_ordered_by_family() {
     let transitions: BTreeSet<_> = operations
         .iter()
         .filter_map(|operation| match &operation.operation {
-            ProcedureOperation::Write { data: OperationData::Secret(reference), .. } => Some(*reference),
+            ProcedureOperation::Write { data: OperationData::Credential { effects, .. }, .. } => Some(effects),
             _ => None,
         })
-        .flat_map(|reference| payload.transitions(reference).expect("secret reference resolves").iter().copied())
+        .flat_map(|effects| effects.transitions.iter().copied())
         .collect();
     assert_eq!(
         transitions,
@@ -433,9 +432,12 @@ fn secure_service_credentials_are_redacted_and_ordered_by_family() {
         ])
     );
 
-    let debug = format!("{image:?} {operations:?} {payload:?}");
-    for secret in ["a1", "b2", "c3", "d4", "A1", "B2", "C3", "D4"] {
-        assert!(!debug.contains(secret));
+    // Credentials are ordinary owned image bytes, written from the image.
+    for (property_id, bytes) in [(91, vec![0xa1; 16]), (92, vec![0xb2; 16]), (93, [[0xc3; 16], [0xd4; 16]].concat())] {
+        let location = property_image_location(property_id);
+        let segment = image.image.range(&location, bytes.len() as u32).expect("credential image bytes exist");
+        assert_eq!(segment.data(), bytes.as_slice(), "PID {property_id}");
+        assert!(segment.mask().iter().all(|mask| *mask == 0xff), "PID {property_id}");
     }
 }
 
@@ -653,7 +655,7 @@ fn secret_write_pid(operation: &ProcedureOperation) -> Option<u16> {
     match operation {
         ProcedureOperation::Write {
             target: OperationTarget::Property { address: PropertyAddress::Extended { property_id, .. }, .. },
-            data: OperationData::Secret(_),
+            data: OperationData::Credential { .. },
             ..
         } => Some(*property_id),
         _ => None,
@@ -698,8 +700,8 @@ fn ip_secure_keys_are_never_split_across_telegrams() {
     let requirements: BTreeMap<_, _> = operations
         .iter()
         .filter_map(|step| match &step.operation {
-            ProcedureOperation::Write { target, data: OperationData::Secret(_), extent, .. } => Some((
-                secret_write_pid(&step.operation).expect("secret writes target OT11"),
+            ProcedureOperation::Write { target, data: OperationData::Credential { .. }, extent, .. } => Some((
+                secret_write_pid(&step.operation).expect("credential writes target OT11"),
                 (extent.property_elements, target.fitted_minimum_apdu(*extent).expect("sized key")),
             )),
             _ => None,

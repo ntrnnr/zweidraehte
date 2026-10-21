@@ -9,7 +9,7 @@ use crate::bus::driver::{BusCommand, TlOpenResult};
 use crate::bus::frames;
 use crate::commissioning::catalog::profile::ObjectSelector;
 use crate::commissioning::catalog::profile::ResourceId;
-use crate::commissioning::compiler::secrets::CredentialTransition;
+use crate::commissioning::compiler::credentials::CredentialTransition;
 use crate::commissioning::image::{ImageLocation, ImageSpace, SparseDeviceImage};
 use crate::commissioning::procedure::operands::{MemoryAddress, MemoryService, PropertyAddress};
 use crate::commissioning::procedure::*;
@@ -1636,43 +1636,29 @@ async fn failed_load_does_not_create_working_bytes_or_stamp_evidence() {
     assert!(session.images.stamp_observations.is_empty());
 }
 
-#[tokio::test]
-async fn invalid_private_payload_fails_before_connecting() {
-    let (bus, rx) = bus();
-    let mut session =
-        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
-    session.begin_execution();
-    let mut previous = SecretCommissioningPayload::default();
-    let reference = previous.insert([7; 16].into()).expect("key");
-    let controls = procedure(vec![
-        ProcedureOperation::Connect,
-        write(memory(0x200), OperationData::Secret(reference), 16),
-        ProcedureOperation::Disconnect,
-    ]);
-    let image = SparseDeviceImage::new();
-    let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
-        peer(rx, vec![])
-    );
-    assert!(result.is_err());
+/// A Tool Key written from the program image at standard memory 0x200.
+fn tool_key_credential() -> (SparseDeviceImage, OperationData) {
+    use crate::commissioning::compiler::credentials::CredentialEffects;
+    let location = ImageLocation { space: ImageSpace::StandardMemory, offset: 0x200 };
+    let mut image = SparseDeviceImage::new();
+    image.apply(&crate::commissioning::image::ImageSegment::owned(location.clone(), vec![7; 16]).expect("owned key"));
+    let data = OperationData::Credential {
+        location,
+        length: 16,
+        effects: CredentialEffects::transitions(vec![CredentialTransition::ToolKey]),
+    };
+    (image, data)
 }
 
 #[tokio::test]
-async fn confirmed_secret_transition_survives_cleanup_failure_without_caching_key_bytes() {
+async fn confirmed_credential_transition_survives_cleanup_failure() {
     let (bus, rx) = bus();
     let mut session =
         ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
     session.begin_execution();
-    let reference = session
-        .secret_payload
-        .insert_with_transitions([7; 16].into(), vec![CredentialTransition::ToolKey])
-        .expect("key");
-    let controls = procedure(vec![
-        ProcedureOperation::Connect,
-        write(memory(0x200), OperationData::Secret(reference), 16),
-        ProcedureOperation::Disconnect,
-    ]);
-    let image = SparseDeviceImage::new();
+    let (image, data) = tool_key_credential();
+    let controls =
+        procedure(vec![ProcedureOperation::Connect, write(memory(0x200), data, 16), ProcedureOperation::Disconnect]);
     let (result, ()) = tokio::join!(
         ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
         peer(rx, vec![
@@ -1684,25 +1670,20 @@ async fn confirmed_secret_transition_survives_cleanup_failure_without_caching_ke
     );
     result.expect_err("close fails");
     assert_eq!(session.effects.credential_transitions(), vec![CredentialTransition::ToolKey]);
-    assert!(session.images.known.is_empty());
+    // The written key is ordinary device knowledge, like any confirmed write.
+    let location = ImageLocation { space: ImageSpace::StandardMemory, offset: 0x200 };
+    assert_eq!(session.images.known.range(&location, 16).expect("known key").data(), [7; 16]);
 }
 
 #[tokio::test]
-async fn uncertain_secret_write_never_reports_a_credential_transition() {
+async fn uncertain_credential_write_never_reports_a_credential_transition() {
     let (bus, rx) = bus();
     let mut session =
         ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
     session.begin_execution();
-    let reference = session
-        .secret_payload
-        .insert_with_transitions([7; 16].into(), vec![CredentialTransition::ToolKey])
-        .expect("key");
-    let controls = procedure(vec![
-        ProcedureOperation::Connect,
-        write(memory(0x200), OperationData::Secret(reference), 16),
-        ProcedureOperation::Disconnect,
-    ]);
-    let image = SparseDeviceImage::new();
+    let (image, data) = tool_key_credential();
+    let controls =
+        procedure(vec![ProcedureOperation::Connect, write(memory(0x200), data, 16), ProcedureOperation::Disconnect]);
     let (result, ()) = tokio::join!(
         ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
         peer(rx, vec![

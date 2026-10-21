@@ -6,7 +6,6 @@ use crate::bus::BusError as ClientError;
 use zweidraehte_proto::address::IndividualAddress;
 
 use super::catalog::profile::AssociationTableEntrySize;
-use super::compiler::secrets::SecretPayloadReference;
 use super::image::ImageLocation;
 use super::procedure::{ControlPath, LoadControlCause};
 
@@ -45,20 +44,6 @@ pub enum ImageError {
 
     #[error("image range at {location:?} with length {length} is not completely defined")]
     MissingRange { location: ImageLocation, length: u32 },
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum SecretPayloadError {
-    #[error("group-key identities do not match the encoded 18-byte rows")]
-    GroupKeyRows,
-    #[error("a secret commissioning payload exceeds the 32-bit operation extent")]
-    SecretPayloadTooLarge,
-
-    #[error("prepared commissioning is missing {0:?}")]
-    MissingSecretPayload(SecretPayloadReference),
-
-    #[error("prepared secret {reference:?} contains {actual} bytes")]
-    SecretPayloadLength { reference: SecretPayloadReference, actual: usize },
 }
 
 /// Actionable compilation outcomes, independent of the compiler's internal phases.
@@ -167,12 +152,6 @@ impl std::error::Error for CompileError {}
 
 impl From<ImageError> for CompileError {
     fn from(error: ImageError) -> Self {
-        Self::invalid(error.to_string())
-    }
-}
-
-impl From<SecretPayloadError> for CompileError {
-    fn from(error: SecretPayloadError) -> Self {
         Self::invalid(error.to_string())
     }
 }

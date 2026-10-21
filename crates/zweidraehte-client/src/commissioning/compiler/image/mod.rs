@@ -12,7 +12,6 @@ use crate::commissioning::catalog::profile::{ProfileDisposition, ResolvedProfile
 use crate::commissioning::catalog::rules;
 use crate::commissioning::compiler::ProgramCompiler;
 use crate::commissioning::compiler::RecipeSet;
-use crate::commissioning::compiler::secrets::SecretCommissioningPayload;
 use crate::commissioning::error::CompileError;
 use crate::commissioning::error::ImageError;
 use crate::commissioning::image::{
@@ -288,7 +287,6 @@ pub struct ProgramImage {
     pub(crate) regions: Vec<NativeImageRegion>,
     pub(crate) manifest: DesiredProgrammingManifest,
     pub(crate) table_spans: Vec<CompiledTableSpan>,
-    pub(crate) secret_payload: SecretCommissioningPayload,
     pub(crate) product_fingerprint: [u8; 32],
     pub(crate) requirements: Vec<crate::commissioning::catalog::profile::ImageRequirement>,
 }
@@ -308,7 +306,6 @@ impl ProgramImage {
             regions: Vec::new(),
             manifest: Default::default(),
             table_spans: Vec::new(),
-            secret_payload: Default::default(),
             product_fingerprint: fingerprint_product(product),
             requirements: Vec::new(),
         }

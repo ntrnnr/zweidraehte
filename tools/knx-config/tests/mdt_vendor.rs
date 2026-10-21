@@ -443,14 +443,11 @@ fn published_partial_procedures_compile_for_real_bcu2_and_system_b_products() {
 fn operation_data_matches(plan: &CompiledProgram, data: &OperationData, expected: &[u8]) -> bool {
     match data {
         OperationData::Inline(data) => data == expected,
-        OperationData::Image { location, length } => plan
+        OperationData::Image { location, length } | OperationData::Credential { location, length, .. } => plan
             .image()
             .range(location, *length)
             .is_ok_and(|segment| segment.data() == expected && segment.mask().iter().all(|mask| *mask == u8::MAX)),
-        OperationData::Secret(_)
-        | OperationData::Buffer { .. }
-        | OperationData::ImageOverlay { .. }
-        | OperationData::ImageWindow { .. } => false,
+        OperationData::Buffer { .. } | OperationData::ImageOverlay { .. } | OperationData::ImageWindow { .. } => false,
     }
 }
 

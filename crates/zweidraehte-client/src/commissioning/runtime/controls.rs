@@ -1,6 +1,5 @@
 //! Ordered controls have one handler boundary, including implicit transfers.
 use super::{ExecutionSession, PropertyDescriptor};
-use crate::commissioning::compiler::secrets::validate_secret_bindings;
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::image::{ImageLocation, SparseDeviceImage};
 use crate::commissioning::procedure::operands::{MemoryAddress, OperationTarget, PropertyAddress, ServiceRead};
@@ -111,7 +110,6 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
         cancel: C,
         mut event: F,
     ) -> Result<ProcedureReport, Diagnostic> {
-        validate_secret_bindings(procedure, Some(&self.session.secret_payload))?;
         self.session.seed_property_object_types(procedure)?;
         self.session.images.begin_program(image, regions, &procedure.stamp_output);
         self.tool_state = procedure.initial_state;

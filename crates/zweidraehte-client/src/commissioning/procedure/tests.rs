@@ -5,13 +5,16 @@ use super::{
 use crate::commissioning::catalog::profile::ProcedureId;
 
 #[test]
-fn clipped_secret_property_writes_are_rejected_before_execution() {
+fn clipped_credential_property_writes_are_rejected_before_execution() {
     use super::{OperationData, OperationExtent, OperationTarget, WriteIntent};
-    use crate::commissioning::compiler::secrets::SecretCommissioningPayload;
+    use crate::commissioning::compiler::credentials::CredentialEffects;
+    use crate::commissioning::image::{ImageLocation, ImageSpace};
     use crate::commissioning::procedure::operands::PropertyAddress;
 
-    let mut payload = SecretCommissioningPayload::default();
-    let reference = payload.insert_for_test(vec![1, 2, 3].into());
+    let location = ImageLocation {
+        space: ImageSpace::Property { object: crate::commissioning::catalog::rules::ip::IP_OBJECT, property_id: 78 },
+        offset: 0,
+    };
     for (extent, clipped) in [
         (OperationExtent::property_window(3, 2).expect("clipped window"), true),
         (OperationExtent::property(3, 1), false),
@@ -23,18 +26,22 @@ fn clipped_secret_property_writes_are_rejected_before_execution() {
                     address: PropertyAddress::Indexed { object_index: 4, property_id: 78 },
                     start_element: 1,
                 },
-                data: OperationData::Secret(reference),
+                data: OperationData::Credential {
+                    location: location.clone(),
+                    length: 3,
+                    effects: CredentialEffects::default(),
+                },
                 extent,
                 policy: WriteIntent::Property { verify: false },
             },
             ProcedureOperation::Disconnect,
         ]);
         if clipped {
-            let error = controls.validate().expect_err("secret writes cannot use public padding readback");
-            assert_eq!(error.message, "secret property writes require complete elements");
+            let error = controls.validate().expect_err("credential writes cannot use padding readback");
+            assert_eq!(error.message, "credential property writes require complete elements");
             assert_eq!(error.path.as_deref(), Some(&controls.steps[1].path));
         } else {
-            controls.validate().expect("complete secret rows retain their ordinary geometry");
+            controls.validate().expect("complete credential rows retain their ordinary geometry");
         }
     }
 }

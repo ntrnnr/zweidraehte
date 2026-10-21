@@ -21,7 +21,6 @@ pub(in crate::commissioning) struct ImageState<'a> {
     device_stamps: BTreeMap<ResourceId, Vec<u8>>,
     stamp_output: Option<&'a crate::commissioning::procedure::DownloadStampOutput>,
     stamp_observations: SparseDeviceImage,
-    private_targets: Vec<ServiceRead>,
 }
 
 pub(super) struct CachedRead {
@@ -160,9 +159,6 @@ impl<'a> ImageState<'a> {
     pub(super) fn observe(&mut self, at: ImageLocation, bytes: &[u8]) -> Result<(), ImageError> {
         self.known.apply_owned(at.clone(), bytes.to_vec())?;
         self.capture_observation(&at, bytes)
-    }
-    pub(super) fn remember_private_target(&mut self, target: ServiceRead) {
-        self.private_targets.push(target);
     }
     pub(super) fn forget_cache(&mut self) {
         self.cache.clear();
@@ -335,9 +331,6 @@ impl<'a> ImageState<'a> {
                         .expect("ownership projection retains checked geometry"),
                 );
             }
-        }
-        for private in &self.private_targets {
-            Self::invalidate_image_target(&mut public, &private.target, private.extent, &self.pointers, false);
         }
         public
     }

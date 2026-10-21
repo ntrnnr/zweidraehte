@@ -245,7 +245,7 @@ fn disabled_security_empty_effective_roster_has_no_flags() {
 }
 
 #[test]
-fn standard_overlay_keeps_group_keys_out_of_public_image_and_debug() {
+fn standard_overlay_writes_group_keys_from_the_image() {
     let product = ProductData::from_mtxml_str(SYSTEM7_MTXML)
         .expect("fixture parses")
         .with_fixture_data_secure(true)
@@ -264,7 +264,6 @@ fn standard_overlay_keeps_group_keys_out_of_public_image_and_debug() {
         super::super::compile_fixture(&profile(), &product, &configuration, security.as_ref(), None, |compiler| {
             compiler.contribute_data_secure()
         });
-    let payloads = &image.secret_payload;
 
     use crate::commissioning::procedure::operands::PropertyAddress;
     use zweidraehte_proto::messages::apdu::load_control::LoadState;
@@ -323,25 +322,29 @@ fn standard_overlay_keeps_group_keys_out_of_public_image_and_debug() {
         .collect();
     assert_eq!(
         public_pids,
-        BTreeSet::from([pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, pid::security::GO_SECURITY_FLAGS,])
+        BTreeSet::from([
+            pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+            pid::security::GROUP_KEY_TABLE,
+            pid::security::GO_SECURITY_FLAGS,
+        ])
     );
-    assert!(!public_pids.contains(&pid::security::GROUP_KEY_TABLE));
 
-    let public_debug = format!("{:?} {:?}", image.image, operations);
-    assert!(!public_debug.contains("a7"));
-    assert!(!public_debug.contains("A7"));
-
-    let (secret_write, secret_target) = operations
+    let (location, effects, secret_target) = operations
         .iter()
         .find_map(|operation| match operation {
             ProcedureStep {
-                operation: ProcedureOperation::Write { data: OperationData::Secret(payload), target, .. },
+                operation:
+                    ProcedureOperation::Write { data: OperationData::Credential { location, effects, .. }, target, .. },
                 ..
-            } => Some((*payload, target)),
+            } => Some((location, effects, target)),
             _ => None,
         })
-        .expect("group-key write is represented by a secret reference");
-    assert_eq!(payloads.group_keys(secret_write).expect("compiled row identities"), [group_address]);
+        .expect("group-key write is a credential write from the image");
+    assert_eq!(effects.group_keys, [group_address]);
+    // The key row is ordinary owned image content.
+    let row = image.image.range(location, 18).expect("group-key row is in the image");
+    assert_eq!(&row.data()[2..], &key[..]);
+    assert!(row.mask().iter().all(|mask| *mask == 0xff));
     assert!(matches!(secret_target, OperationTarget::Property {
         address: PropertyAddress::Extended { property_id: pid::security::GROUP_KEY_TABLE, .. },
         start_element: 1,
@@ -358,10 +361,7 @@ fn standard_overlay_keeps_group_keys_out_of_public_image_and_debug() {
         },
         ..
     })));
-
-    let secret = payloads.resolve(secret_write).expect("secret resolves");
-    assert_eq!(&secret[..2], &[0, 1]);
-    assert_eq!(&secret[2..], &key);
+    assert_eq!(&row.data()[..2], &[0, 1]);
 }
 
 fn profile() -> ResolvedProfile {
@@ -626,18 +626,19 @@ fn group_key_exposure_identities_follow_encoded_rows_not_input_order() {
         super::super::compile_fixture(&profile(), &product, &configuration, security.as_ref(), None, |compiler| {
             compiler.contribute_data_secure()
         });
-    let reference = operations
+    let (location, length, effects) = operations
         .iter()
-        .find_map(|step| match step.operation {
-            ProcedureOperation::Write { data: OperationData::Secret(reference), .. } => Some(reference),
+        .find_map(|step| match &step.operation {
+            ProcedureOperation::Write { data: OperationData::Credential { location, length, effects }, .. } => {
+                Some((location, *length, effects))
+            }
             _ => None,
         })
         .expect("compiled GKT transfer");
-    let payload = &image.secret_payload;
-    assert_eq!(payload.group_keys(reference).expect("bound row identities"), [first, second]);
-    let encoded = payload.resolve(reference).expect("private rows");
-    assert_eq!(&encoded[..18], [&[0, 1][..], &[0x11; 16]].concat());
-    assert_eq!(&encoded[18..], [&[0, 2][..], &[0x22; 16]].concat());
+    assert_eq!(effects.group_keys, [first, second]);
+    let encoded = image.image.range(location, length).expect("group-key rows are in the image");
+    assert_eq!(&encoded.data()[..18], [&[0, 1][..], &[0x11; 16]].concat());
+    assert_eq!(&encoded.data()[18..], [&[0, 2][..], &[0x22; 16]].concat());
 }
 
 #[test]
@@ -670,7 +671,9 @@ fn group_key_rows_are_never_split_across_telegrams() {
     let (target, extent) = operations
         .iter()
         .find_map(|step| match &step.operation {
-            ProcedureOperation::Write { target, data: OperationData::Secret(_), extent, .. } => Some((target, *extent)),
+            ProcedureOperation::Write { target, data: OperationData::Credential { .. }, extent, .. } => {
+                Some((target, *extent))
+            }
             _ => None,
         })
         .expect("compiled GKT transfer");

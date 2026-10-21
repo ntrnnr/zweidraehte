@@ -822,8 +822,8 @@ fn compare_cache_policy(allow_cached_value: Option<bool>) -> CachePolicy {
 fn operation_data_length(data: &OperationData) -> u32 {
     match data {
         OperationData::Inline(data) => data.len() as u32,
-        OperationData::Secret(reference) => reference.byte_length(),
         OperationData::Image { length, .. }
+        | OperationData::Credential { length, .. }
         | OperationData::Buffer { length, .. }
         | OperationData::ImageOverlay { length, .. } => *length,
         OperationData::ImageWindow { maximum, .. } => *maximum,

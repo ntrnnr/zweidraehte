@@ -3,7 +3,7 @@
 use super::{AuthorizationPolicy, ExecutionSession, mutating_request_may_have_reached_device};
 use crate::bus::BusError as ClientError;
 use crate::bus::DeviceConnection;
-use crate::commissioning::compiler::secrets::CredentialTransition;
+use crate::commissioning::compiler::credentials::CredentialTransition;
 use crate::commissioning::error::{CleanupOperation, Diagnostic};
 use crate::commissioning::procedure::OperationExtent;
 use crate::commissioning::procedure::operands::{OperationTarget, PropertyAddress};

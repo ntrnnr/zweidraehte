@@ -23,13 +23,11 @@ impl Commissioner<'_> {
         PreparedProgram::check_bus(prepared.bus_instance_id(), self.bus.instance_id())
             .map_err(CommissioningError::before_execution)?;
         cancellation.check().map_err(CommissioningError::before_execution)?;
-        let PreparedProgram { plan, mut evidence, access, authorization, replacement_tool_key, secret_payload, .. } =
-            prepared;
+        let PreparedProgram { plan, mut evidence, access, authorization, replacement_tool_key, .. } = prepared;
         let config = self.management_config(evidence.target_max_apdu, plan.verify_mode(), authorization);
         let mut session = ExecutionSession::new(self.bus, plan.observed_target().previous_address, config, access)
             .map_err(CommissioningError::before_execution)?;
         session.serial_number = plan.observed_target().serial_number;
-        session.secret_payload = secret_payload;
         session.replacement_tool_key = replacement_tool_key;
         session.images = super::image_state::ImageState::with_baseline(evidence.baseline_known.take());
 

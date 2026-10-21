@@ -840,12 +840,10 @@ become unknown on reopening: Automatic selects a full download, while explicit
 partial and verified-differential requests need a new baseline. Independent
 section evidence, credential commitments, and secure sequence counters remain.
 
-Project `check`, dry-run, and TUI previews resolve private IP Secure material
-inside `ProjectPlanner`/`PlannedProjectDevice`, validate the same secret
-references as preparation, discard the private payload, and expose only the
-non-secret plan. `ProgrammingInput::compile` accepts the same explicit input
-and private key material, validates the selected operations, and exposes only
-opaque references in its inspectable result. Neither offline path is executable;
+Project `check`, dry-run, and TUI previews resolve IP Secure material inside
+`ProjectPlanner`/`PlannedProjectDevice` and place it in the plan's image, as
+preparation does. `ProgrammingInput::compile` accepts the same explicit input
+and key material and returns the same plan. Neither offline path is executable;
 only live commissioner preparation can create the bus- and target-bound value.
 
 ## TUI

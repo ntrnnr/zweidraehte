@@ -579,11 +579,9 @@ fn assert_tool_ip_image_and_procedure(plan: &CompiledProgram, relative: bool) {
             } if u16::from(*object_type) == 11 && extent.byte_length == 6 && extent.property_elements == Some(1)
         )
     }));
-    assert!(
-        !procedure.steps.iter().any(|step| {
-            matches!(&step.operation, ProcedureOperation::Write { data: OperationData::Secret(_), .. })
-        })
-    );
+    assert!(!procedure.steps.iter().any(|step| {
+        matches!(&step.operation, ProcedureOperation::Write { data: OperationData::Credential { .. }, .. })
+    }));
     assert!(plan.topology().domain_address.is_none());
 }
 

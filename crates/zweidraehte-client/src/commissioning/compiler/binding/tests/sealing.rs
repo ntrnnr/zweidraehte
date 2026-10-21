@@ -1,6 +1,6 @@
 use crate::bus::access::ManagementCredential;
 use crate::commissioning::compiler::binding::tests::preparation_support::{authorization_profile, partial_plan};
-use crate::commissioning::compiler::secrets::CredentialTransition;
+use crate::commissioning::compiler::credentials::CredentialTransition;
 use crate::commissioning::error::{CleanupOperation, Diagnostic, MutationStatus, TransportCause};
 use crate::commissioning::evidence::DifferentialDecision;
 use crate::commissioning::image::ImageLocation;
@@ -151,7 +151,6 @@ fn credential_bootstrap_preserves_disabled_mode_unless_enabling_is_requested() {
 
 #[test]
 fn preparation_requires_replacement_material_for_fdsk_bootstrap() {
-    use crate::commissioning::compiler::secrets::SecretCommissioningPayload;
     use crate::commissioning::runtime::credentials::ManagementAccess;
     use crate::commissioning::runtime::prepared::PreparedProgram;
     let mut fixture = partial_plan(authorization_profile("SystemB", None), ProgramSections::PARAMETERS);
@@ -180,7 +179,6 @@ fn preparation_requires_replacement_material_for_fdsk_bootstrap() {
             ManagementAccess::Fdsk([0xF0; 16].into()),
             AuthorizationPolicy::None,
             replacement.map(Into::into),
-            SecretCommissioningPayload::default(),
         );
         assert_eq!(bound.is_ok(), replacement.is_some());
         if replacement.is_none() {

@@ -135,9 +135,9 @@ impl ExecutionSession<'_> {
             }
             OperationTarget::Memory { .. } => unreachable!("memory address was resolved above"),
         }?;
-        self.observe_target(&resolved, extent, &bytes, context)?;
+        self.observe_target(&resolved, extent, &bytes)?;
         if resolved != *target {
-            self.observe_target(target, extent, &bytes, context)?;
+            self.observe_target(target, extent, &bytes)?;
         }
         Ok(bytes)
     }
@@ -209,9 +209,9 @@ impl ExecutionSession<'_> {
             }
             _ => Err(Diagnostic::new("operation target is read-only")),
         }?;
-        self.observe_target(&resolved, extent, data, context)?;
+        self.observe_target(&resolved, extent, data)?;
         if resolved != *target {
-            self.observe_target(target, extent, data, context)?;
+            self.observe_target(target, extent, data)?;
         }
         Ok(())
     }
@@ -221,13 +221,7 @@ impl ExecutionSession<'_> {
         target: &OperationTarget,
         extent: OperationExtent,
         bytes: &[u8],
-        context: TransferContext<'_>,
     ) -> Result<(), Diagnostic> {
-        // Private payloads and their verification reads never enter ordinary
-        // image knowledge or stamp snapshots, including on cleanup failure.
-        if matches!(context, TransferContext::Private { .. }) {
-            return Ok(());
-        }
         if let Some(location) = super::image_state::ImageState::target_location(target, extent) {
             self.images.observe(location, bytes)?;
         }
@@ -351,7 +345,7 @@ impl ExecutionSession<'_> {
             bytes.len() as u32,
             geometry.extent.property_elements.expect("property read carries elements"),
         );
-        self.observe_target(&target, observed_extent, &bytes, context)?;
+        self.observe_target(&target, observed_extent, &bytes)?;
         bytes.truncate(geometry.extent.byte_length as usize);
         Ok(bytes)
     }

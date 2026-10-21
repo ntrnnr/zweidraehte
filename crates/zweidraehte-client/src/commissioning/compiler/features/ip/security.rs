@@ -4,8 +4,8 @@ use super::KEY_LENGTH;
 use crate::commissioning::compiler::ProgramCompiler;
 use crate::commissioning::error::{CompileError, OverflowedTable};
 
-use super::{property_target, secret_property_write};
-use crate::commissioning::compiler::secrets::{CredentialTransition, SecretCommissioningPayload};
+use super::property_target;
+use crate::commissioning::compiler::credentials::{CredentialEffects, CredentialTransition};
 use crate::commissioning::procedure::operands::FUNCTION_PROPERTY_NOT_SUPPORTED_ERROR;
 use crate::commissioning::procedure::{
     FunctionPropertyOperation, OperationData, OperationExtent, ProcedureOperation, WritePolicy,
@@ -50,13 +50,14 @@ impl ProgramCompiler<'_> {
         // "function not supported" result and restore the exact mapping after the
         // call; no global error policy leaks into the following family.
         if security.routing == IpServiceSecurity::Secure {
-            let reference = secret_reference(
-                resolved.and_then(|resolved| resolved.backbone_key.as_ref()),
-                vec![CredentialTransition::IpBackboneKey],
-                "IP backbone key",
-                &mut self.image.secret_payload,
+            let key =
+                credential_bytes(resolved.and_then(|resolved| resolved.backbone_key.as_ref()), "IP backbone key")?;
+            self.add_credential_property_write(
+                pid::ip::BACKBONE_KEY,
+                key,
+                1,
+                CredentialEffects::transitions(vec![CredentialTransition::IpBackboneKey]),
             )?;
-            self.recipes.before_close(true, secret_property_write(pid::ip::BACKBONE_KEY, 1, reference, 1));
             self.add_image_property_write_secure(
                 pid::ip::MULTICAST_LATENCY_TOLERANCE,
                 security.multicast_latency_tolerance_ms.to_be_bytes().to_vec(),
@@ -100,14 +101,14 @@ impl ProgramCompiler<'_> {
         intent: &ToolManagedIpConfiguration,
         resolved: &ResolvedIpSecureConfiguration,
     ) -> Result<(), CompileError> {
-        let authentication = secret_reference(
-            resolved.device_authentication_code.as_ref(),
-            vec![CredentialTransition::IpDeviceAuthenticationCode],
-            "IP device authentication code",
-            &mut self.image.secret_payload,
+        let authentication =
+            credential_bytes(resolved.device_authentication_code.as_ref(), "IP device authentication code")?;
+        self.add_credential_property_write(
+            pid::ip::DEVICE_AUTHENTICATION_CODE,
+            authentication,
+            1,
+            CredentialEffects::transitions(vec![CredentialTransition::IpDeviceAuthenticationCode]),
         )?;
-        self.recipes
-            .before_close(true, secret_property_write(pid::ip::DEVICE_AUTHENTICATION_CODE, 1, authentication, 1));
 
         let count = u16::try_from(intent.password_users.len()).expect("password count validated");
         self.recipes.before_close(true, ProcedureOperation::Write {
@@ -144,8 +145,12 @@ impl ProgramCompiler<'_> {
                 transitions.push(CredentialTransition::IpPasswordHash { user_id });
             }
 
-            let reference = self.image.secret_payload.insert_with_transitions(hashes.into(), transitions)?;
-            self.recipes.before_close(true, secret_property_write(pid::ip::PASSWORD_HASHES, 1, reference, count));
+            self.add_credential_property_write(
+                pid::ip::PASSWORD_HASHES,
+                hashes,
+                count,
+                CredentialEffects::transitions(transitions),
+            )?;
         }
 
         Ok(())
@@ -221,15 +226,10 @@ impl ProgramCompiler<'_> {
     }
 }
 
-pub(super) fn secret_reference(
-    value: Option<&SecretBytes>,
-    transitions: Vec<CredentialTransition>,
-    name: &'static str,
-    payload: &mut SecretCommissioningPayload,
-) -> Result<crate::commissioning::compiler::secrets::SecretPayloadReference, CompileError> {
+pub(super) fn credential_bytes(value: Option<&SecretBytes>, name: &'static str) -> Result<Vec<u8>, CompileError> {
     let value = value.ok_or(CompileError::missing_evidence(format!("IP Secure preparation is missing {name}")))?;
     require_secret_length(value, name)?;
-    Ok(payload.insert_with_transitions(value.clone(), transitions)?)
+    Ok(value.as_slice().to_vec())
 }
 
 pub(super) fn require_secret_length(value: &SecretBytes, name: &'static str) -> Result<(), CompileError> {

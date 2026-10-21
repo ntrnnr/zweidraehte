@@ -106,8 +106,8 @@ Comparison preserves:
   cannot represent.
 
 Diagnostic procedure strings are useful evidence, but typed operations are the
-comparison boundary. Secret payloads do not become public image bytes or
-fingerprint material. Exact telegram order matters where the specification or
+comparison boundary. Key material is ordinary image content, as in the
+reference tool's image. Exact telegram order matters where the specification or
 a retained device witness requires it; equivalent text alone proves neither
 equivalent execution nor final device state.
 

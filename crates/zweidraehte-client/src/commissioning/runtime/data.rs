@@ -2,7 +2,7 @@
 use super::ExecutionSession;
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::image::{ImageLocation, ImageSpace};
-use crate::commissioning::procedure::operands::{MemoryAddress, ServiceRead};
+use crate::commissioning::procedure::operands::MemoryAddress;
 use crate::commissioning::procedure::{
     CachePolicy, Comparison, OperationData, OperationExtent, OperationTarget, WriteIntent,
 };
@@ -102,8 +102,8 @@ impl ExecutionSession<'_> {
                 return Ok(self.images.overlay_inline(location, *length, inline)?);
             }
             OperationData::Inline(bytes) => return Ok(bytes.clone()),
-            OperationData::Secret(_) => {
-                return Err(Diagnostic::new("secret writes require their prepared private payload"));
+            OperationData::Credential { .. } => {
+                return Err(Diagnostic::new("credential writes are transferred whole by their own path"));
             }
             OperationData::ImageWindow { .. } => {
                 return Err(Diagnostic::new("image windows must be split at their transfer boundary"));
@@ -242,45 +242,39 @@ impl ExecutionSession<'_> {
         intent: WriteIntent,
         tool_state: crate::commissioning::procedure::ToolState,
     ) -> Result<(), Diagnostic> {
-        if matches!(data, OperationData::Secret(_)) && extent.property_element_width.is_some() {
-            return Err(Diagnostic::new("secret property writes require complete elements"));
+        if matches!(data, OperationData::Credential { .. }) && extent.property_element_width.is_some() {
+            return Err(Diagnostic::new("credential property writes require complete elements"));
         }
         let policy = intent.resolve(tool_state, self.config.verify_mode);
         // Resolve once for this transfer, before comparing destination bytes.
         // Masked reads and all selected chunks share that observed address.
         let resolved = self.resolve_target(target, TransferContext::Public).await?;
         resolved.minimum_apdu(extent)?;
-        if let OperationData::Secret(reference) = data {
-            self.images.remember_private_target(ServiceRead { target: resolved.clone(), extent });
-            // Keep the zeroizing store owned throughout the awaited transfer,
-            // without copying its secret bytes to work around a mutable borrow.
-            let payload = std::mem::take(&mut self.secret_payload);
-            let result = async {
-                let bytes = payload.resolve(*reference).map_err(|error| Diagnostic::new(error.to_string()))?;
-                if bytes.len() != extent.byte_length as usize {
-                    return Err(Diagnostic::new("secret payload extent differs"));
-                }
-                let group_keys = payload.group_keys(*reference).map_err(|error| Diagnostic::new(error.to_string()))?;
-                if !group_keys.is_empty()
-                    && (!matches!(target, OperationTarget::Property { .. })
-                        || extent.property_elements.map(usize::from) != Some(group_keys.len()))
-                {
-                    return Err(Diagnostic::new("group-key payload requires complete property rows"));
-                }
-                let context = TransferContext::Private { group_keys };
-                self.write(&resolved, bytes, extent, policy, context).await?;
-                self.effects.record_credentials(
-                    payload
-                        .transitions(*reference)
-                        .map_err(|error| Diagnostic::new(error.to_string()))?
-                        .iter()
-                        .copied(),
-                );
-                Ok(())
+        if let OperationData::Credential { location, length, effects } = data {
+            // A credential is written whole from the program image: no element
+            // is skipped as already equal, so a confirmed write always advances
+            // exactly the credentials it names.
+            let segment =
+                self.images.transfer_image(location, *length).map_err(|error| Diagnostic::new(error.to_string()))?;
+            if segment.mask().iter().any(|mask| *mask != u8::MAX) {
+                return Err(Diagnostic::new("credential image bytes are not completely owned"));
             }
-            .await;
-            self.secret_payload = payload;
-            return result;
+            let bytes = segment.data().to_vec();
+            if bytes.len() != extent.byte_length as usize {
+                return Err(Diagnostic::new("credential image extent differs"));
+            }
+            let group_keys = effects.group_keys.as_slice();
+            if !group_keys.is_empty()
+                && (!matches!(target, OperationTarget::Property { .. })
+                    || extent.property_elements.map(usize::from) != Some(group_keys.len()))
+            {
+                return Err(Diagnostic::new("group-key credentials require complete property rows"));
+            }
+            let context =
+                if group_keys.is_empty() { TransferContext::Public } else { TransferContext::GroupKeys(group_keys) };
+            self.write(&resolved, &bytes, extent, policy, context).await?;
+            self.effects.record_credentials(effects.transitions.iter().copied());
+            return Ok(());
         }
         let location = match data {
             OperationData::Image { location, .. }
@@ -369,12 +363,7 @@ impl ExecutionSession<'_> {
             .await?;
             if resolved != *target {
                 let logical = shift_target(target, byte_start as u32, width as u32)?;
-                self.observe_target(
-                    &logical,
-                    chunk_extent,
-                    &bytes[byte_start..byte_start + length],
-                    TransferContext::Public,
-                )?;
+                self.observe_target(&logical, chunk_extent, &bytes[byte_start..byte_start + length])?;
             }
         }
         Ok(())

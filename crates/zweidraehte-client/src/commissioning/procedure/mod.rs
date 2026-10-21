@@ -11,7 +11,6 @@ use zweidraehte_project::ProgrammingSection;
 use zweidraehte_proto::messages::apdu::load_control::LoadState;
 
 use crate::commissioning::catalog::profile::{ObjectSelector, ProcedureId, ResourceId};
-use crate::commissioning::compiler::secrets::SecretPayloadReference;
 use crate::commissioning::image::{ImageLocation, ImageSpace};
 
 mod applicability;
@@ -78,10 +77,10 @@ impl NormalizedProcedure {
         let mut opened_session = false;
 
         for step in &self.steps {
-            if let ProcedureOperation::Write { data: OperationData::Secret(_), extent, .. } = &step.operation
+            if let ProcedureOperation::Write { data: OperationData::Credential { .. }, extent, .. } = &step.operation
                 && extent.property_element_width.is_some()
             {
-                return Err(CompileError::at(&step.path, "secret property writes require complete elements"));
+                return Err(CompileError::at(&step.path, "credential property writes require complete elements"));
             }
             if let ProcedureOperation::ReadIntoImage { extent, .. } | ProcedureOperation::LoadImage { extent, .. } =
                 &step.operation

@@ -8,6 +8,7 @@ use crate::commissioning::catalog::rules::ip::IP_OBJECT;
 #[cfg(test)]
 use crate::commissioning::catalog::rules::ip::prepare_classic_ip_profile;
 use crate::commissioning::compiler::ProgramCompiler;
+use crate::commissioning::compiler::credentials::CredentialEffects;
 use crate::commissioning::error::CompileError;
 use crate::commissioning::image::{ImageLocation, ImageSegment, ImageSpace};
 use crate::commissioning::input::ProgramSections;
@@ -244,21 +245,35 @@ impl ProgramCompiler<'_> {
         });
         Ok(())
     }
-}
 
-pub(super) fn secret_property_write(
-    property_id: u16,
-    start_element: u16,
-    payload: crate::commissioning::compiler::secrets::SecretPayloadReference,
-    elements: u16,
-) -> ProcedureOperation {
-    ProcedureOperation::Write {
-        target: property_target(property_id, start_element),
-        data: OperationData::Secret(payload),
-        extent: OperationExtent::property(payload.byte_length(), elements),
-        // Every KNXnet/IP Secure property write of the reference download is
-        // verified, credentials and element counts included.
-        policy: WriteIntent::Explicit(WritePolicy::ReadBack),
+    /// Write a credential from the program image like any other secure IP
+    /// property; `effects` names what its confirmed write replaces.
+    pub(in crate::commissioning::compiler) fn add_credential_property_write(
+        &mut self,
+        property_id: u16,
+        data: Vec<u8>,
+        elements: u16,
+        effects: CredentialEffects,
+    ) -> Result<(), CompileError> {
+        let byte_length = u32::try_from(data.len()).map_err(|_| {
+            CompileError::invalid(format!("credential property {property_id} is too large for the commissioning IR"))
+        })?;
+        if elements == 0 || data.is_empty() || data.len() % usize::from(elements) != 0 {
+            return Err(CompileError::invalid(format!(
+                "credential property {property_id} has {byte_length} bytes across {elements} elements"
+            )));
+        }
+        let location = property_image_location(property_id);
+        self.image.add_section(ProgrammingSection::Configuration, ImageSegment::owned(location.clone(), data)?);
+        self.recipes.before_close(true, ProcedureOperation::Write {
+            target: property_target(property_id, 1),
+            data: OperationData::Credential { location, length: byte_length, effects },
+            extent: OperationExtent::property(byte_length, elements),
+            // Every KNXnet/IP Secure property write of the reference download is
+            // verified, credentials and element counts included.
+            policy: WriteIntent::Explicit(WritePolicy::ReadBack),
+        });
+        Ok(())
     }
 }
 

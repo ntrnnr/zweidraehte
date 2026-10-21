@@ -334,9 +334,10 @@ fn status_preview_and_batch_share_evaluation_and_secure_peer_scope() {
     add_credential_commitments(&mut manifest, keys).expect("same credential commitments");
     assert_eq!(manifest, planned.desired_manifest);
     assert_eq!(preview.requirements(), planned.image_requirements);
-    for (_, region) in preview.projected_regions() {
-        assert!(!region.data().windows(16).any(|bytes| bytes == [0x33; 16]), "group key stays out of the public image");
-    }
+    assert!(
+        preview.projected_regions().any(|(_, region)| region.data().windows(16).any(|bytes| bytes == [0x33; 16])),
+        "the group key is ordinary preview image content"
+    );
 
     // A different semantic intent is evaluated anew: address assignment does
     // not retain the download's group keys, SIAT dependencies or image manifest.

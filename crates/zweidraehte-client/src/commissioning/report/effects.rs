@@ -1,6 +1,6 @@
 //! Physical effects belong to execution, independently of progress subscribers.
 
-use crate::commissioning::compiler::secrets::CredentialTransition;
+use crate::commissioning::compiler::credentials::CredentialTransition;
 use crate::commissioning::error::MutationStatus;
 use crate::commissioning::report::AddressAssignment;
 use std::collections::BTreeSet;

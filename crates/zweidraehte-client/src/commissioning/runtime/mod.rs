@@ -8,7 +8,6 @@
 //! revalidates that evidence before making changes.
 use crate::bus::BusError as ClientError;
 use crate::bus::{DeviceConnection, KnxBus};
-use crate::commissioning::compiler::secrets::SecretCommissioningPayload;
 use crate::commissioning::error::{Diagnostic, MutationStatus, mutating_request_may_have_reached_device};
 use crate::commissioning::procedure::LoadControlCause;
 use crate::commissioning::runtime::credentials::ManagementAccess;
@@ -100,7 +99,6 @@ pub(crate) struct ExecutionSession<'a> {
     initial_indexed_descriptors_active: bool,
     initial_typed_descriptors_active: bool,
     property_mask_object_types: BTreeMap<u8, u16>,
-    secret_payload: SecretCommissioningPayload,
 }
 
 /// The properties one procedure declaration describes.
@@ -134,19 +132,20 @@ struct PropertyDescriptor {
     writable: bool,
 }
 
-/// Private payload ownership remains with the caller across awaited I/O. This
-/// borrowed policy follows verification reads as well as the mutating chunks.
+/// What a transfer exposes besides its bytes. A group-key table write names
+/// its rows so every chunk that may reach the device reports exactly those
+/// keys; the policy follows verification reads as well as mutating chunks.
 #[derive(Clone, Copy)]
 pub(in crate::commissioning) enum TransferContext<'a> {
     Public,
-    Private { group_keys: &'a [GroupAddress] },
+    GroupKeys(&'a [GroupAddress]),
 }
 
 impl<'a> TransferContext<'a> {
     fn group_keys(self) -> &'a [GroupAddress] {
         match self {
             Self::Public => &[],
-            Self::Private { group_keys } => group_keys,
+            Self::GroupKeys(group_keys) => group_keys,
         }
     }
 }
@@ -190,7 +189,6 @@ impl<'a> ExecutionSession<'a> {
             initial_indexed_descriptors_active: true,
             initial_typed_descriptors_active: true,
             property_mask_object_types: BTreeMap::new(),
-            secret_payload: SecretCommissioningPayload::default(),
         })
     }
 

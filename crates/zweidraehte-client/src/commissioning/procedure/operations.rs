@@ -517,10 +517,14 @@ pub enum OperationData {
         length: u32,
         inline: Vec<u8>,
     },
-    /// Opaque reference into the private payload owned by a prepared
-    /// commissioning operation. The public plan exposes length and ordering,
-    /// never the referenced key bytes.
-    Secret(SecretPayloadReference),
+    /// Image bytes that replace credentials on the device. They are written
+    /// exactly like `Image`; `effects` names the credentials the confirmed
+    /// write advances and the group-key rows it may expose.
+    Credential {
+        location: ImageLocation,
+        length: u32,
+        effects: crate::commissioning::compiler::credentials::CredentialEffects,
+    },
     Image {
         location: ImageLocation,
         length: u32,

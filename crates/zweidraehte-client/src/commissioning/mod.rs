@@ -65,7 +65,7 @@ pub use catalog::{
     LoadedProgrammingCatalog, ProgrammingCatalog, ProgrammingCatalogLoadError, ProgrammingCatalogLoadRequest,
     ProgrammingCatalogProvenance, ProgrammingCatalogSource,
 };
-pub use compiler::secrets::{CredentialTransition, SecretPayloadReference};
+pub use compiler::credentials::{CredentialEffects, CredentialTransition};
 pub use error::{
     CleanupFailure, CleanupOperation, CommissioningError, Diagnostic, DiagnosticKind, LearnedTarget, MutationStatus,
     Result, TransportCause,

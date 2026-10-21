@@ -1122,16 +1122,14 @@ async fn rejected_writes_and_allocations_cannot_restore_invalidated_bytes_from_a
 }
 
 #[tokio::test]
-async fn published_image_excludes_secret_targets_and_unowned_readback_bits() {
+async fn published_image_retains_credentials_and_excludes_unowned_readback_bits() {
     for failed_private_write in [false, true] {
         let (bus, rx) = bus();
         let mut session =
             ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("session");
         session.begin_execution();
         let mut desired = SparseDeviceImage::new();
-        desired
-            .apply_owned(property_location(0), vec![0])
-            .expect("public placeholder must never reveal replacement key");
+        desired.apply_owned(property_location(0), vec![0xA7]).expect("owned credential byte");
         let public = ImageLocation {
             space: crate::commissioning::image::ImageSpace::Property {
                 object: crate::commissioning::catalog::profile::ObjectSelector::Index { index: 3 },
@@ -1140,12 +1138,15 @@ async fn published_image_excludes_secret_targets_and_unowned_readback_bits() {
             offset: 0,
         };
         desired.apply(&ImageSegment::new(public.clone(), vec![3], vec![0x0F]).expect("partial ownership"));
-        let secret = session.secret_payload.insert_for_test(vec![0xA7].into());
         let mut controls = procedure(vec![
             ProcedureOperation::Connect,
             ProcedureOperation::Write {
                 target: property(1),
-                data: OperationData::Secret(secret),
+                data: OperationData::Credential {
+                    location: property_location(0),
+                    length: 1,
+                    effects: crate::commissioning::compiler::credentials::CredentialEffects::default(),
+                },
                 extent: OperationExtent::property(1, 1),
                 policy: WriteIntent::Explicit(WritePolicy::ReadBack),
             },
@@ -1191,9 +1192,10 @@ async fn published_image_excludes_secret_targets_and_unowned_readback_bits() {
             ProcedureRunner::new(&mut session).execute(&desired, &[], &controls, || false, |_| {}),
             peer(rx, wire)
         );
-        result.expect("private write and later reads complete");
+        result.expect("credential write and later reads complete");
         let programmed_image = session.images.take_programmed_image();
-        assert_eq!(programmed_image.byte(&property_location(0)), None);
+        // Credentials publish like any other owned byte.
+        assert_eq!(programmed_image.byte(&property_location(0)), Some((0xA7, 0xFF)));
         assert_eq!(programmed_image.byte(&public), Some((5, 0x0F)));
     }
 }
@@ -2105,13 +2107,10 @@ async fn final_stamp_width_failure_keeps_confirmed_credential_transition() {
     let mut session =
         ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid config");
     session.begin_execution();
-    let key = session
-        .secret_payload
-        .insert_with_transitions([7; 16].into(), vec![CredentialTransition::ToolKey])
-        .expect("key");
+    let (image, key) = tool_key_credential();
     let mut controls = procedure(vec![
         ProcedureOperation::Connect,
-        write(memory(0x200), OperationData::Secret(key), 16),
+        write(memory(0x200), key, 16),
         ProcedureOperation::ReadIntoImage {
             target: property(1),
             image_location: property_location(0),
@@ -2127,7 +2126,6 @@ async fn final_stamp_width_failure_keeps_confirmed_credential_transition() {
         read: ServiceRead { target: property(1), extent: OperationExtent::property(5, 1) },
         optional: false,
     }]);
-    let image = SparseDeviceImage::new();
     let (result, ()) = tokio::join!(
         ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
         peer(rx, vec![
@@ -2957,12 +2955,17 @@ async fn split_group_key_writes_report_only_successful_or_uncertain_rows() {
         session.begin_execution();
         let groups = (1..=3).map(|number| GroupAddress::from_three_level(1, 1, number)).collect::<Vec<_>>();
         let bytes = (1..=3).flat_map(|number| [number; 18]).collect::<Vec<_>>();
-        let secret = session.secret_payload.insert_group_keys(bytes.into(), groups.clone()).expect("three key rows");
+        let mut image = SparseDeviceImage::new();
+        image.apply_owned(property_location(0), bytes).expect("owned key rows");
         let mut controls = procedure(vec![
             ProcedureOperation::Connect,
             ProcedureOperation::Write {
                 target: property(1),
-                data: OperationData::Secret(secret),
+                data: OperationData::Credential {
+                    location: property_location(0),
+                    length: 54,
+                    effects: crate::commissioning::compiler::credentials::CredentialEffects::group_keys(groups.clone()),
+                },
                 extent: OperationExtent::property(54, 3),
                 policy: WriteIntent::Explicit(WritePolicy::NoVerification),
             },
@@ -2994,7 +2997,6 @@ async fn split_group_key_writes_report_only_successful_or_uncertain_rows() {
             }
         }
         wire.push(Wire::Close(Ok(())));
-        let image = SparseDeviceImage::new();
         let (result, ()) = tokio::join!(
             ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
             peer(rx, wire)
@@ -3010,7 +3012,6 @@ async fn split_group_key_writes_report_only_successful_or_uncertain_rows() {
         }
         assert_eq!(*session.effects.group_key_exposures(), expected);
         assert!(session.effects.credential_transitions().is_empty());
-        assert_eq!(session.secret_payload.resolve(secret).expect("payload restored after every result").len(), 54);
     }
 }
 #[test]

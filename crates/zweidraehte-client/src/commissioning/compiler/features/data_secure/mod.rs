@@ -2,6 +2,7 @@
 //! Secret table writes retain opaque handles into the prepared payload.
 
 use crate::commissioning::compiler::ProgramCompiler;
+use crate::commissioning::compiler::credentials::CredentialEffects;
 use crate::commissioning::compiler::image::tables::ObjectTable;
 use crate::commissioning::error::CompileError;
 use crate::commissioning::input::ProgramSections;
@@ -131,17 +132,25 @@ impl ProgramCompiler<'_> {
         // established interoperable sequence: unload, then stream replacement
         // rows from element one without a separate element-zero write.
         if !group_keys.is_empty() {
-            let elements = property_element_count(group_keys.len(), 18, "group-key table")?;
-            // Encoding orders rows by address-table position. Bind the same
-            // public identities now so split writes never infer keys from bytes.
+            // Encoding orders rows by address-table position. Name the same
+            // identities now so split writes never infer keys from bytes.
             let mut addresses: Vec<_> = security.group_keys().map(|(address, _)| address).collect();
             addresses.sort_unstable();
-            let payload = self.image.secret_payload.insert_group_keys(group_keys, addresses)?;
+            if addresses.len().checked_mul(18) != Some(group_keys.len()) {
+                return Err(CompileError::invalid("group-key identities do not match the encoded 18-byte rows"));
+            }
+            let (location, extent) = self
+                .own_public_table(pid::security::GROUP_KEY_TABLE, group_keys.as_slice().to_vec(), 18)?
+                .expect("a nonempty group-key table owns image bytes");
 
             self.recipes.after_loading(ProcedureOperation::Write {
                 target: property_target(pid::security::GROUP_KEY_TABLE, 1),
-                data: OperationData::Secret(payload),
-                extent: OperationExtent::property(payload.byte_length(), elements),
+                data: OperationData::Credential {
+                    location,
+                    length: extent.byte_length,
+                    effects: CredentialEffects::group_keys(addresses),
+                },
+                extent,
                 policy: WriteIntent::Explicit(WritePolicy::NoVerification),
             });
         }

@@ -124,7 +124,7 @@ and image while compilation is in progress:
 
 1. Resolve the exact catalog profile and validate product compatibility.
 2. Select the requested controls and contributions.
-3. Build the public desired image, ownership masks and private payload.
+3. Build the desired image (key material included) and its ownership masks.
 4. Bind control operands and final verification reads.
 5. Validate the complete program and its APDU requirements.
 
@@ -181,7 +181,6 @@ placement and pending observations. There is no separate preview object graph.
 `CompiledProgram` becomes immutable when the compiler returns it. Its fields
 are writable only within the compiler; consumers inspect borrowed accessors.
 Network controls and conservative APDU bounds are complete before live binding.
-Offline compilation drops the private secret payload.
 
 `Commissioner::prepare` observes the live device and produces a `PreparedProgram`
 bound to its identity, credentials, evidence and bus instance. Live baseline
@@ -251,8 +250,8 @@ may affect the device, invalidation remains conservative.
 
 Final readback supplies missing evidence through compiler-bound public ranges.
 Properties and pointer resources require an exact readable catalog declaration.
-Unobserved or different owned bits produce `Unverified`. Private payloads and
-their verification reads are excluded from public images and stamps.
+Unobserved or different owned bits produce `Unverified`. Credential writes
+publish their bytes like every other confirmed write.
 
 `ExecutionEffects` owns mutation status, affected and cleared sections, address
 assignments with serial identity, credential transitions, group-key exposure and

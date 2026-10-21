@@ -2,7 +2,6 @@
 
 use crate::commissioning::catalog::profile::{ResourceId, ResourceManagementStyle};
 use crate::commissioning::compiler::program::CompiledProgram;
-use crate::commissioning::compiler::secrets::{SecretCommissioningPayload, validate_secret_bindings};
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::evidence::{DifferentialDecision, DiscoveredDevice};
 use crate::commissioning::image::SparseDeviceImage;
@@ -57,7 +56,6 @@ pub struct PreparedProgram {
     pub(super) access: ManagementAccess,
     pub(super) authorization: AuthorizationPolicy,
     pub(super) replacement_tool_key: Option<SecretBytes>,
-    pub(super) secret_payload: SecretCommissioningPayload,
 }
 
 impl PreparedProgram {
@@ -68,11 +66,7 @@ impl PreparedProgram {
         access: ManagementAccess,
         authorization: AuthorizationPolicy,
         replacement_tool_key: Option<SecretBytes>,
-        secret_payload: SecretCommissioningPayload,
     ) -> std::result::Result<Self, Diagnostic> {
-        if let Some(procedure) = plan.procedure() {
-            validate_secret_bindings(procedure, Some(&secret_payload))?;
-        }
         let observations = plan.observed_target();
         if access.credential() != observations.credential {
             return Err(Diagnostic::new("selected management credential differs from the compiled program"));
@@ -80,7 +74,7 @@ impl PreparedProgram {
         if plan.network().bootstrap_tool_key && replacement_tool_key.is_none() {
             return Err(Diagnostic::new("Tool-Key bootstrap has no replacement credential"));
         }
-        Ok(Self { bus_instance_id, plan, evidence, access, authorization, replacement_tool_key, secret_payload })
+        Ok(Self { bus_instance_id, plan, evidence, access, authorization, replacement_tool_key })
     }
 
     pub fn plan(&self) -> &CompiledProgram {
@@ -116,7 +110,6 @@ impl fmt::Debug for PreparedProgram {
             .field("access", &self.access)
             .field("authorization", &self.authorization)
             .field("replacement_tool_key", &self.replacement_tool_key)
-            .field("secret_payload", &self.secret_payload)
             .finish()
     }
 }

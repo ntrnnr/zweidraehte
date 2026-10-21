@@ -5,12 +5,10 @@ use crate::commissioning::compiler::ProgramCompiler;
 use crate::commissioning::error::CompileError;
 
 use crate::commissioning::catalog::rules::lifecycle::{compile_confirmed_unload, validate_download_stamp_output};
-use crate::commissioning::compiler::CompilationOutput;
 use crate::commissioning::compiler::features::IP_SECURE_CONFIGURATION_CONTRIBUTION;
 use crate::commissioning::compiler::image::ProgramImage;
 use crate::commissioning::compiler::program::network::NetworkProgram;
 use crate::commissioning::compiler::program::{CommissioningApduRequirements, CompiledProgram};
-use crate::commissioning::compiler::secrets::validate_secret_bindings;
 use crate::commissioning::input::security::DesiredDataSecurity;
 use crate::commissioning::input::{CommissioningIntent, ProgramSections, ProgrammingInput, TargetSelection};
 use crate::commissioning::procedure::operands::required_plaintext_apdu;
@@ -20,7 +18,7 @@ use std::collections::BTreeSet;
 use zweidraehte_project::IpServiceSecurity;
 
 impl ProgramCompiler<'_> {
-    pub(super) fn bind_operands(self) -> Result<CompilationOutput, CompileError> {
+    pub(super) fn bind_operands(self) -> Result<CompiledProgram, CompileError> {
         let Self { image: compiled_image, profile, input, recipes, standard_memory_service, restart_kind, .. } = self;
         let ProgrammingInput { device, intent, options, facts, desired_data_security } = input;
         let (intent, facts, desired_data_security) = (*intent, *facts, *desired_data_security);
@@ -51,15 +49,8 @@ impl ProgramCompiler<'_> {
             DesiredDataSecurity::Preserve
         };
 
-        let ProgramImage {
-            image,
-            mut manifest,
-            regions: native_regions,
-            secret_payload,
-            product_fingerprint,
-            table_spans,
-            ..
-        } = compiled_image;
+        let ProgramImage { image, mut manifest, regions: native_regions, product_fingerprint, table_spans, .. } =
+            compiled_image;
 
         let address = configuration.individual_address.as_bytes();
         manifest.insert(
@@ -149,7 +140,6 @@ impl ProgramCompiler<'_> {
             {
                 return Err(CompileError::invalid("Data Secure programming requires secure management access"));
             }
-            validate_secret_bindings(procedure, Some(&secret_payload))?;
         }
 
         let verify_mode = match profile.feature("VerifyMode")? {
@@ -196,7 +186,7 @@ impl ProgramCompiler<'_> {
             product_fingerprint,
         };
 
-        Ok(CompilationOutput { program: Self::finish(plan)?, secret_payload })
+        Self::finish(plan)
     }
 
     pub(in crate::commissioning::compiler) fn finish(
