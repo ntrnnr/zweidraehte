@@ -966,16 +966,20 @@ Master-Data occurrence zero. On the AN163 wire this is one-based instance 1;
 PID 5 carries ten-octet load-control writes and one-octet load-state reads via
 extended property services. This is the sole typed fallback when a classic
 mask omits that standard profile-module resource from its own resource list.
-Security IO unloads before the ordinary application load begins, but its
-replacement tables are loaded only after every ordinary load machine has
-completed. This order matters because PID 61 refers to the committed Group
-Object Table; completing Security IO first can leave an initial download
-inoperable even though every write succeeds. After Security IO
-`CompleteLoading`, commissioning sends an extended function-property command
-to that same object and instance, PID 51, payload `00 00 01`, to enforce
-Security Mode enabled, then performs the final restart. This idempotent
-final-state check is separate from the earlier FDSK bootstrap, Tool-Key
-rotation, PID 59 advance, and reconnect.
+Security IO follows the reference download's own insertion cursors. It
+unloads right after the last authored unload. Its load block (StartLoading,
+the PID 54 count reset and rows, the PID 53 key rows, the PID 61 flags and
+CompleteLoading) goes before the first ordinary LoadCompleted; without one it
+goes before the last restart, erase-code-one master reset or disconnect, in
+that order. Every table write is verified. Enabling and disabling Data Secure
+use the same block; only the tables differ.
+
+Loading the tables does not change Security Mode. Before an application
+download that enables Data Secure, commissioning opens a session of its own,
+reads Security Mode (Object Type 17, PID 51) and enables it only if it is
+off. The download then follows. A device observed with the mode already on
+receives no such session. This step is separate from the FDSK bootstrap,
+Tool-Key rotation, PID 59 advance and reconnect.
 
 An installed Tool Key establishes live sequence agreement before management
 traffic, reusing only a fresh same-credential sync as described above. Initial

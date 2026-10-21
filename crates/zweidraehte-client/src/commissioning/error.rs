@@ -85,6 +85,10 @@ pub enum OverflowedTable {
     /// The KNXnet/IP tunnelling-user table (bounded by
     /// `MaxTunnelingUserEntries`).
     IpTunnellingUsers,
+    /// A Data Secure table: the SIAT (bounded by
+    /// `MaxSecurityIndividualAddressEntries`) or the group-key table (bounded
+    /// by `MaxSecurityGroupKeyTableEntries`). An undeclared bound is zero.
+    SecureCommunicationPartners,
 }
 
 /// A compilation diagnostic retains the authored control that caused it.

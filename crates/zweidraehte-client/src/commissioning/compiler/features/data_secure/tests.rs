@@ -290,26 +290,21 @@ fn standard_overlay_writes_group_keys_from_the_image() {
             if record.poll.as_ref().is_some_and(|(_, state)| *state == LoadState::Loaded))
         })
         .expect("Security IO commits");
-    let enable_security_mode = operations.iter().position(|operation| matches!(operation,
-        ProcedureStep {
-            operation: ProcedureOperation::FunctionProperty(FunctionPropertyOperation::Invoke {
-                address: PropertyAddress::Extended { object_type: zweidraehte_proto::dpt::InterfaceObjectType::Security, object_instance: 1, property_id: pid::security::SECURITY_MODE },
-                data,
-                ..
-            }), .. } if data.as_slice() == [0, 0, 1])).expect("Security Mode enable exists");
-    assert_eq!(enable_security_mode, complete_loading + 1);
-    let ProcedureOperation::FunctionProperty(FunctionPropertyOperation::Invoke { effect, .. }) =
-        &operations[enable_security_mode].operation
-    else {
-        unreachable!("selected security-mode command")
-    };
-    assert_eq!(effect, &LoadEffect::Invalidate {
-        location: ImageLocation {
-            space: ImageSpace::Property { object: SECURITY_OBJECT, property_id: pid::security::SECURITY_MODE },
-            offset: 0,
-        },
-        length: 1,
-    });
+    // Loading the tables leaves the Security Mode alone; the session before
+    // the download switches it.
+    assert!(!operations.iter().any(|operation| matches!(operation, ProcedureStep {
+        operation: ProcedureOperation::FunctionProperty(FunctionPropertyOperation::Invoke {
+            address: PropertyAddress::Extended { property_id: pid::security::SECURITY_MODE, .. },
+            ..
+        }),
+        ..
+    })));
+    // The block ends with Security IO's own commit, and its table writes are
+    // verified like every other reference property write.
+    assert!(operations[..=complete_loading].iter().all(|operation| match &operation.operation {
+        ProcedureOperation::Write { policy, .. } => *policy == WriteIntent::Property { verify: true },
+        _ => true,
+    }));
 
     let public_pids: BTreeSet<_> = image
         .image
@@ -374,7 +369,7 @@ fn profile() -> ResolvedProfile {
 }
 
 #[test]
-fn disabled_security_preserves_native_source_cursor_order() {
+fn security_preserves_native_source_cursor_order() {
     use crate::commissioning::compiler::binding::procedure::{ProcedureInput, parse};
     use crate::commissioning::compiler::selection::{ProcedureApplicability, ProcedureComposition};
     use crate::commissioning::procedure::operands::StandardMemoryService;
@@ -389,6 +384,7 @@ fn disabled_security_preserves_native_source_cursor_order() {
     // These sequences distinguish the native integer-cursor behavior from a
     // first-completion rule and from reloading after all ordinary commits.
     // In particular, equal cursor positions put reload before security unload.
+    // Enabling security uses the same cursors; its rows follow the reset.
     let cases: &[(&[&str], &[&str])] = &[
         (&["unload", "load", "delay", "complete", "later-delay", "complete"], &[
             "connect",
@@ -497,111 +493,138 @@ fn disabled_security_preserves_native_source_cursor_order() {
         serial_number: None,
         credential: ManagementCredential::ToolKey,
     };
-    let input = super::super::fixture_input(&product, &configuration, None, None)
-        .data_security(DesiredDataSecurity::Disabled)
+    let group_address = GroupAddress::from_three_level(1, 2, 3);
+    let mut keyed_configuration = configuration.clone();
+    keyed_configuration.links.push(GroupLink { group_address, com_object: 1 });
+    let security =
+        SecurityConfig::new(vec![(group_address, [0xA7; 16])], vec![(IndividualAddress::new(1, 1, 11), 42)], vec![
+            GroupObjectSecurity { com_object: 1, protection: GroupObjectProtection::AuthenticationConfidentiality },
+        ]);
+
+    for enabled in [false, true] {
+        let input = if enabled {
+            super::super::fixture_input(&product, &keyed_configuration, Some(&security), None)
+                .data_security(DesiredDataSecurity::Enabled)
+        } else {
+            super::super::fixture_input(&product, &configuration, None, None)
+                .data_security(DesiredDataSecurity::Disabled)
+        }
         .facts(ProgrammingFacts::new(target).with_data_security(ObservedDataSecurity::Disabled));
 
-    for &(names, expected) in cases {
-        let mut controls = vec![LoadControl::LdCtrlConnect(LdCtrlConnect::default())];
-        controls.extend(names.iter().map(|name| match *name {
-            "unload" => LoadControl::LdCtrlUnload(LdCtrlUnload { lsm_idx: Some(1), ..Default::default() }),
-            "load" => LoadControl::LdCtrlLoad(LdCtrlLoad { lsm_idx: Some(1), ..Default::default() }),
-            "complete" => {
-                LoadControl::LdCtrlLoadCompleted(LdCtrlLoadCompleted { lsm_idx: Some(1), ..Default::default() })
-            }
-            "delay" | "later-delay" => LoadControl::LdCtrlDelay(LdCtrlDelay {
-                milli_seconds: if *name == "delay" { 17 } else { 19 },
-                ..Default::default()
-            }),
-            "restart" => LoadControl::LdCtrlRestart(LdCtrlRestart::default()),
-            "reset" => LoadControl::LdCtrlMasterReset(LdCtrlMasterReset { erase_code: 1, ..Default::default() }),
-            _ => unreachable!("fixed source vocabulary"),
-        }));
-        if !matches!(names.last(), Some(&"restart" | &"reset")) {
-            controls.push(LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()));
-        }
-        let empty = BTreeMap::new();
-        let source = ProcedureInput {
-            profile: &profile,
-            procedure_id: ProcedureSourceId::Generated { name: "security-cursor-fixture".into() },
-            composition: ProcedureComposition::Default,
-            controls: &controls,
-            product_merge_fragments: Vec::new(),
-            secondary_merge_fragments: Vec::new(),
-            secondary_product_procedure: None,
-            secondary_application_id: None,
-            module_procedures: Vec::new(),
-            feature_property_objects: Vec::new(),
-            omitted_controls: Vec::new(),
-            parameter_values: &empty,
-            applicability: ProcedureApplicability::full(),
-            configuration_anchor: profile.configuration_anchor(),
-            download_stamps: Vec::new(),
-            property_parameters: &[],
-            peiprog_identity_reference: false,
-            application_program_2_present: false,
-            progress_messages_by_reference: &BTreeMap::new(),
-            progress_messages_by_id: &BTreeMap::new(),
-            message_sources: Vec::new(),
-            initial_tool_state: ToolState::default(),
-            standard_memory_service: StandardMemoryService::Classic,
-            restart_kind: RestartKind::Basic,
-            application_identity: ApplicationIdentity::default(),
-            secondary_application_identity: None,
-            extended_property_descriptions: false,
-        };
-        let parsed = parse(&source).expect("source parses");
-        let mut compiler = super::super::fixture_compiler(&input, &profile);
-        let crate::commissioning::compiler::selection::RecipeSet::Exact { procedure, .. } = &mut compiler.recipes
-        else {
-            unreachable!("fixture has an exact recipe")
-        };
-        *procedure = Box::new(parsed);
-        compiler.contribute_data_secure().expect("disabled security contributes");
-        let crate::commissioning::compiler::selection::RecipeSet::Exact { procedure, .. } = compiler.recipes else {
-            unreachable!("fixture has an exact recipe")
-        };
-        let program = procedure.finish(&profile, &compiler.image.image, false).expect("native-shaped controls bind");
-        let actual: Vec<_> = program
-            .steps
-            .iter()
-            .map(|step| {
-                let security = step.path.contribution == Some("standard-data-secure");
-                match &step.operation {
-                    ProcedureOperation::Connect => "connect",
-                    ProcedureOperation::Disconnect => "disconnect",
-                    ProcedureOperation::LoadRecord(record) => match (security, record.bytes[0]) {
-                        (true, 4) => "security-unload",
-                        (true, 1) => "security-start",
-                        (true, 2) => "security-complete",
-                        (false, 4) => "unload",
-                        (false, 1) => "load",
-                        (false, 2) => "complete",
-                        _ => unreachable!("fixture load event"),
-                    },
-                    ProcedureOperation::Write { target, .. } if security => {
-                        if target == &property_target(pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 0) {
-                            "security-reset"
-                        } else if target == &property_target(pid::security::GO_SECURITY_FLAGS, 1) {
-                            "security-flags"
-                        } else {
-                            unreachable!("fixture security property")
-                        }
-                    }
-                    ProcedureOperation::Delay { milliseconds } => {
-                        if *milliseconds == 17 {
-                            "delay"
-                        } else {
-                            "later-delay"
-                        }
-                    }
-                    ProcedureOperation::Restart { .. } => "restart",
-                    ProcedureOperation::MasterReset { .. } => "reset",
-                    _ => unreachable!("fixture operation"),
+        for &(names, expected) in cases {
+            let expected: Vec<&str> = expected
+                .iter()
+                .flat_map(|name| match *name {
+                    "security-reset" if enabled => vec!["security-reset", "security-siat", "security-keys"],
+                    name => vec![name],
+                })
+                .collect();
+            let mut controls = vec![LoadControl::LdCtrlConnect(LdCtrlConnect::default())];
+            controls.extend(names.iter().map(|name| match *name {
+                "unload" => LoadControl::LdCtrlUnload(LdCtrlUnload { lsm_idx: Some(1), ..Default::default() }),
+                "load" => LoadControl::LdCtrlLoad(LdCtrlLoad { lsm_idx: Some(1), ..Default::default() }),
+                "complete" => {
+                    LoadControl::LdCtrlLoadCompleted(LdCtrlLoadCompleted { lsm_idx: Some(1), ..Default::default() })
                 }
-            })
-            .collect();
-        assert_eq!(actual, expected, "source {names:?}");
+                "delay" | "later-delay" => LoadControl::LdCtrlDelay(LdCtrlDelay {
+                    milli_seconds: if *name == "delay" { 17 } else { 19 },
+                    ..Default::default()
+                }),
+                "restart" => LoadControl::LdCtrlRestart(LdCtrlRestart::default()),
+                "reset" => LoadControl::LdCtrlMasterReset(LdCtrlMasterReset { erase_code: 1, ..Default::default() }),
+                _ => unreachable!("fixed source vocabulary"),
+            }));
+            if !matches!(names.last(), Some(&"restart" | &"reset")) {
+                controls.push(LoadControl::LdCtrlDisconnect(LdCtrlDisconnect::default()));
+            }
+            let empty = BTreeMap::new();
+            let source = ProcedureInput {
+                profile: &profile,
+                procedure_id: ProcedureSourceId::Generated { name: "security-cursor-fixture".into() },
+                composition: ProcedureComposition::Default,
+                controls: &controls,
+                product_merge_fragments: Vec::new(),
+                secondary_merge_fragments: Vec::new(),
+                secondary_product_procedure: None,
+                secondary_application_id: None,
+                module_procedures: Vec::new(),
+                feature_property_objects: Vec::new(),
+                omitted_controls: Vec::new(),
+                parameter_values: &empty,
+                applicability: ProcedureApplicability::full(),
+                configuration_anchor: profile.configuration_anchor(),
+                download_stamps: Vec::new(),
+                property_parameters: &[],
+                peiprog_identity_reference: false,
+                application_program_2_present: false,
+                progress_messages_by_reference: &BTreeMap::new(),
+                progress_messages_by_id: &BTreeMap::new(),
+                message_sources: Vec::new(),
+                initial_tool_state: ToolState::default(),
+                standard_memory_service: StandardMemoryService::Classic,
+                restart_kind: RestartKind::Basic,
+                application_identity: ApplicationIdentity::default(),
+                secondary_application_identity: None,
+                extended_property_descriptions: false,
+            };
+            let parsed = parse(&source).expect("source parses");
+            let mut compiler = super::super::fixture_compiler(&input, &profile);
+            let crate::commissioning::compiler::selection::RecipeSet::Exact { procedure, .. } = &mut compiler.recipes
+            else {
+                unreachable!("fixture has an exact recipe")
+            };
+            *procedure = Box::new(parsed);
+            compiler.contribute_data_secure().expect("security contributes");
+            let crate::commissioning::compiler::selection::RecipeSet::Exact { procedure, .. } = compiler.recipes else {
+                unreachable!("fixture has an exact recipe")
+            };
+            let program =
+                procedure.finish(&profile, &compiler.image.image, false).expect("native-shaped controls bind");
+            let actual: Vec<_> = program
+                .steps
+                .iter()
+                .map(|step| {
+                    let security = step.path.contribution == Some("standard-data-secure");
+                    match &step.operation {
+                        ProcedureOperation::Connect => "connect",
+                        ProcedureOperation::Disconnect => "disconnect",
+                        ProcedureOperation::LoadRecord(record) => match (security, record.bytes[0]) {
+                            (true, 4) => "security-unload",
+                            (true, 1) => "security-start",
+                            (true, 2) => "security-complete",
+                            (false, 4) => "unload",
+                            (false, 1) => "load",
+                            (false, 2) => "complete",
+                            _ => unreachable!("fixture load event"),
+                        },
+                        ProcedureOperation::Write { target, .. } if security => {
+                            if target == &property_target(pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 0) {
+                                "security-reset"
+                            } else if target == &property_target(pid::security::GO_SECURITY_FLAGS, 1) {
+                                "security-flags"
+                            } else if target == &property_target(pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 1) {
+                                "security-siat"
+                            } else if target == &property_target(pid::security::GROUP_KEY_TABLE, 1) {
+                                "security-keys"
+                            } else {
+                                unreachable!("fixture security property")
+                            }
+                        }
+                        ProcedureOperation::Delay { milliseconds } => {
+                            if *milliseconds == 17 {
+                                "delay"
+                            } else {
+                                "later-delay"
+                            }
+                        }
+                        ProcedureOperation::Restart { .. } => "restart",
+                        ProcedureOperation::MasterReset { .. } => "reset",
+                        _ => unreachable!("fixture operation"),
+                    }
+                })
+                .collect();
+            assert_eq!(actual, expected, "enabled {enabled}, source {names:?}");
+        }
     }
 }
 
@@ -679,4 +702,22 @@ fn group_key_rows_are_never_split_across_telegrams() {
         .expect("compiled GKT transfer");
     assert_eq!((extent.byte_length, extent.property_elements), (36, Some(2)));
     assert_eq!(target.fitted_minimum_apdu(extent).expect("sized row"), 5 + 18);
+}
+
+#[test]
+fn undeclared_security_capacity_is_zero_and_overflow_is_a_table_overflow() {
+    use crate::commissioning::error::{CompileErrorKind, OverflowedTable};
+
+    // An archive without the capacity attributes holds empty tables; any row
+    // overflows it, reported like every other Data Secure table overflow.
+    let product = ProductData::from_mtxml_str(SYSTEM7_MTXML).expect("fixture parses").with_fixture_data_secure(true);
+    validate_product_capabilities(&product, 0, 0).expect("empty tables fit an undeclared capacity");
+    for (group_keys, siat) in [(1, 0), (0, 1)] {
+        let error = validate_product_capabilities(&product, group_keys, siat).expect_err("any row overflows zero");
+        assert_eq!(error.kind, CompileErrorKind::TableOverflow(OverflowedTable::SecureCommunicationPartners));
+    }
+    let product = product.with_fixture_security_capacities(1, 2, 0);
+    validate_product_capabilities(&product, 2, 1).expect("rows within capacity fit");
+    let error = validate_product_capabilities(&product, 3, 1).expect_err("three keys exceed two");
+    assert!(error.message.starts_with("group-key table has 3 entries"), "{}", error.message);
 }

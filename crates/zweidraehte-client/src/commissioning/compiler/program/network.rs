@@ -5,6 +5,9 @@ pub struct NetworkProgram {
     pub(crate) assign_address: bool,
     pub(crate) clear_programming_mode: bool,
     pub(crate) enable_data_security: bool,
+    /// Switch the Security Mode on in a session of its own before the
+    /// application download, when the device may not have it on yet.
+    pub(crate) enable_data_security_before_download: bool,
     pub(crate) bootstrap_tool_key: bool,
     pub(crate) restart: bool,
     pub(crate) advance_sending_sequence: bool,

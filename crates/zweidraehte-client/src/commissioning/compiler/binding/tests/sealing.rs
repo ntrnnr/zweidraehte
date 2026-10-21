@@ -150,6 +150,33 @@ fn credential_bootstrap_preserves_disabled_mode_unless_enabling_is_requested() {
 }
 
 #[test]
+fn keyed_download_switches_security_mode_before_the_application_only_when_needed() {
+    // The tables never change the Security Mode. A keyed download switches it
+    // in a session before the application unless the device is observed with
+    // it already on; disabling and plaintext management never switch it.
+    let mut draft = partial_plan(authorization_profile("SystemB", None), ProgramSections::PARAMETERS);
+    draft.facts.target.as_mut().expect("fixture target").credential = ManagementCredential::ToolKey;
+    for (desired, observed, expected) in [
+        (DesiredDataSecurity::Enabled, ObservedDataSecurity::Disabled, true),
+        (DesiredDataSecurity::Enabled, ObservedDataSecurity::Unknown, true),
+        (DesiredDataSecurity::Enabled, ObservedDataSecurity::Enabled, false),
+        (DesiredDataSecurity::Preserve, ObservedDataSecurity::Disabled, false),
+    ] {
+        draft.desired_data_security = desired;
+        draft.facts.data_security = observed;
+        let program =
+            crate::commissioning::compiler::ProgramCompiler::finish(draft.clone()).expect("keyed download compiles");
+        assert!(!program.network().enable_data_security && !program.network().bootstrap_tool_key);
+        assert_eq!(program.network().enable_data_security_before_download, expected, "{desired:?} {observed:?}");
+    }
+    draft.desired_data_security = DesiredDataSecurity::Enabled;
+    draft.facts.data_security = ObservedDataSecurity::Disabled;
+    draft.facts.target.as_mut().expect("fixture target").credential = ManagementCredential::Plaintext;
+    let program = crate::commissioning::compiler::ProgramCompiler::finish(draft).expect("plain download compiles");
+    assert!(!program.network().enable_data_security_before_download);
+}
+
+#[test]
 fn preparation_requires_replacement_material_for_fdsk_bootstrap() {
     use crate::commissioning::runtime::credentials::ManagementAccess;
     use crate::commissioning::runtime::prepared::PreparedProgram;

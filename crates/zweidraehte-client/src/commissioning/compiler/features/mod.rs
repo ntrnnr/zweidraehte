@@ -77,25 +77,8 @@ impl RecipeSet {
         }
     }
 
-    pub(super) fn before_loading(&mut self, operation: ProcedureOperation) {
-        self.emit(
-            ProcedureCompilationPhase::BeforeFirstStartLoading,
-            "standard-data-secure",
-            ProgrammingSection::GroupCommunication,
-            true,
-            operation,
-        );
-    }
-    pub(super) fn after_loading(&mut self, operation: ProcedureOperation) {
-        self.emit(
-            ProcedureCompilationPhase::AfterLastCompleteLoading,
-            "standard-data-secure",
-            ProgrammingSection::GroupCommunication,
-            true,
-            operation,
-        );
-    }
-    pub(super) fn unload_disabled_security(&mut self, operation: ProcedureOperation) {
+    /// Security IO unload at the reference unload cursor.
+    pub(super) fn security_unload(&mut self, operation: ProcedureOperation) {
         self.emit(
             ProcedureCompilationPhase::NativeSecurityUnload,
             "standard-data-secure",
@@ -104,7 +87,8 @@ impl RecipeSet {
             operation,
         );
     }
-    pub(super) fn reload_disabled_security(&mut self, operation: ProcedureOperation, handlers: Vec<ErrorHandler>) {
+    /// Security IO load block at the reference reload cursor.
+    pub(super) fn security_reload(&mut self, operation: ProcedureOperation, handlers: Vec<ErrorHandler>) {
         if let RecipeSet::Exact { procedure: program, .. } = self {
             program.insert_builtin_with_handlers(
                 ProcedureCompilationPhase::NativeSecurityLoad,

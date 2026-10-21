@@ -35,6 +35,7 @@ impl Commissioner<'_> {
             session.revalidate_execution(&plan, &mut evidence, cancellation).await?;
             session.begin_execution();
             session.execute_network(&plan, &evidence, cancellation, &mut event).await?;
+            session.execute_security_mode(&plan, cancellation, &mut event).await?;
             let procedure = session.execute_application(&plan, cancellation, &mut event).await?;
             let device_stamps = if plan.intent().download_mode().is_some() {
                 cancellation.check()?;

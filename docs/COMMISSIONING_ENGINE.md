@@ -983,21 +983,22 @@ one-octet state reads. `ExecutionSession` recognizes only this exact typed
 fallback. Any other object-type load target without a resolved resource fails
 before execution rather than borrowing the Security IO rule.
 
-Security IO unloads at the boundary before the first ordinary `StartLoading`,
-but its replacement load cycle starts only after the last ordinary
-`CompleteLoading`. PID 61 refers to the committed Group Object Table, so
-completing Security IO first can accept every management write while leaving
-a factory download inoperable until the procedure is repeated.
+Security IO follows the reference download's insertion cursors, which are
+resolved before final source filtering. It unloads right after the last
+authored unload. Its load block goes before the first ordinary
+`CompleteLoading`, falling back to the last restart, erase-code-one master
+reset or disconnect. Its table writes are verified. Enabling and disabling
+use the same block.
 
-The Security IO phase then has an exact final-state tail. After its own
-`CompleteLoading`, the commissioner sends `A_FunctionPropertyExt_Command` to
-Object Type 17, wire instance 1, PID 51 `SECURITY_MODE`, with payload
-`00 00 01` (`Reserved=0`, write service ID 0, enable), followed by the final
-session restart. The command is intentional idempotent enforcement:
-unloading/reloading Security IO does not itself erase the installed Tool Key
-or disable Security Mode.
+Security Mode is not part of the compiled procedure. For a keyed download
+that enables Data Secure, the network program sets
+`enable_data_security_before_download` unless the device is observed with the
+mode already on. Execution then opens a session before the application, reads
+Object Type 17 PID 51 and sends `A_FunctionPropertyExt_Command` with payload
+`00 00 01` only when the mode is off. Unloading and reloading Security IO
+neither erases the installed Tool Key nor changes Security Mode.
 
-This tail is distinct from tool-key bootstrap. The compiled network program
+This session is distinct from tool-key bootstrap. The compiled network program
 names tool-key rotation and application-security mode changes separately.
 Authenticated management may preserve an observed disabled application mode;
 mode selection is never inferred from the selected key alone.

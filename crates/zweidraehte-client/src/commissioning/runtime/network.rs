@@ -24,6 +24,38 @@ use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::apdu::device::OpenMediumDomainAddress;
 
 impl ExecutionSession<'_> {
+    /// Switch the Security Mode on before an application download, in a
+    /// management session of its own. The mode is read again first, as the
+    /// reference download does; a device that already has it on receives
+    /// nothing. The tables follow in the download, so a failure after the
+    /// switch leaves group communication uncertain.
+    pub(super) async fn execute_security_mode<F: FnMut(CommissioningEvent)>(
+        &mut self,
+        plan: &CompiledProgram,
+        cancellation: &CommissioningCancellation,
+        event: &mut F,
+    ) -> CommissioningResult<()> {
+        if !plan.network().enable_data_security_before_download {
+            return Ok(());
+        }
+        cancellation.check()?;
+        event(CommissioningEvent::Stage(CommissioningStage::BootstrappingSecurity));
+        self.connect().await?;
+        let result = async {
+            let mode = crate::commissioning::runtime::prepare::profile::read_data_security_mode(self).await?;
+            if mode != crate::commissioning::input::security::ObservedDataSecurity::Enabled {
+                self.enable_data_security().await?;
+                self.effects.record_sections([ProgrammingSection::GroupCommunication]);
+                event(CommissioningEvent::ProgrammingSectionsMutated {
+                    sections: vec![ProgrammingSection::GroupCommunication],
+                });
+            }
+            Ok(())
+        }
+        .await;
+        self.finish(result).await
+    }
+
     pub(super) async fn execute_network<F: FnMut(CommissioningEvent)>(
         &mut self,
         plan: &CompiledProgram,

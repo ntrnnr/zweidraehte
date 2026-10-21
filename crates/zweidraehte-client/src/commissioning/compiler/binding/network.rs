@@ -47,6 +47,17 @@ pub(crate) fn compile(program: &CompiledProgram) -> NetworkProgram {
             (CommissioningIntent::AssignAddress, TargetSelection::KnownPreviousAddress(_))
         );
 
+    // Loading the Data Secure tables does not change the Security Mode. The
+    // reference download reads the mode before every application download
+    // and switches it only when it differs; the factory bootstrap enables it
+    // separately above. A device observed with the mode already on needs no
+    // session at all; any other observation is read again at execution.
+    let enable_data_security_before_download = !bootstrap
+        && program.intent.download_mode().is_some()
+        && program.desired_data_security == DesiredDataSecurity::Enabled
+        && program.facts.data_security != ObservedDataSecurity::Enabled
+        && observed.credential == ManagementCredential::ToolKey;
+
     NetworkProgram {
         assign_domain: domain_configuration,
         assign_address: address_change,
@@ -54,6 +65,7 @@ pub(crate) fn compile(program: &CompiledProgram) -> NetworkProgram {
         enable_data_security: bootstrap
             && program.desired_data_security == DesiredDataSecurity::Enabled
             && program.facts.data_security == ObservedDataSecurity::Disabled,
+        enable_data_security_before_download,
         bootstrap_tool_key: bootstrap,
         restart: !bootstrap && (domain_configuration || address_change || clear_programming_mode),
         advance_sending_sequence,
@@ -110,7 +122,7 @@ pub(crate) fn required_apdu(
             program.programming_mode.as_ref().ok_or_else(|| network_error("programming mode resource is absent"))?;
         required = required.max(read.minimum_apdu()?);
     }
-    if network.enable_data_security {
+    if network.enable_data_security || network.enable_data_security_before_download {
         required = required.max(9);
     }
     if network.bootstrap_tool_key {
