@@ -10,7 +10,7 @@ use super::configuration::{
 };
 use super::model::ParameterValue;
 use crate::product::{MaterializedModule, ProductData, SelectedProduct};
-use crate::schema::ParameterTypeDef;
+use crate::schema::{ParameterRef, ParameterTypeDef};
 
 /// Why a value participates in the ordered programming overlays.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,7 +18,8 @@ pub enum ParameterSource<'a> {
     /// Seed ordinary memory parameters and designated default union members.
     Default,
     /// Apply an exact visible ParameterRef. Keep competing references until
-    /// encoding: different semantic values can produce identical bytes.
+    /// encoding: different semantic values can produce identical bytes. The
+    /// overlay's [`ReferenceWriteOrder`] decides which competitor is stored.
     Reference(Cow<'a, str>),
     /// Apply an authored base edit, hidden legacy patch or property value.
     Value,
@@ -40,6 +41,65 @@ pub struct ParameterOverlay<'a> {
     pub value: Cow<'a, ParameterValue>,
     pub parameter_type: Option<&'a ParameterTypeDef>,
     pub size_bits: u16,
+    /// Present exactly for [`ParameterSource::Reference`] overlays.
+    pub reference_order: Option<ReferenceWriteOrder>,
+}
+
+// ================================================================================
+// Competing visible references
+// ================================================================================
+
+/// Where one visible ParameterRef falls among the others for its stored
+/// parameter when a download writes them.
+///
+/// Every active reference owns its own value, and the reference tool writes
+/// each active reference's value to the shared storage in turn, so the last
+/// write survives. References are written in this order:
+///
+/// 1. references without a numeric `Tag` before tagged ones;
+/// 2. tagged references by ascending tag;
+/// 3. untagged references by the ascending number in their `_R-<n>` suffix.
+///
+/// Two tagged references with equal tags have no defined order, and neither
+/// does an untagged reference whose ID lacks a number. Those pairs are
+/// incomparable, so callers must refuse them when their bytes differ.
+/// Witness: M-011F_A-0693-24 P-11, whose always-visible R-12 stores 1 and
+/// whose hidden R-126 (visible while P-12 is 0) stores 4; the download
+/// stores 4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReferenceWriteOrder {
+    tag: Option<u32>,
+    number: Option<u32>,
+}
+
+impl ReferenceWriteOrder {
+    /// Read the order from a reference's own ID and `Tag`, without any module
+    /// instance prefix.
+    pub fn of(reference: &ParameterRef) -> ReferenceWriteOrder {
+        // An unsigned decimal tag counts; any other text behaves as no tag.
+        // TODO: also accept a leading `-0`, which the reference tool's
+        // integer parser reads as zero; no corpus product uses one.
+        let tag = reference.tag.as_deref().and_then(|tag| tag.trim().parse().ok());
+        let number = reference.id.rsplit_once("_R-").and_then(|(_, number)| number.parse().ok());
+        ReferenceWriteOrder { tag, number }
+    }
+}
+
+impl PartialOrd for ReferenceWriteOrder {
+    /// `Greater` means written later, so its value survives.
+    fn partial_cmp(&self, other: &ReferenceWriteOrder) -> Option<std::cmp::Ordering> {
+        use std::cmp::Ordering;
+        match (self.tag, other.tag) {
+            (Some(left), Some(right)) if left == right => None,
+            (Some(left), Some(right)) => Some(left.cmp(&right)),
+            (Some(_), None) => Some(Ordering::Greater),
+            (None, Some(_)) => Some(Ordering::Less),
+            (None, None) => match (self.number, other.number) {
+                (Some(left), Some(right)) => Some(left.cmp(&right)),
+                _ => None,
+            },
+        }
+    }
 }
 
 /// An exact requested selector, including controls hidden from the editor.
@@ -145,6 +205,7 @@ impl<'a> EvaluatedProduct<'a> {
                     Cow::Borrowed(&location.id),
                     Cow::Borrowed(self.parameter_value(&location.id)?),
                     ParameterSource::Default,
+                    None,
                 )
             });
 
@@ -154,13 +215,13 @@ impl<'a> EvaluatedProduct<'a> {
             for reference in self.device.visible_param_refs() {
                 let id = Cow::Borrowed(reference.ref_id.as_str());
                 seen.insert(id.clone());
-                references.push((id, Cow::Borrowed(reference.id.as_str())));
+                references.push((id, Cow::Borrowed(reference.id.as_str()), Some(ReferenceWriteOrder::of(reference))));
             }
         } else {
             for parameter in &self.settings.parameters {
                 let id = Cow::Borrowed(parameter.id.as_str());
                 if seen.insert(id.clone()) {
-                    references.push((id.clone(), id));
+                    references.push((id.clone(), id, None));
                 }
             }
         }
@@ -169,27 +230,31 @@ impl<'a> EvaluatedProduct<'a> {
                 Cow::Owned(format!("{}::{}", parameter.module.instance_id, parameter.reference.ref_id));
             let reference = Cow::Owned(format!("{}::{}", parameter.module.instance_id, parameter.reference.id));
             seen.insert(id.clone());
-            references.push((id, reference));
+            references.push((id, reference, Some(ReferenceWriteOrder::of(parameter.reference))));
         }
         for location in self.product.parameters().iter().filter(|location| location.legacy_patch_always) {
             let id = Cow::Borrowed(location.id.as_str());
             if seen.insert(id.clone()) {
-                references.push((id.clone(), id));
+                references.push((id.clone(), id, None));
             }
         }
         for location in self.product.property_parameters() {
             let id = Cow::Borrowed(location.id.as_str());
             if seen.insert(id.clone()) {
-                references.push((id.clone(), id));
+                references.push((id.clone(), id, None));
             }
         }
-        let references = references.into_iter().filter_map(|(id, value_id)| {
+        let references = references.into_iter().filter_map(|(id, value_id, order)| {
             let value = self
                 .parameter_value(&value_id)
                 .map(Cow::Borrowed)
                 .or_else(|| effective_default(self.device, &value_id).map(Cow::Owned))?;
-            let source = if id == value_id { ParameterSource::Value } else { ParameterSource::Reference(value_id) };
-            self.overlay(id, value, source)
+            let (source, order) = if id == value_id {
+                (ParameterSource::Value, None)
+            } else {
+                (ParameterSource::Reference(value_id), order)
+            };
+            self.overlay(id, value, source, order)
         });
         // Active references behind hidden blocks normally hold their
         // defaults, which the memory seed already covers. A calculation can
@@ -197,13 +262,11 @@ impl<'a> EvaluatedProduct<'a> {
         // default rather than competing with it.
         let calculated = self.device.hidden_active_edits().into_iter().filter_map(|(id, reference)| {
             let value = self.parameter_value(&reference)?;
-            self.overlay(Cow::Owned(id), Cow::Borrowed(value), ParameterSource::Derived)
+            self.overlay(Cow::Owned(id), Cow::Borrowed(value), ParameterSource::Derived, None)
         });
-        let derived = self
-            .device
-            .derived_parameter_values()
-            .into_iter()
-            .filter_map(|(id, value)| self.overlay(Cow::Owned(id), Cow::Borrowed(value), ParameterSource::Derived));
+        let derived = self.device.derived_parameter_values().into_iter().filter_map(|(id, value)| {
+            self.overlay(Cow::Owned(id), Cow::Borrowed(value), ParameterSource::Derived, None)
+        });
         defaults.chain(references).chain(calculated).chain(derived)
     }
 
@@ -234,6 +297,7 @@ impl<'a> EvaluatedProduct<'a> {
         id: Cow<'s, str>,
         value: Cow<'s, ParameterValue>,
         source: ParameterSource<'s>,
+        reference_order: Option<ReferenceWriteOrder>,
     ) -> Option<ParameterOverlay<'s>> {
         let size_bits = self
             .product
@@ -249,7 +313,7 @@ impl<'a> EvaluatedProduct<'a> {
             .get_configuration_parameter_info(&id)
             .and_then(|info| self.device.get_parameter_type(&info.type_id))
             .map(|parameter_type| &parameter_type.type_def);
-        Some(ParameterOverlay { id, source, value, parameter_type, size_bits })
+        Some(ParameterOverlay { id, source, value, parameter_type, size_bits, reference_order })
     }
 
     /// Transfer the resolved product and its module roster without cloning.

@@ -6,7 +6,9 @@
 //! commissioning compiler remains responsible for image and procedure safety.
 
 use base64::Engine;
-use zweidraehte_ets_files::runtime::evaluation::{EvaluatedProduct, ParameterSource};
+use zweidraehte_ets_files::runtime::evaluation::{
+    EvaluatedProduct, ParameterOverlay, ParameterSource, ReferenceWriteOrder,
+};
 use zweidraehte_ets_files::runtime::model::ParameterValue as ModelValue;
 use zweidraehte_ets_files::schema::{LoadControl, ParameterTypeDef};
 use zweidraehte_proto::com_object::{ComObjectFlagFields, ComObjectType};
@@ -83,10 +85,8 @@ impl ResolvedDevice {
         // intentionally limited to procedure dependencies instead of copying the
         // thousands of dynamic-page controls found in large products.
         let procedure_parameters = collect_procedure_parameters(&evaluated)?;
-        let mut references = std::collections::HashMap::new();
+        let mut encoded = Vec::new();
         for parameter in evaluated.parameter_overlays() {
-            let id = parameter.id;
-
             // Picture and none-typed parameters have no storage width. The
             // reference formatter skips parameters without bits even where
             // they name a memory location (witness: M-0234_A-0014-01 P-16).
@@ -100,18 +100,24 @@ impl ResolvedDevice {
             let derived = parameter.source == ParameterSource::Derived;
             let context = if derived { "derived parameter" } else { "parameter" };
             let value = encode_value(&parameter.value, parameter.parameter_type, parameter.size_bits)
-                .map_err(|reason| Error::ProductData(format!("{context} {id}: {reason}")))?;
+                .map_err(|reason| Error::ProductData(format!("{context} {}: {reason}", parameter.id)))?;
+            encoded.push((parameter, value));
+        }
 
-            // Compare bytes, not semantic values: rounding and enumerations can
-            // make different reference values agree on the same stored value.
-            if matches!(parameter.source, ParameterSource::Reference(_))
-                && let Some(previous) = references.insert(id.clone(), value.clone())
-            {
-                if previous != value {
-                    return Err(Error::ProductData(format!(
-                        "visible ParameterRefs assign conflicting values to stored parameter {id}"
-                    )));
+        // Several visible references may share one stored parameter. Each is
+        // written in turn and the last write survives, so the latest
+        // reference's bytes take the first reference's position.
+        let winners = winning_references(&encoded)?;
+        let mut written = std::collections::HashSet::new();
+        for (parameter, value) in encoded {
+            let id = parameter.id;
+            let derived = parameter.source == ParameterSource::Derived;
+            if matches!(parameter.source, ParameterSource::Reference(_)) {
+                if !written.insert(id.clone()) {
+                    continue;
                 }
+                let value = winners.get(&id).expect("every reference overlay has a winner").clone();
+                configuration.parameters.push(ParameterValue { id: id.into_owned(), value });
                 continue;
             }
             if derived && let Some(existing) = configuration.parameters.iter_mut().find(|parameter| parameter.id == id)
@@ -154,6 +160,43 @@ impl ResolvedDevice {
         let (product, modules) = evaluated.into_parts();
         Ok(ResolvedDevice { product, configuration, procedure_parameters, modules })
     }
+}
+
+/// Select the bytes each referenced stored parameter finally holds.
+///
+/// Bytes, not semantic values, are compared: rounding and enumerations can make
+/// different reference values agree on the same stored value. Only the
+/// references no other competitor follows can survive; when several such
+/// unordered references disagree, the stored value is undefined.
+fn winning_references<'a>(
+    encoded: &[(ParameterOverlay<'a>, Vec<u8>)],
+) -> Result<std::collections::HashMap<std::borrow::Cow<'a, str>, Vec<u8>>> {
+    let mut competitors = std::collections::HashMap::<_, Vec<_>>::new();
+    for (parameter, value) in encoded {
+        if matches!(parameter.source, ParameterSource::Reference(_)) {
+            competitors.entry(parameter.id.clone()).or_default().push((parameter.reference_order, value));
+        }
+    }
+
+    competitors
+        .into_iter()
+        .map(|(id, candidates)| {
+            let written_later = |order: Option<ReferenceWriteOrder>, other: Option<ReferenceWriteOrder>| {
+                matches!((order, other), (Some(order), Some(other)) if other > order)
+            };
+            let mut last = candidates
+                .iter()
+                .filter(|(order, _)| !candidates.iter().any(|(other, _)| written_later(*order, *other)))
+                .map(|(_, value)| *value);
+            let value = last.next().expect("a finite non-empty set has an unfollowed element");
+            if last.any(|other| other != value) {
+                return Err(Error::ProductData(format!(
+                    "visible ParameterRefs assign conflicting values to stored parameter {id} without a defined write order"
+                )));
+            }
+            Ok((id, value.clone()))
+        })
+        .collect()
 }
 
 fn collect_procedure_parameters(
@@ -526,6 +569,123 @@ mod tests {
                 assert_eq!(parameters[1].value, 1.0_f32.to_be_bytes());
             }
         }
+    }
+
+    /// Resolve the stored byte of `P-1` for authored references and a dynamic
+    /// tree in which a `P-2` selector (default 0) may reveal some of them.
+    fn stored_mode(references: &str, dynamic: &str) -> Result<Vec<ParameterValue>> {
+        const PREFIX: &str = "M-00FA_A-0306-02-0000";
+        let xml = zweidraehte_ets_files::product::fixtures::SYSTEM7_MTXML
+            .replace(
+                "        <Parameters>",
+                r#"        <ParameterTypes>
+          <ParameterType Id="M-00FA_A-0306-02-0000_PT-1" Name="Mode"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+        </ParameterTypes>
+        <Parameters>
+          <Parameter Id="M-00FA_A-0306-02-0000_P-2" Name="Selector" ParameterType="M-00FA_A-0306-02-0000_PT-1" Text="Selector" Value="0" />"#,
+            )
+            .replace(
+                "</Parameters>",
+                &format!(
+                    r#"</Parameters><ParameterRefs>
+                  <ParameterRef Id="{PREFIX}_P-2_R-11" RefId="{PREFIX}_P-2" />{references}
+                </ParameterRefs>"#
+                ),
+            )
+            .replace(
+                "</ApplicationProgram>",
+                &format!(
+                    r#"<Dynamic><ChannelIndependentBlock><ParameterBlock Id="{PREFIX}_PB-1" Text="Main">
+                  <ParameterRefRef RefId="{PREFIX}_P-2_R-11" />{dynamic}
+                </ParameterBlock></ChannelIndependentBlock></Dynamic></ApplicationProgram>"#
+                ),
+            );
+        let knx = zweidraehte_ets_files::runtime::parser::parse_application_program(&xml).expect("fixture parses");
+        let selected = SelectedProduct::from_document(knx, None, None).expect("product selection");
+        let device = Device::from_product(Arc::new(selected), None, None);
+        let installation = InstallationConfiguration {
+            identity: crate::configuration::DeviceIdentity {
+                desired_address: zweidraehte_proto::address::IndividualAddress::new(1, 1, 1),
+                serial_number: None,
+            },
+            data_secure_enabled: false,
+            object_memberships: Vec::new(),
+            net_security: Default::default(),
+            topology: Default::default(),
+            max_apdu: None,
+        };
+        let resolved = ResolvedDevice::from_evaluated(device.evaluate(&[]).expect("default evaluation"), installation)?;
+        Ok(resolved
+            .configuration
+            .parameters
+            .into_iter()
+            .filter(|parameter| parameter.id == format!("{PREFIX}_P-1"))
+            .collect())
+    }
+
+    #[test]
+    fn competing_visible_references_store_the_last_written_value() {
+        // Shape of M-011F_A-0693-24 P-11: an always-visible reference and a
+        // hidden one revealed by the selector's default. The higher reference
+        // number is written later, compared numerically (R-126 after R-12).
+        let parameters = stored_mode(
+            r#"<ParameterRef Id="M-00FA_A-0306-02-0000_P-1_R-126" RefId="M-00FA_A-0306-02-0000_P-1" Access="None" Value="4" />
+               <ParameterRef Id="M-00FA_A-0306-02-0000_P-1_R-12" RefId="M-00FA_A-0306-02-0000_P-1" Value="1" />"#,
+            r#"<ParameterRefRef RefId="M-00FA_A-0306-02-0000_P-1_R-12" />
+               <choose ParamRefId="M-00FA_A-0306-02-0000_P-2_R-11"><when test="0">
+                 <ParameterRefRef RefId="M-00FA_A-0306-02-0000_P-1_R-126" />
+               </when></choose>"#,
+        )
+        .expect("ordered references resolve");
+        let values = parameters.iter().map(|parameter| parameter.value.clone()).collect::<Vec<_>>();
+        assert_eq!(values, [vec![0], vec![4]], "the seed, then one reference entry");
+
+        // Numeric order, not text order: R-10 follows R-9.
+        let parameters = stored_mode(
+            r#"<ParameterRef Id="M-00FA_A-0306-02-0000_P-1_R-9" RefId="M-00FA_A-0306-02-0000_P-1" Value="9" />
+               <ParameterRef Id="M-00FA_A-0306-02-0000_P-1_R-10" RefId="M-00FA_A-0306-02-0000_P-1" Value="10" />"#,
+            r#"<ParameterRefRef RefId="M-00FA_A-0306-02-0000_P-1_R-10" />
+               <ParameterRefRef RefId="M-00FA_A-0306-02-0000_P-1_R-9" />"#,
+        )
+        .expect("numbered references resolve");
+        assert_eq!(parameters.last().expect("reference entry").value, [10]);
+
+        // A numeric tag follows every untagged reference, then ascends.
+        let parameters = stored_mode(
+            r#"<ParameterRef Id="M-00FA_A-0306-02-0000_P-1_R-1" RefId="M-00FA_A-0306-02-0000_P-1" Tag="7" Value="1" />
+               <ParameterRef Id="M-00FA_A-0306-02-0000_P-1_R-2" RefId="M-00FA_A-0306-02-0000_P-1" Tag="3" Value="2" />
+               <ParameterRef Id="M-00FA_A-0306-02-0000_P-1_R-3" RefId="M-00FA_A-0306-02-0000_P-1" Value="3" />"#,
+            r#"<ParameterRefRef RefId="M-00FA_A-0306-02-0000_P-1_R-1" />
+               <ParameterRefRef RefId="M-00FA_A-0306-02-0000_P-1_R-2" />
+               <ParameterRefRef RefId="M-00FA_A-0306-02-0000_P-1_R-3" />"#,
+        )
+        .expect("tagged references resolve");
+        assert_eq!(parameters.last().expect("reference entry").value, [1]);
+    }
+
+    #[test]
+    fn equally_tagged_references_must_agree() {
+        // Equal tags leave the write order undefined. Agreement is harmless,
+        // even when an earlier untagged reference differs.
+        let agreeing = stored_mode(
+            r#"<ParameterRef Id="M-00FA_A-0306-02-0000_P-1_R-1" RefId="M-00FA_A-0306-02-0000_P-1" Tag="5" Value="8" />
+               <ParameterRef Id="M-00FA_A-0306-02-0000_P-1_R-2" RefId="M-00FA_A-0306-02-0000_P-1" Tag="5" Value="8" />
+               <ParameterRef Id="M-00FA_A-0306-02-0000_P-1_R-3" RefId="M-00FA_A-0306-02-0000_P-1" Value="3" />"#,
+            r#"<ParameterRefRef RefId="M-00FA_A-0306-02-0000_P-1_R-1" />
+               <ParameterRefRef RefId="M-00FA_A-0306-02-0000_P-1_R-2" />
+               <ParameterRefRef RefId="M-00FA_A-0306-02-0000_P-1_R-3" />"#,
+        )
+        .expect("agreeing references resolve");
+        assert_eq!(agreeing.last().expect("reference entry").value, [8]);
+
+        let error = stored_mode(
+            r#"<ParameterRef Id="M-00FA_A-0306-02-0000_P-1_R-1" RefId="M-00FA_A-0306-02-0000_P-1" Tag="5" Value="8" />
+               <ParameterRef Id="M-00FA_A-0306-02-0000_P-1_R-2" RefId="M-00FA_A-0306-02-0000_P-1" Tag="5" Value="9" />"#,
+            r#"<ParameterRefRef RefId="M-00FA_A-0306-02-0000_P-1_R-1" />
+               <ParameterRefRef RefId="M-00FA_A-0306-02-0000_P-1_R-2" />"#,
+        )
+        .expect_err("disagreeing references have no defined winner");
+        assert!(error.to_string().contains("without a defined write order"), "{error}");
     }
 
     #[test]

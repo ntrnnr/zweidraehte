@@ -1077,6 +1077,7 @@ impl MtxmlGenerator {
                 access: None,
                 value: None,
                 base_value: None,
+                tag: None,
             });
         }
 
@@ -1120,6 +1121,7 @@ impl MtxmlGenerator {
                 access: None,
                 value: None,
                 base_value: None,
+                tag: None,
             });
 
             // Track the param number for this picture
@@ -2184,6 +2186,7 @@ impl MtxmlGenerator {
                 access: None,
                 value: None,
                 base_value: None,
+                tag: None,
             });
             next_ref_num += 1;
             param_counter += 1;
@@ -2208,6 +2211,7 @@ impl MtxmlGenerator {
                 access: None,
                 value: None,
                 base_value: None,
+                tag: None,
             });
             next_ref_num += 1;
             param_counter += 1;
@@ -2230,6 +2234,7 @@ impl MtxmlGenerator {
                     access: None,
                     value: None,
                     base_value: None,
+                    tag: None,
                 });
                 next_ref_num += 1;
                 up_counter += 1;
@@ -2255,6 +2260,7 @@ impl MtxmlGenerator {
                             access: None,
                             value: None,
                             base_value: None,
+                            tag: None,
                         });
                         next_ref_num += 1;
                     }

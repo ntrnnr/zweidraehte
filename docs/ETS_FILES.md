@@ -88,6 +88,11 @@ dynamic activity, which can differ from editor visibility. Byte encoding,
 reference conflicts after encoding, and procedure-language type restrictions
 belong to the consumer. In particular, derived overlays replace the first
 matching storage entry so property lowering receives the derived value.
+Each reference overlay carries a `ReferenceWriteOrder`. When several visible
+references share one stored parameter, the download writes each in turn:
+untagged references by their `_R-<n>` number, then numerically tagged ones by
+tag. The last write is stored. Commissioning refuses only disagreeing
+references whose order is undefined (equal tags, or no reference number).
 
 Root objects, base tables without references, and instantiated module objects
 share one effective-value resolver. It returns flags and provenance together,

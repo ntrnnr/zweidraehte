@@ -40,4 +40,9 @@ pub struct ParameterRef {
     /// Used in modules to add a base value to parameter values on the reference.
     #[serde(rename = "@BaseValue", skip_serializing_if = "Option::is_none")]
     pub base_value: Option<String>,
+    /// Authored download order. When several visible references share one
+    /// stored parameter, a numeric tag places the reference after untagged
+    /// ones (see `ReferenceWriteOrder`).
+    #[serde(rename = "@Tag", skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
 }
