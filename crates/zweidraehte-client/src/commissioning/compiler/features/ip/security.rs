@@ -306,13 +306,10 @@ pub(super) fn validate_secure_intent(
         .filter(|interface| interface.access_type == BusAccessType::Tunneling)
         .map(|interface| interface.address_index)
         .collect();
-    if security.routing == IpServiceSecurity::Secure
-        && !product.bus_interfaces().iter().any(|interface| interface.access_type == BusAccessType::Routing)
-    {
-        return Err(CompileError::invalid(
-            "secure routing is requested but the product declares no Routing BusInterface",
-        ));
-    }
+    // Secure routing deliberately does not require a declared Routing
+    // BusInterface. Routing is a function of every KNXnet/IP device, and the
+    // reference tool secures it from the project's backbone key alone; secure
+    // IP archives commonly declare no BusInterfaces at all.
 
     let mut bound_users = BTreeSet::new();
     let mut bound_addresses = BTreeSet::new();

@@ -1,5 +1,5 @@
 //! Emit Data Secure image bytes and controls for the selected group section.
-//! Secret table writes retain opaque handles into the prepared payload.
+//! Group keys are image content; their write names the keyed addresses.
 
 use crate::commissioning::compiler::ProgramCompiler;
 use crate::commissioning::compiler::credentials::CredentialEffects;

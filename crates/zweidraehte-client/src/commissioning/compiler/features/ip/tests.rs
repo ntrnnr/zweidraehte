@@ -674,6 +674,56 @@ fn service_family(operation: &ProcedureOperation) -> Option<u8> {
 }
 
 #[test]
+fn secure_routing_needs_only_the_backbone_key() {
+    // Routing is a function of every KNXnet/IP device. Secure IP archives
+    // commonly declare no BusInterfaces, and the backbone key alone secures
+    // routing, so the missing Routing BusInterface must not refuse it.
+    let product = product_without_bus_interfaces();
+    let mut intent = basic_secure_intent();
+    intent.additional_individual_addresses.clear();
+    let security = intent.security.as_mut().expect("security intent exists");
+    security.tunnelling = IpServiceSecurity::Plain;
+    security.tunnelling_users.clear();
+    validate_secure_intent(&product, &intent, intent.security.as_ref().expect("security intent exists"))
+        .expect("secure routing needs no Routing BusInterface");
+
+    let mut profile = profile("MV-57B0");
+    let configuration = configuration(&product, intent);
+    prepare_classic_ip_profile(&mut profile, &product, configuration.topology.ip.as_ref())
+        .expect("standard OT11 facts resolve");
+    let secrets = ResolvedIpSecureConfiguration {
+        backbone_key: Some([0xa1; 16].into()),
+        device_authentication_code: Some([0xb2; 16].into()),
+        password_hashes: vec![
+            (NonZeroU8::new(1).expect("nonzero"), [0xc3; 16].into()),
+            (NonZeroU8::new(2).expect("nonzero"), [0xd4; 16].into()),
+        ],
+    };
+    let (_image, operations) =
+        super::super::compile_fixture(&profile, &product, &configuration, None, Some(&secrets), |compiler| {
+            compiler.contribute_ip()
+        });
+    let backbone = operation_index(&operations, |operation| secret_write_pid(operation) == Some(pid::ip::BACKBONE_KEY));
+    let routing = operation_index(&operations, |operation| service_family(operation) == Some(5));
+    assert!(backbone < routing, "the backbone key precedes the secured routing family");
+}
+
+fn product_without_bus_interfaces() -> ProductData {
+    let xml = r#"<KNX xmlns="http://knx.org/xml/project/23" CreatedBy="ip-overlay-test" ToolVersion="1">
+          <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+            <ApplicationProgram Id="M-00FA_A-0001-01-0000" ApplicationNumber="1" ApplicationVersion="1"
+              ProgramType="ApplicationProgram" MaskVersion="MV-57B0" Name="IP fixture"
+              LoadProcedureStyle="DefaultProcedure" PeiType="0" DefaultLanguage="en-US"
+              DynamicTableManagement="false" Linkable="false" IPConfig="Tool"
+              AdditionalAddressesCount="0" IsSecureEnabled="true" MaxUserEntries="2" MaxTunnelingUserEntries="0">
+              <Static><LoadProcedures /></Static>
+            </ApplicationProgram>
+          </ApplicationPrograms></Manufacturer></ManufacturerData>
+        </KNX>"#;
+    ProductData::from_mtxml_str(xml).expect("IP product fixture parses")
+}
+
+#[test]
 fn ip_secure_keys_are_never_split_across_telegrams() {
     // Each backbone key, device authentication code and password hash is one
     // 16-byte property element. Splitting one across telegrams could leave a
