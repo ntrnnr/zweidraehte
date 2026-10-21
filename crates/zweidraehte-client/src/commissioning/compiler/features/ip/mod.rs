@@ -256,7 +256,9 @@ pub(super) fn secret_property_write(
         target: property_target(property_id, start_element),
         data: OperationData::Secret(payload),
         extent: OperationExtent::property(payload.byte_length(), elements),
-        policy: WriteIntent::Explicit(WritePolicy::NoVerification),
+        // Every KNXnet/IP Secure property write of the reference download is
+        // verified, credentials and element counts included.
+        policy: WriteIntent::Explicit(WritePolicy::ReadBack),
     }
 }
 

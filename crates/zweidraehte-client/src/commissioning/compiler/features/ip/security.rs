@@ -114,7 +114,8 @@ impl ProgramCompiler<'_> {
             target: property_target(pid::ip::PASSWORD_HASHES, 0),
             data: OperationData::Inline(count.to_be_bytes().to_vec()),
             extent: OperationExtent::property(2, 1),
-            policy: crate::commissioning::procedure::WriteIntent::Explicit(WritePolicy::NoVerification),
+            // Verified like every other KNXnet/IP Secure property write.
+            policy: crate::commissioning::procedure::WriteIntent::Explicit(WritePolicy::ReadBack),
         });
 
         if !intent.password_users.is_empty() {
@@ -166,7 +167,8 @@ impl ProgramCompiler<'_> {
             target: property_target(pid::ip::TUNNELING_USERS, 0),
             data: OperationData::Inline(count.to_be_bytes().to_vec()),
             extent: OperationExtent::property(2, 1),
-            policy: crate::commissioning::procedure::WriteIntent::Explicit(WritePolicy::NoVerification),
+            // Verified like every other KNXnet/IP Secure property write.
+            policy: crate::commissioning::procedure::WriteIntent::Explicit(WritePolicy::ReadBack),
         });
 
         if count == 0 {

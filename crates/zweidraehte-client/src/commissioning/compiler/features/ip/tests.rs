@@ -400,6 +400,21 @@ fn secure_service_credentials_are_redacted_and_ordered_by_family() {
     assert!(family5 < pid92 && pid92 < pid93 && pid93 < family3);
     assert!(family3 < pid97 && pid97 < family4);
 
+    // Every IP security property write is verified, credentials and the
+    // element-count writes included, as the reference download does.
+    for operation in &operations {
+        if let ProcedureOperation::Write { target: OperationTarget::Property { .. }, policy, .. } = &operation.operation
+        {
+            assert_eq!(
+                *policy,
+                crate::commissioning::procedure::WriteIntent::Explicit(
+                    crate::commissioning::procedure::WritePolicy::ReadBack
+                ),
+                "{operation:?}"
+            );
+        }
+    }
+
     let transitions: BTreeSet<_> = operations
         .iter()
         .filter_map(|operation| match &operation.operation {
