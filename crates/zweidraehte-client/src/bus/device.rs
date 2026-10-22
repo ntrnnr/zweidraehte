@@ -49,6 +49,7 @@ pub struct DeviceConnection {
 /// Outcome of a master reset: how long the device says it needs before it
 /// is reachable again.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct RestartAck {
     pub process_time: Duration,
 }
@@ -85,6 +86,7 @@ impl MemorySpace {
 
 /// How a memory write is confirmed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum WriteCheck {
     /// The device acknowledges the transport frame; Verify Mode is off.
     /// Per 03/05/02 §3.16 this carries no application-level confirmation.

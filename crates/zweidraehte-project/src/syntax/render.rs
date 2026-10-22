@@ -728,7 +728,7 @@ mod tests {
             security: NetSecurityPolicy::Automatic,
         };
         ProjectDeviceDraft {
-            id: ProjectDeviceId("button".into()),
+            id: ProjectDeviceId::new("button").expect("literal is an identifier"),
             active: true,
             product: ProductReference::Package {
                 package: crate::ProjectPackageId::from_bytes([0x11; 32]),
@@ -811,7 +811,7 @@ mod tests {
         let project = AuthoredProject::parse(render_single_device_project(&first).expect("first RF device renders"))
             .expect("first RF project parses");
         let mut second = first.clone();
-        second.id = ProjectDeviceId("multi".into());
+        second.id = ProjectDeviceId::new("multi").expect("literal is an identifier");
         second.address = IndividualAddress::new(1, 1, 11);
         second.rf_mode = Some(RfDeviceMode::Multi);
         second.objects.clear();
@@ -1012,15 +1012,15 @@ mod tests {
             .replace("        device button", "        # keep this comment\n        device button");
         let project = AuthoredProject::parse(source).expect("project parses");
         let mut added = draft();
-        added.id = ProjectDeviceId("relay".into());
+        added.id = ProjectDeviceId::new("relay").expect("literal is an identifier");
         added.address = IndividualAddress::new(1, 1, 20);
         added.objects.clear();
         added.nets.clear();
         let source = project.render_device_add(&added).expect("device adds");
         let parsed = AuthoredProject::parse(source.clone()).expect("updated project parses");
         assert!(source.contains("# keep this comment"));
-        assert!(parsed.devices.contains_key(&ProjectDeviceId("button".into())));
-        assert!(parsed.devices.contains_key(&ProjectDeviceId("relay".into())));
+        assert!(parsed.devices.contains_key("button"));
+        assert!(parsed.devices.contains_key("relay"));
     }
 
     #[test]
@@ -1028,7 +1028,7 @@ mod tests {
         let project = AuthoredProject::parse(render_single_device_project(&draft()).expect("draft renders"))
             .expect("project parses");
         let mut next_line = draft();
-        next_line.id = ProjectDeviceId("next_line".into());
+        next_line.id = ProjectDeviceId::new("next_line").expect("literal is an identifier");
         next_line.address = IndividualAddress::new(1, 2, 1);
         next_line.objects.clear();
         next_line.nets.clear();
@@ -1037,7 +1037,7 @@ mod tests {
         assert_eq!(parsed.devices[&next_line.id].line, 2);
 
         let mut next_area = draft();
-        next_area.id = ProjectDeviceId("next_area".into());
+        next_area.id = ProjectDeviceId::new("next_area").expect("literal is an identifier");
         next_area.address = IndividualAddress::new(2, 1, 1);
         next_area.objects.clear();
         next_area.nets.clear();
@@ -1053,7 +1053,7 @@ mod tests {
         assert!(matches!(project.render_device_add(&draft()), Err(RenderError::DuplicateDevice(_))));
 
         let mut rf = draft();
-        rf.id = ProjectDeviceId("rf".into());
+        rf.id = ProjectDeviceId::new("rf").expect("literal is an identifier");
         rf.address = IndividualAddress::new(1, 1, 20);
         rf.medium = Medium::Rf;
         rf.domain = Some(DomainAddress::Rf([0x00, 0xFA, 0x12, 0x34, 0x56, 0x78]));

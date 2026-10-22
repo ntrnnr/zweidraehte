@@ -1,7 +1,7 @@
 //! Standard IP facts, enabled only after product ownership is validated.
 
 use crate::commissioning::catalog::profile::{ObjectSelector, Occurrence, ResolvedProfile};
-use crate::commissioning::error::CompileError;
+use crate::commissioning::error::ProfileError;
 use crate::configuration::ToolManagedIpConfiguration;
 use zweidraehte_ets_files::product::{IpConfigurationMode, ProductData};
 use zweidraehte_proto::pid;
@@ -14,17 +14,17 @@ pub(crate) fn prepare_classic_ip_profile(
     profile: &mut ResolvedProfile,
     product: &ProductData,
     topology_ip: Option<&ToolManagedIpConfiguration>,
-) -> Result<(), CompileError> {
+) -> Result<(), ProfileError> {
     let mode = &product.programming_options().ip_configuration().value;
     match mode {
         IpConfigurationMode::Unknown(token) => {
-            return Err(CompileError::unsupported(format!(
+            return Err(ProfileError::unsupported(format!(
                 "product declares unknown IPConfig token {0:?}",
                 token.clone()
             )));
         }
         IpConfigurationMode::Custom if topology_ip.is_some() => {
-            return Err(CompileError::invalid(
+            return Err(ProfileError::invalid(
                 "tool-managed IP intent was supplied for a product with IPConfig=Custom",
             ));
         }
@@ -34,7 +34,7 @@ pub(crate) fn prepare_classic_ip_profile(
 
     if !is_classic_ip_mask(profile) {
         if topology_ip.is_some() {
-            return Err(CompileError::unsupported(format!(
+            return Err(ProfileError::unsupported(format!(
                 "tool-managed IP intent was supplied for non-IP profile {0}",
                 profile.mask().full_id.clone()
             )));
@@ -49,7 +49,7 @@ pub(crate) fn prepare_classic_ip_profile(
         .filter(|object| object.object_type == Some(IP_PARAMETER_OBJECT_TYPE))
         .count();
     if objects > 1 {
-        return Err(CompileError::invalid(format!(
+        return Err(ProfileError::invalid(format!(
             "profile resolves {objects} IP Parameter Objects; exactly one is required"
         )));
     }
@@ -62,12 +62,12 @@ pub(crate) fn is_classic_ip_mask(profile: &ResolvedProfile) -> bool {
     matches!(profile.mask().full_id.as_str(), "MV-5705" | "MV-57B0")
 }
 
-pub(crate) fn require_ip_medium(profile: &ResolvedProfile) -> Result<(), CompileError> {
+pub(crate) fn require_ip_medium(profile: &ResolvedProfile) -> Result<(), ProfileError> {
     let mask = profile.mask_source();
     if mask.medium_type_ref_id.as_deref() == Some("MT-5") || mask.other_medium_type_ref_id.as_deref() == Some("MT-5") {
         Ok(())
     } else {
-        Err(CompileError::invalid(format!(
+        Err(ProfileError::invalid(format!(
             "classic IP profile {0} does not resolve the KNX IP medium",
             profile.mask().full_id.clone()
         )))

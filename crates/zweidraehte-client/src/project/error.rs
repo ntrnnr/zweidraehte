@@ -1,9 +1,17 @@
 //! Project-operation errors, including adaptation from bus and product lowering.
 
+use crate::configuration::ErrorDetail;
 use zweidraehte_ets_files::archive::ProductLoadError;
 use zweidraehte_ets_files::product::ProductError;
+use zweidraehte_project::{NetId, ProjectDeviceId};
 
+/// Failure of a project operation.
+///
+/// Variants that name a device or net carry it as a typed value. The others
+/// classify the failure by domain and carry an [`ErrorDetail`] for display:
+/// match the variant, never the text.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error(transparent)]
     Bus(#[from] crate::bus::BusError),
@@ -11,17 +19,54 @@ pub enum Error {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("parse error: {0}")]
-    Parse(&'static str),
+    #[error("project has no device `{0}`")]
+    UnknownDevice(ProjectDeviceId),
 
+    #[error("device `{0}` is not in the evaluated plan")]
+    NotPlanned(ProjectDeviceId),
+
+    #[error("no product loaded for `{0}`")]
+    MissingProduct(ProjectDeviceId),
+
+    #[error("project has no net `{0}`")]
+    UnknownNet(NetId),
+
+    #[error("project source has no filesystem path for its package store")]
+    NoPackageStore,
+
+    /// The authored project contradicts itself or its products.
     #[error("device configuration invalid: {0}")]
-    DeviceConfiguration(String),
+    InvalidProject(ErrorDetail),
+
+    /// An ETS keyring disagrees with the authored project.
+    #[error("cannot import the keyring: {0}")]
+    KeyringImport(ErrorDetail),
+
+    /// The project cannot be expressed in the ETS keyring format.
+    #[error("cannot export the keyring: {0}")]
+    KeyringExport(ErrorDetail),
+
+    /// Durable project state does not prove what the operation needs.
+    #[error("project state: {0}")]
+    StateEvidence(ErrorDetail),
+
+    /// The project asks for behaviour this library does not implement.
+    #[error("unsupported: {0}")]
+    Unsupported(ErrorDetail),
+
+    /// The status preview of one device does not compile.
+    #[error("could not compile `{device}` status")]
+    StatusPreview {
+        device: ProjectDeviceId,
+        #[source]
+        source: crate::commissioning::CompileError,
+    },
 
     #[error(transparent)]
     ProductConfiguration(#[from] zweidraehte_ets_files::runtime::configuration::ConfigurationError),
 
     #[error("managed SIAT sender `{device}` at {address} needs loaded product and serial input before planning")]
-    MissingSenderInput { device: String, address: crate::IndividualAddress },
+    MissingSenderInput { device: ProjectDeviceId, address: crate::IndividualAddress },
 
     #[error("product `{product}` has no selected installation Master Data")]
     MissingCatalog { product: String },
@@ -93,10 +138,10 @@ pub enum Error {
     MasterDataLoad(#[from] zweidraehte_ets_files::MasterDataError),
 
     #[error("cannot use Master Data for programming")]
-    Catalog(#[source] crate::commissioning::CompileError),
+    Catalog(#[source] crate::commissioning::ProfileError),
 
     #[error("product data: {0}")]
-    ProductData(String),
+    ProductData(ErrorDetail),
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -107,8 +152,7 @@ impl From<crate::configuration::ConfigurationError> for Error {
     fn from(error: crate::configuration::ConfigurationError) -> Self {
         use crate::configuration::ConfigurationError;
         match error {
-            ConfigurationError::DeviceConfiguration(message) => Self::DeviceConfiguration(message),
-            ConfigurationError::ProductData(message) => Self::ProductData(message),
+            ConfigurationError::ProductData(detail) => Self::ProductData(detail),
         }
     }
 }

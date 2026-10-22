@@ -4,6 +4,14 @@
 //! inspectable result after product fragments, automatic scopes, and tool-side
 //! state have been resolved. The executor accepts only this representation;
 //! raw XML controls can never mutate a device directly.
+//!
+//! # Exhaustiveness
+//!
+//! The IR's enums and `pub`-field structs, here and in `operands` and
+//! `operations`, are exhaustive by design. Inspection adapters compare
+//! procedures operation by operation, so a new operation, operand or field
+//! must fail their build rather than fall into a wildcard arm. Extending the
+//! IR is therefore a breaking change of the inspection API.
 
 use std::collections::BTreeSet;
 

@@ -95,14 +95,12 @@ fn vendor_program_compiles_to_a_stable_download() {
     let primary = GroupAddress::from_three_level(5, 1, 1);
     let additional = GroupAddress::from_three_level(5, 1, 3);
     let second = GroupAddress::from_three_level(5, 1, 2);
-    let configuration = InstallationConfiguration {
-        object_memberships: vec![
-            ObjectMembership { group_address: primary, com_object: 0, role: MembershipRole::Primary },
-            ObjectMembership { group_address: additional, com_object: 0, role: MembershipRole::Additional },
-            ObjectMembership { group_address: second, com_object: 1, role: MembershipRole::Primary },
-        ],
-        ..InstallationConfiguration::new(IndividualAddress::new(1, 1, 60))
-    };
+    let mut configuration = InstallationConfiguration::new(IndividualAddress::new(1, 1, 60));
+    configuration.object_memberships = vec![
+        ObjectMembership { group_address: primary, com_object: 0, role: MembershipRole::Primary },
+        ObjectMembership { group_address: additional, com_object: 0, role: MembershipRole::Additional },
+        ObjectMembership { group_address: second, com_object: 1, role: MembershipRole::Primary },
+    ];
     let resolved = MaterializedDevice::from_evaluated(
         device.evaluate(&settings.objects).expect("checked vendor settings"),
         configuration,
@@ -431,13 +429,13 @@ fn compile_plan(
     let input = ProgrammingInput::new(device.clone(), intent, options)
         // This compiler-only fixture models an already-disabled application and
         // explicit plain management; it does not observe or contact vendor hardware.
-        .with_facts(ProgrammingFacts {
-            target: Some(ObservedTarget {
-                previous_address: device.individual_address(),
-                serial_number: None,
-                credential: ManagementCredential::Plaintext,
-            }),
-            data_security: ObservedDataSecurity::Disabled,
+        .with_facts({
+            let mut facts = ProgrammingFacts::new(ObservedTarget::new(
+                device.individual_address(),
+                ManagementCredential::Plaintext,
+            ));
+            facts.data_security = ObservedDataSecurity::Disabled;
+            facts
         });
     // A fixed-width System B table declares its own row width; record it as
     // the observation a live target would supply.

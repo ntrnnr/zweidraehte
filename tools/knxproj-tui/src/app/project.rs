@@ -61,10 +61,10 @@ impl ProjectEditor {
                     ));
                 }
                 let origin = if decoded.serial.is_some() { KeyOrigin::DeviceLabel } else { KeyOrigin::Manual };
-                keys.put_device_fdsk(&device.0, input, origin).map_err(|error| error.to_string())
+                keys.put_device_fdsk(device.as_str(), input, origin).map_err(|error| error.to_string())
             }
             EditableKey::DeviceToolKey(device) => {
-                keys.put_device_tool_key(&device.0, input, KeyOrigin::Manual).map_err(|error| error.to_string())
+                keys.put_device_tool_key(device.as_str(), input, KeyOrigin::Manual).map_err(|error| error.to_string())
             }
             EditableKey::GroupKey { net, epoch } => {
                 keys.put_group_key(&net.0, epoch, input, KeyOrigin::Manual, true).map_err(|error| error.to_string())

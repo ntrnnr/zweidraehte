@@ -547,6 +547,7 @@ firmware/                  Device targets (separate workspace)
   `crates/zweidraehte-nv/src/stores/config/byte_nv.rs`. Don't bunch phases into dense
   uninterrupted blocks.
 - After changing an API consumed outside its crate, run `cargo test --workspace --no-run`; package-local tests do not compile reverse dependencies such as the conformance DUTs
+- New public errors, options, reports and growing enums in `zweidraehte-client` are `#[non_exhaustive]`; give options a `Default` or a constructor. A type that must stay matchable says "Exhaustive by design" and why. Frontends branch on typed error kinds, never on message text
 - **Preserve compile-time device composition.** In both device stacks, choices
   fixed by the device definition belong in generic parameters, associated
   types, const generics or zero-sized policy types. Carry them through helpers

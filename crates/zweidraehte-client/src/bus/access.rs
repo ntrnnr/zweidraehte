@@ -76,6 +76,8 @@ impl std::fmt::Debug for ManagementKeys<'_> {
 }
 
 /// Selected management credential epoch, without secret bytes.
+///
+/// Exhaustive by design: KNX management access is plaintext, Tool Key or FDSK.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManagementCredential {
     Plaintext,

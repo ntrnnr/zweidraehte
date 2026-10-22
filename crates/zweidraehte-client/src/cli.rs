@@ -86,6 +86,7 @@ pub struct SecurityArgs {
 
 /// Missing CLI credentials or an unreadable ETS keyring.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SecurityArgsError {
     #[error("--keyring needs --keyring-password or KNX_KEYRING_PASSWORD")]
     MissingPassword,

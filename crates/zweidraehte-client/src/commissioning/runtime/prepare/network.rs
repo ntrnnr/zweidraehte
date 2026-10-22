@@ -4,6 +4,7 @@ use crate::commissioning::catalog::profile::ResourceManagementStyle;
 use crate::commissioning::compiler::program::CompiledProgram;
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::error::DiagnosticResult as Result;
+use crate::commissioning::error::PreparationFailure;
 use crate::commissioning::input::{CommissioningIntent, ProgrammingInput, TargetSelection, UnloadMode};
 use crate::commissioning::procedure::operands::ServiceRead;
 use crate::commissioning::runtime::ExecutionSession;
@@ -48,11 +49,14 @@ impl Commissioner<'_> {
     ) -> Result<zweidraehte_proto::address::IndividualAddress> {
         let execution_address = match input.intent {
             CommissioningIntent::Download(_) if target.address != plan.individual_address() => {
-                return Err(Diagnostic::preparation(format!(
-                    "download target is at {0}, but the project address is {1}; assign the address before downloading",
-                    target.address,
-                    plan.individual_address()
-                )));
+                return Err(Diagnostic::preparation(
+                    PreparationFailure::AddressConflict,
+                    format!(
+                        "download target is at {0}, but the project address is {1}; assign the address before downloading",
+                        target.address,
+                        plan.individual_address()
+                    ),
+                ));
             }
             CommissioningIntent::Unload(_) => target.address,
             CommissioningIntent::AssignAddress
@@ -72,6 +76,7 @@ impl Commissioner<'_> {
             && target.serial_number.is_none()
         {
             return Err(Diagnostic::preparation(
+                PreparationFailure::Unsupported,
                 "complete unload on this profile requires a serial number for the scoped IA reset",
             ));
         }
@@ -85,13 +90,16 @@ impl Commissioner<'_> {
                 .is_device_present(plan.individual_address(), self.options.scan_window)
                 .await
                 .map_err(|error| {
-                    Diagnostic::from(error).preparation_context("checking the desired individual address")
+                    Diagnostic::from(error).preparation_context(
+                        PreparationFailure::Communication,
+                        "checking the desired individual address",
+                    )
                 })?
         {
-            return Err(Diagnostic::preparation(format!(
-                "individual address {} is already occupied",
-                plan.individual_address()
-            )));
+            return Err(Diagnostic::preparation(
+                PreparationFailure::AddressConflict,
+                format!("individual address {} is already occupied", plan.individual_address()),
+            ));
         }
 
         if network.assign_domain
@@ -99,6 +107,7 @@ impl Commissioner<'_> {
         {
             if !self.options.caller_manages_open_medium_path {
                 return Err(Diagnostic::preparation(
+                    PreparationFailure::InvalidOptions,
                     "RF domain assignment requires the caller to configure and restore the open-medium path",
                 ));
             }

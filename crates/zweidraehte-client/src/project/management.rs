@@ -8,6 +8,7 @@ use super::{
     SerialAddressingSupport,
 };
 use crate::bus::access::{ManagementCredential, ManagementKeys};
+use crate::configuration::ErrorDetail;
 use crate::configuration::ResolvedKeyMaterial;
 use crate::project::error::{Error, Result};
 use crate::security::Keyring;
@@ -39,7 +40,7 @@ impl ProjectManagementTarget {
         keyring: Option<&Keyring>,
         serial_addressing: SerialAddressingSupport,
     ) -> Result<Self> {
-        let (keys, _) = resolve_management_keys(device.serial, device.address, &device.id.0, keys, keyring)?;
+        let (keys, _) = resolve_management_keys(device.serial, device.address, &device.id, keys, keyring)?;
         Ok(Self { id: device.id.clone(), address: device.address, serial_addressing, keys })
     }
 
@@ -80,18 +81,21 @@ impl ProjectManagementTarget {
 /// Recovery completes only after all managed secure receivers are observed,
 /// unless the caller supplies an explicit client sequence floor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ProjectSynchronization {
     Synchronize,
     Recover { client_floor: Option<u64> },
 }
 
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct ProjectSynchronizationReport {
     pub devices: Vec<ProjectDeviceSynchronization>,
 }
 
 /// Observations survive failures later in the device or project operation.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ProjectDeviceSynchronization {
     pub device: ProjectDeviceId,
     pub complete: bool,
@@ -103,12 +107,14 @@ pub struct ProjectDeviceSynchronization {
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ProjectMemoryReadout {
     pub address: u16,
     pub bytes: Vec<u8>,
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ProjectMemoryReadReport {
     pub device: ProjectDeviceId,
     pub address: Option<IndividualAddress>,
@@ -119,6 +125,7 @@ pub struct ProjectMemoryReadReport {
 
 /// Credentials and product catalogue for a project management operation.
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct ManagementSources<'a> {
     /// An imported ETS keyring, consulted after the project's own keys.
     pub keyring: Option<&'a Keyring>,
@@ -128,6 +135,7 @@ pub struct ManagementSources<'a> {
 
 /// How [`ProjectOperation::read_device_memory`] reaches the device.
 #[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct MemoryReadOptions<'a> {
     pub sources: ManagementSources<'a>,
     /// Permit unauthenticated management for a device without secure credentials.
@@ -138,6 +146,7 @@ pub struct MemoryReadOptions<'a> {
 /// inspectable independently. No application programming report is fabricated.
 #[derive(Debug, thiserror::Error)]
 #[error("project management failed: {}", management_failure_message(.source, .finalization))]
+#[non_exhaustive]
 pub struct ProjectManagementFailure<T: std::fmt::Debug> {
     pub report: T,
     #[source]
@@ -263,16 +272,16 @@ impl ProjectOperation {
                 .filter_map(|segment| segment.address.map(|address| (address, segment.size)))
                 .map(|(address, size)| {
                     let start = u16::try_from(address).map_err(|_| {
-                        Error::DeviceConfiguration("diagnostic segment address exceeds classic memory".into())
+                        Error::ProductData(ErrorDetail::new("diagnostic segment address exceeds classic memory"))
                     })?;
                     if u64::from(address) + u64::from(size) > 0x1_0000 {
-                        return Err(Error::DeviceConfiguration("diagnostic segment exceeds classic memory".into()));
+                        return Err(Error::ProductData(ErrorDetail::new("diagnostic segment exceeds classic memory")));
                     }
                     Ok((start, size as usize))
                 })
                 .collect::<Result<Vec<_>>>()?;
             if ranges.is_empty() {
-                return Err(Error::DeviceConfiguration("product has no absolute memory segments to read".into()));
+                return Err(Error::ProductData(ErrorDetail::new("product has no absolute memory segments to read")));
             }
             let address = target.locate(self.bus()).await?;
             report.address = Some(address);
@@ -330,10 +339,7 @@ fn management_inputs(
         let mut targets = scope
             .iter()
             .map(|id| {
-                let device = project
-                    .devices
-                    .get(id)
-                    .ok_or_else(|| Error::DeviceConfiguration(format!("project has no device `{id}`")))?;
+                let device = project.devices.get(id).ok_or_else(|| Error::UnknownDevice(id.clone()))?;
                 ProjectManagementTarget::resolve(device, keys, keyring, SerialAddressingSupport::Unknown)
             })
             .collect::<Result<Vec<_>>>()?;

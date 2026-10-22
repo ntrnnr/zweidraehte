@@ -11,6 +11,8 @@ use crate::commissioning::catalog::profile::ObjectSelector;
 use zweidraehte_proto::{dpt::InterfaceObjectType, pid};
 
 /// Final ownership of bits in one contiguous image range.
+///
+/// Exhaustive by design: a range and its bit mask fully describe ownership.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageOwnership {
     pub section: ProgrammingSection,

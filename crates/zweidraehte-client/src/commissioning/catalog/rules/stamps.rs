@@ -2,7 +2,7 @@
 
 use crate::commissioning::catalog::profile::{ObjectSelector, Occurrence, ReadAccess, ResolvedProfile, ResourceId};
 use crate::commissioning::catalog::{ResourceOrder, SelectedResource};
-use crate::commissioning::error::CompileError;
+use crate::commissioning::error::ProfileError;
 use crate::commissioning::image::{ImageLocation, ImageSpace};
 use crate::commissioning::procedure::operands::{
     OperationTarget, ServiceRead, StandardMemoryService, pure_property_address,
@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use zweidraehte_ets_files::schema::LoadControl;
 use zweidraehte_proto::pid;
 
-fn runtime_stamp_resources(profile: &ResolvedProfile) -> Result<Vec<SelectedResource<'_>>, CompileError> {
+fn runtime_stamp_resources(profile: &ResolvedProfile) -> Result<Vec<SelectedResource<'_>>, ProfileError> {
     let selected = profile.selected_resources_matching(ResourceOrder::FirstDemandedName, |resource| {
         resource.resource_type.as_ref().and_then(|kind| kind.flavour.as_deref()) == Some("Stamp_SystemB")
     })?;
@@ -31,13 +31,13 @@ fn runtime_stamp_resources(profile: &ResolvedProfile) -> Result<Vec<SelectedReso
 pub(crate) fn stamp_descriptor(
     resource: SelectedResource<'_>,
     service: StandardMemoryService,
-) -> Result<StampDescriptor, CompileError> {
+) -> Result<StampDescriptor, ProfileError> {
     let image_location = if let Some((object, property_id, offset)) = resource.property_location()? {
         ImageLocation { space: ImageSpace::Property { object, property_id }, offset }
     } else {
         resource
             .image_location()?
-            .ok_or_else(|| CompileError::invalid(format!("stamp resource {} has no image location", resource.id)))?
+            .ok_or_else(|| ProfileError::invalid(format!("stamp resource {} has no image location", resource.id)))?
     };
     Ok(StampDescriptor {
         optional: resource.optional(),
@@ -50,7 +50,7 @@ pub(crate) fn stamp_descriptor(
 pub(crate) fn resolved_download_stamp_resources(
     profile: &ResolvedProfile,
     service: StandardMemoryService,
-) -> Result<Vec<StampDescriptor>, CompileError> {
+) -> Result<Vec<StampDescriptor>, ProfileError> {
     download_stamp_resources(profile, service, false)
 }
 
@@ -61,7 +61,7 @@ pub(crate) fn resolved_download_stamp_resources(
 pub(crate) fn resolved_download_stamp_resources_with_pei_program(
     profile: &ResolvedProfile,
     service: StandardMemoryService,
-) -> Result<Vec<StampDescriptor>, CompileError> {
+) -> Result<Vec<StampDescriptor>, ProfileError> {
     download_stamp_resources(profile, service, true)
 }
 
@@ -69,7 +69,7 @@ fn download_stamp_resources(
     profile: &ResolvedProfile,
     service: StandardMemoryService,
     pei_program_bound: bool,
-) -> Result<Vec<StampDescriptor>, CompileError> {
+) -> Result<Vec<StampDescriptor>, ProfileError> {
     let flavour = profile.feature("DownloadStamp")?.unwrap_or(0);
     let Some(end) = download_stamp_end(profile, flavour)? else {
         return Ok(Vec::new());
@@ -96,7 +96,7 @@ fn download_stamp_resources(
             continue;
         }
         if !locations.insert(location) {
-            return Err(CompileError::invalid(format!(
+            return Err(ProfileError::invalid(format!(
                 "download-stamp resource {} aliases another output property",
                 resource.id
             )));
@@ -109,7 +109,7 @@ fn download_stamp_resources(
 /// Coupler Model 2.0 declares its stamp in the full source procedure. This
 /// fallback runs only after enabled output selection finds no runtime resource.
 /// Exact selected targets and eight-byte PDT establish the binding.
-fn procedure_download_stamp(profile: &ResolvedProfile) -> Result<StampDescriptor, CompileError> {
+fn procedure_download_stamp(profile: &ResolvedProfile) -> Result<StampDescriptor, ProfileError> {
     let mut targets = BTreeSet::new();
     for procedure in
         profile.source().procedures.iter().flat_map(|procedures| &procedures.procedures).filter(|procedure| {
@@ -121,14 +121,14 @@ fn procedure_download_stamp(profile: &ResolvedProfile) -> Result<StampDescriptor
     }
     let target = match targets.len() {
         0 => {
-            return Err(CompileError::invalid(format!(
+            return Err(ProfileError::invalid(format!(
                 "mask {} enables DownloadStamp, but remote access and management style {:?} resolve no runtime-readable Stamp_SystemB resource",
                 profile.mask.full_id, profile.management_style
             )));
         }
         1 => targets.into_iter().next().expect("one stamp target"),
         _ => {
-            return Err(CompileError::invalid(format!(
+            return Err(ProfileError::invalid(format!(
                 "mask {} resolves multiple procedure-owned download-stamp targets: {targets:?}",
                 profile.mask.full_id
             )));
@@ -136,13 +136,13 @@ fn procedure_download_stamp(profile: &ResolvedProfile) -> Result<StampDescriptor
     };
     let width = profile.property_element_size(&target, pid::MCB_TABLE, true)?;
     if width != Some(8) {
-        return Err(CompileError::invalid(format!(
+        return Err(ProfileError::invalid(format!(
             "mask {} procedure-owned download stamp {target:?} requires eight bytes; resolved width is {width:?}",
             profile.mask.full_id
         )));
     }
     let address = pure_property_address(&target, pid::MCB_TABLE)
-        .map_err(|error| CompileError::invalid(format!("procedure download stamp: {error}")))?;
+        .map_err(|error| ProfileError::invalid(format!("procedure download stamp: {error}")))?;
     Ok(StampDescriptor {
         id: ResourceId("ProcedureDownloadStamp".to_owned()),
         read: ServiceRead {
@@ -160,14 +160,14 @@ fn procedure_download_stamp(profile: &ResolvedProfile) -> Result<StampDescriptor
 fn collect_procedure_download_stamp_targets(
     controls: &[LoadControl],
     targets: &mut BTreeSet<ObjectSelector>,
-) -> Result<(), CompileError> {
+) -> Result<(), ProfileError> {
     for control in controls {
         match control {
             LoadControl::LdCtrlLoadImageProp(control)
                 if control.prop_id == pid::MCB_TABLE && control_applies_to_full(control.applies_to.as_deref())? =>
             {
                 if control.start_element.unwrap_or(1) != 1 || control.count.unwrap_or(1) != 1 {
-                    return Err(CompileError::unsupported(format!(
+                    return Err(ProfileError::unsupported(format!(
                         "procedure-owned download stamp uses unsupported property range start={}, count={}",
                         control.start_element.unwrap_or(1),
                         control.count.unwrap_or(1)
@@ -179,7 +179,7 @@ fn collect_procedure_download_stamp_targets(
                         ObjectSelector::Type { object_type, occurrence: Occurrence::from_schema(occurrence) }
                     }
                     _ => {
-                        return Err(CompileError::invalid(format!(
+                        return Err(ProfileError::invalid(format!(
                             "procedure-owned download stamp has invalid selector index={:?}, type={:?}, occurrence={:?}",
                             control.obj_idx, control.obj_type, control.occurrence
                         )));
@@ -198,11 +198,11 @@ fn collect_procedure_download_stamp_targets(
     Ok(())
 }
 
-fn control_applies_to_full(applies_to: Option<&str>) -> Result<bool, CompileError> {
+fn control_applies_to_full(applies_to: Option<&str>) -> Result<bool, ProfileError> {
     let mut applies = false;
     for token in applies_to.unwrap_or("auto").split(',').map(str::trim) {
         applies |= match parse_applies_to_token(token).ok_or_else(|| {
-            CompileError::unsupported(format!("procedure-owned download stamp has unknown AppliesTo token {token:?}"))
+            ProfileError::unsupported(format!("procedure-owned download stamp has unknown AppliesTo token {token:?}"))
         })? {
             AppliesToScope::Full | AppliesToScope::All | AppliesToScope::Automatic => true,
             _ => false,
@@ -217,12 +217,12 @@ fn control_applies_to_full(applies_to: Option<&str>) -> Result<bool, CompileErro
 /// Flavour 1 is a property of the mask, not of its management model: System 7
 /// masks declare it too. Their images carry no PID 27 records, so their
 /// selection is empty and no stamp is published.
-pub(super) fn download_stamp_end(profile: &ResolvedProfile, flavour: u32) -> Result<Option<u32>, CompileError> {
+pub(super) fn download_stamp_end(profile: &ResolvedProfile, flavour: u32) -> Result<Option<u32>, ProfileError> {
     if flavour == 0 {
         return Ok(None);
     }
     if flavour != 1 {
-        return Err(CompileError::unsupported(format!(
+        return Err(ProfileError::unsupported(format!(
             "profile {} declares unsupported DownloadStamp flavour {flavour}",
             profile.mask
         )));
@@ -235,7 +235,7 @@ pub(super) fn download_stamp_end(profile: &ResolvedProfile, flavour: u32) -> Res
         return Ok(None);
     }
     if end > u16::MAX.into() {
-        return Err(CompileError::invalid(format!(
+        return Err(ProfileError::invalid(format!(
             "profile {} has invalid FirstAppObjectIdx {end} for stamp selection",
             profile.mask
         )));
@@ -244,13 +244,13 @@ pub(super) fn download_stamp_end(profile: &ResolvedProfile, flavour: u32) -> Res
 }
 
 /// Flavour 1 stamps are indexed PID 27 records with exactly eight octets.
-pub(crate) fn download_stamp_location(resource: &StampDescriptor) -> Result<ImageLocation, CompileError> {
+pub(crate) fn download_stamp_location(resource: &StampDescriptor) -> Result<ImageLocation, ProfileError> {
     match &resource.image_location {
         ImageLocation {
             space: ImageSpace::Property { object: ObjectSelector::Index { .. }, property_id: 27 },
             offset: 0,
         } if resource.read.extent.byte_length == 8 => Ok(resource.image_location.clone()),
-        _ => Err(CompileError::invalid(format!(
+        _ => Err(ProfileError::invalid(format!(
             "download-stamp resource {} requires an indexed PID 27 property at offset 0 with length 8",
             resource.id
         ))),
@@ -290,7 +290,7 @@ pub(crate) fn stamps_read_by_procedure(
 pub(crate) fn resolved_download_stamp_output(
     profile: &ResolvedProfile,
     candidates: Vec<StampDescriptor>,
-) -> Result<DownloadStampOutput, CompileError> {
+) -> Result<DownloadStampOutput, ProfileError> {
     let flavour = profile.feature("DownloadStamp")?.unwrap_or(0);
     let Some(_) = download_stamp_end(profile, flavour)? else {
         return Ok(DownloadStampOutput::None);

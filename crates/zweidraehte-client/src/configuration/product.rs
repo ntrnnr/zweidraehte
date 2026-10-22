@@ -18,6 +18,7 @@ use super::device::{EncodedConfiguration, EncodedParameter, InstallationConfigur
 use super::device::{ProcedureParameter, ProcedureParameterValue};
 use super::materialized::{MaterializedDevice, Unkeyed};
 use super::{ConfigurationError as Error, ConfigurationResult as Result};
+use crate::configuration::ErrorDetail;
 use zweidraehte_ets_files::product::ComObjectDef;
 
 /// Render a configured device into the commissioning compiler's inputs.
@@ -57,8 +58,10 @@ impl MaterializedDevice<Unkeyed> {
 
             let derived = parameter.source == ParameterSource::Derived;
             let context = if derived { "derived parameter" } else { "parameter" };
-            let value = encode_value(&parameter.value, parameter.parameter_type, parameter.size_bits)
-                .map_err(|reason| Error::ProductData(format!("{context} {}: {reason}", parameter.id)))?;
+            let value =
+                encode_value(&parameter.value, parameter.parameter_type, parameter.size_bits).map_err(|reason| {
+                    Error::ProductData(ErrorDetail::new(format!("{context} {}: {reason}", parameter.id)))
+                })?;
             encoded.push((parameter, value));
         }
 
@@ -90,10 +93,10 @@ impl MaterializedDevice<Unkeyed> {
             .iter()
             .map(|object| {
                 let object_type = ComObjectType::from_ets_size_string(&object.object_size).ok_or_else(|| {
-                    Error::ProductData(format!(
+                    Error::ProductData(ErrorDetail::new(format!(
                         "object {} has an unrecognized size {:?}",
                         object.number, object.object_size
-                    ))
+                    )))
                 })?;
                 Ok(ComObjectDef {
                     number: object.number,
@@ -146,9 +149,9 @@ fn winning_references<'a>(
                 .map(|(_, value)| *value);
             let value = last.next().expect("a finite non-empty set has an unfollowed element");
             if last.any(|other| other != value) {
-                return Err(Error::ProductData(format!(
+                return Err(Error::ProductData(ErrorDetail::new(format!(
                     "visible ParameterRefs assign conflicting values to stored parameter {id} without a defined write order"
-                )));
+                ))));
             }
             Ok((id, value.clone()))
         })
@@ -165,17 +168,17 @@ fn collect_procedure_parameters(
 
     ids.into_iter()
         .map(|id| {
-            let selector = evaluated
-                .procedure_selector(&id)
-                .ok_or_else(|| Error::ProductData(format!("load procedure references unknown parameter `{id}`")))?;
+            let selector = evaluated.procedure_selector(&id).ok_or_else(|| {
+                Error::ProductData(ErrorDetail::new(format!("load procedure references unknown parameter `{id}`")))
+            })?;
             let value = match selector.value {
                 ModelValue::Integer(value) => ProcedureParameterValue::Signed(*value),
                 ModelValue::Text(value) => ProcedureParameterValue::Text(value.clone()),
                 ModelValue::Bytes(value) => ProcedureParameterValue::Bytes(value.clone()),
                 ModelValue::Float(_) => {
-                    return Err(Error::ProductData(format!(
+                    return Err(Error::ProductData(ErrorDetail::new(format!(
                         "load procedure parameter `{id}` uses a floating-point value, which `choose` cannot compare"
-                    )));
+                    ))));
                 }
             };
             Ok((id, ProcedureParameter { active: selector.active, value }))

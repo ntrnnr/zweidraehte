@@ -71,6 +71,7 @@ impl std::fmt::Debug for ProjectOperation {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ProjectFinalizationFailure {
     #[error("persisting serial for `{device}`: {source}")]
     AuthoredSerial {
@@ -197,6 +198,12 @@ impl ProjectBatchReport {
 }
 
 impl ProjectBatchFailure {
+    /// A failure at `stage` that retains `report`, for frontends that replay
+    /// or simulate a batch outcome.
+    pub fn new(stage: crate::project::ProjectBatchFailureStage, report: ProjectBatchReport) -> Self {
+        Self { device: None, stage, report, source: None, state_errors: Vec::new(), finalization: Vec::new() }
+    }
+
     pub(super) fn capture_effects(&mut self) {
         self.report.capture_effects();
         if let Some(device) = &self.device

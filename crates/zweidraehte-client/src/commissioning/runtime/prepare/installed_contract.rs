@@ -6,6 +6,7 @@ use crate::commissioning::compiler::image::application_identity_resource_value;
 use crate::commissioning::compiler::program::CompiledProgram;
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::error::DiagnosticResult as Result;
+use crate::commissioning::error::PreparationFailure;
 use crate::commissioning::input::ProgramSections;
 use crate::commissioning::procedure::operands::{MemoryService, StandardMemoryService};
 use crate::commissioning::procedure::{
@@ -26,16 +27,22 @@ pub(in crate::commissioning) fn partial_installed_state_requirements(
     }
 
     if sections.contains(ProgramSections::APPLICATION_PROGRAM_2) {
-        return Err(Diagnostic::preparation("partial download selects AP2, which is unsupported"));
+        return Err(Diagnostic::preparation(
+            PreparationFailure::Unsupported,
+            "partial download selects AP2, which is unsupported",
+        ));
     }
     let selects_application = sections.contains(ProgramSections::APPLICATION_PROGRAM_1);
     let has_ap1_contract_resource =
         plan.profile().resource_names().any(|name| matches!(name, "ApplicationId" | "ApplicationLoadStatus"));
     let procedure = plan.procedure().ok_or_else(|| {
-        Diagnostic::preparation(format!(
-            "partial download for profile {} has no normalized procedure from which to prove application semantics",
-            plan.profile().mask()
-        ))
+        Diagnostic::preparation(
+            PreparationFailure::Profile,
+            format!(
+                "partial download for profile {} has no normalized procedure from which to prove application semantics",
+                plan.profile().mask()
+            ),
+        )
     })?;
     let procedure_targets_application = normalized_procedure_targets_application(plan.profile(), procedure)?;
     if !selects_application && !has_ap1_contract_resource && !procedure_targets_application {
@@ -47,16 +54,22 @@ pub(in crate::commissioning) fn partial_installed_state_requirements(
     let (identity, status) = match (identity, status) {
         (Some(identity), Some(status)) => (identity, status),
         (None, None) => {
-            return Err(Diagnostic::preparation(format!(
-                "partial download for profile {} targets AP1 state but resolves no ApplicationLoadStatus/ApplicationId pair",
-                plan.profile().mask(),
-            )));
+            return Err(Diagnostic::preparation(
+                PreparationFailure::Profile,
+                format!(
+                    "partial download for profile {} targets AP1 state but resolves no ApplicationLoadStatus/ApplicationId pair",
+                    plan.profile().mask(),
+                ),
+            ));
         }
         _ => {
-            return Err(Diagnostic::preparation(format!(
-                "partial download for profile {} resolves only one of ApplicationLoadStatus and ApplicationId",
-                plan.profile().mask(),
-            )));
+            return Err(Diagnostic::preparation(
+                PreparationFailure::Profile,
+                format!(
+                    "partial download for profile {} resolves only one of ApplicationLoadStatus and ApplicationId",
+                    plan.profile().mask(),
+                ),
+            ));
         }
     };
     let expected = application_identity_resource_value(
@@ -64,13 +77,15 @@ pub(in crate::commissioning) fn partial_installed_state_requirements(
         identity.length(),
         &crate::commissioning::compiler::application_identity::download_identity(product).application_id,
     )
-    .map_err(|error| Diagnostic::preparation(error.to_string()))?
+    .map_err(|error| Diagnostic::preparation(PreparationFailure::Profile, error.to_string()))?
     .to_vec();
     let minimum_service =
         if plan.management_secure() { StandardMemoryService::Extended } else { StandardMemoryService::Classic };
     let mut requirements = Vec::new();
     for (resource, expected) in [(status, vec![LoadState::Loaded.into()]), (identity, expected)] {
-        let service = resource.read(minimum_service).map_err(|error| Diagnostic::preparation(error.to_string()))?;
+        let service = resource
+            .read(minimum_service)
+            .map_err(|error| Diagnostic::preparation(PreparationFailure::Profile, error.to_string()))?;
         if !matches!(
             service.target,
             OperationTarget::Property { .. }
@@ -82,10 +97,10 @@ pub(in crate::commissioning) fn partial_installed_state_requirements(
                     ..
                 }
         ) {
-            return Err(Diagnostic::preparation(format!(
-                "partial-download resource {} has no live readable online location",
-                resource.id
-            )));
+            return Err(Diagnostic::preparation(
+                PreparationFailure::Profile,
+                format!("partial-download resource {} has no live readable online location", resource.id),
+            ));
         }
         requirements.push(BoundRead {
             resource: resource.id,
@@ -108,23 +123,33 @@ pub(in crate::commissioning) fn exact_partial_resource<'a>(
     name: &str,
     allowed_lengths: &[u32],
 ) -> Result<Option<SelectedResource<'a>>> {
-    let Some(resource) = profile.resource(name).map_err(|error| Diagnostic::preparation(error.to_string()))? else {
+    let Some(resource) = profile
+        .resource(name)
+        .map_err(|error| Diagnostic::preparation(PreparationFailure::Profile, error.to_string()))?
+    else {
         return Ok(None);
     };
 
-    if resource.access_rights().map_err(|error| Diagnostic::preparation(error.to_string()))?.read != ReadAccess::Runtime
+    if resource
+        .access_rights()
+        .map_err(|error| Diagnostic::preparation(PreparationFailure::Profile, error.to_string()))?
+        .read
+        != ReadAccess::Runtime
     {
-        return Err(Diagnostic::preparation(format!(
-            "partial-download resource {} ({name}) is not runtime-readable",
-            resource.id
-        )));
+        return Err(Diagnostic::preparation(
+            PreparationFailure::Profile,
+            format!("partial-download resource {} ({name}) is not runtime-readable", resource.id),
+        ));
     }
     if !allowed_lengths.contains(&resource.length()) {
-        return Err(Diagnostic::preparation(format!(
-            "partial-download resource {} ({name}) has width {}, expected one of {allowed_lengths:?}",
-            resource.id,
-            resource.length()
-        )));
+        return Err(Diagnostic::preparation(
+            PreparationFailure::Profile,
+            format!(
+                "partial-download resource {} ({name}) has width {}, expected one of {allowed_lengths:?}",
+                resource.id,
+                resource.length()
+            ),
+        ));
     }
 
     Ok(Some(resource))
@@ -141,9 +166,12 @@ pub(in crate::commissioning) fn normalized_procedure_targets_application(
     use crate::commissioning::procedure::operands::{MemoryAddress, PropertyAddress, pure_property_address};
     let mut selectors = Vec::new();
     for name in profile.resource_names().filter(|name| application_resource_name(name)) {
-        if let Some(resource) = profile.resource(name).map_err(|error| Diagnostic::preparation(error.to_string()))?
-            && let Some(object) =
-                resource.object_selector().map_err(|error| Diagnostic::preparation(error.to_string()))?
+        if let Some(resource) = profile
+            .resource(name)
+            .map_err(|error| Diagnostic::preparation(PreparationFailure::Profile, error.to_string()))?
+            && let Some(object) = resource
+                .object_selector()
+                .map_err(|error| Diagnostic::preparation(PreparationFailure::Profile, error.to_string()))?
         {
             selectors.push(pure_property_address(&object, 0)?);
         }

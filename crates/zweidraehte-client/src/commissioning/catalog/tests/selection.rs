@@ -1,6 +1,6 @@
 use super::*;
 use crate::commissioning::catalog::profile::ProfileDisposition;
-use crate::commissioning::error::CompileErrorKind;
+use crate::commissioning::error::ProfileErrorKind;
 use crate::commissioning::procedure::operands::{MemoryAddress, MemoryService, OperationTarget, StandardMemoryService};
 use crate::commissioning::test_support::architecture::resolve_profile;
 use crate::commissioning::test_support::architecture::{
@@ -34,7 +34,7 @@ fn ambiguous_dd0_requires_pid_72() {
     })
     .expect_err("DD0 alone must not select the base entry");
 
-    assert_eq!(error.kind, CompileErrorKind::MissingEvidence);
+    assert_eq!(error.kind, ProfileErrorKind::MissingEvidence);
     assert!(error.message.contains("DD0 0300") && error.message.contains("PID 72"));
 }
 
@@ -56,7 +56,7 @@ fn application_profile_selection_resolves_plain_0300_without_fabricating_discove
     let error =
         resolve_catalog_profile(&catalog, None, &ProfileSelection { discovery, variant_hint: VariantHint::Automatic })
             .expect_err("discovery alone requires PID 72");
-    assert_eq!(error.kind, CompileErrorKind::MissingEvidence);
+    assert_eq!(error.kind, ProfileErrorKind::MissingEvidence);
 }
 
 #[test]
@@ -79,7 +79,7 @@ fn application_profile_selection_retains_qualified_architectures_and_checks_obse
         // Application metadata never overrides conflicting device facts: an
         // unknown DD0 or a foreign PID 72 is reported against the device.
         for (dd0, observed, kind) in
-            [(0x0705, None, CompileErrorKind::Unsupported), (0x0300, Some([0xff; 10]), CompileErrorKind::InvalidInput)]
+            [(0x0705, None, ProfileErrorKind::Unsupported), (0x0300, Some([0xff; 10]), ProfileErrorKind::Invalid)]
         {
             let error = resolve_catalog_profile(&catalog, Some(&product), &ProfileSelection {
                 discovery: ProfileDiscovery { dd0, management_descriptor_01: observed, management_style: None },
@@ -99,7 +99,7 @@ fn application_profile_selection_retains_qualified_architectures_and_checks_obse
         variant_hint: VariantHint::Automatic,
     })
     .expect_err("plain application alias cannot target the plugin architecture");
-    assert_eq!(error.kind, CompileErrorKind::InvalidInput);
+    assert_eq!(error.kind, ProfileErrorKind::Invalid);
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn pid_72_selects_the_exact_0300_profile() {
     })
     .expect_err("an unknown descriptor must not fall back to the selector");
 
-    assert_eq!(error.kind, CompileErrorKind::InvalidInput);
+    assert_eq!(error.kind, ProfileErrorKind::Invalid);
     assert!(error.message.contains("DD0 0300 has no profile matching observed PID 72"));
 }
 
@@ -178,7 +178,7 @@ fn descriptor_query_is_required_only_for_ambiguous_dd0() {
 
     assert!(requires_management_descriptor_01(&catalog, 0x0300).expect("DD0 is known"));
     assert!(
-        matches!(requires_management_descriptor_01(&catalog, 0x1234), Err(error) if error.kind == CompileErrorKind::Unsupported && error.message.contains("DD0 1234"))
+        matches!(requires_management_descriptor_01(&catalog, 0x1234), Err(error) if error.kind == ProfileErrorKind::Unsupported && error.message.contains("DD0 1234"))
     );
 }
 
@@ -342,7 +342,7 @@ fn procedure_ownership_does_not_select_a_legacy_system_b_profile() {
 
             let error = super::super::select_variant(mask, None, VariantHint::Automatic)
                 .expect_err("a bare device still requires evidence to select among variants");
-            assert_eq!(error.kind, CompileErrorKind::MissingEvidence);
+            assert_eq!(error.kind, ProfileErrorKind::MissingEvidence);
         }
     }
 }
@@ -385,7 +385,7 @@ fn catalog_generations_preserve_exact_profile_selection() {
         }
         assert!(matches!(
             resolve_catalog_profile(&catalog, None, &ProfileSelection { discovery: ProfileDiscovery { dd0: 0x0300, management_descriptor_01: None, management_style: None }, variant_hint: VariantHint::Automatic }),
-            Err(error) if error.kind == CompileErrorKind::MissingEvidence && error.message.contains("DD0 0300") && error.message.contains("PID 72")
+            Err(error) if error.kind == ProfileErrorKind::MissingEvidence && error.message.contains("DD0 0300") && error.message.contains("PID 72")
         ));
     }
     // Namespace provenance keeps otherwise identical catalog generations distinct.

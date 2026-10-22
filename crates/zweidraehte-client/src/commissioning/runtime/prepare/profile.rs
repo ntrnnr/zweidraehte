@@ -20,6 +20,7 @@ use zweidraehte_proto::dpt::InterfaceObjectType;
 use zweidraehte_proto::pid;
 
 use super::capabilities::observe_association_table_entry_size;
+use crate::commissioning::error::PreparationFailure;
 
 #[derive(Debug, Clone, Copy)]
 pub(in crate::commissioning) struct AcquiredTarget {
@@ -112,13 +113,14 @@ impl Commissioner<'_> {
 }
 
 pub(in crate::commissioning) async fn read_dd0(session: &mut ExecutionSession<'_>) -> Result<u16> {
-    let descriptor = session
-        .connection_mut()?
-        .device_descriptor_read(0)
-        .await
-        .map_err(|error| Diagnostic::from(error).preparation_context("reading DD0"))?;
+    let descriptor = session.connection_mut()?.device_descriptor_read(0).await.map_err(|error| {
+        Diagnostic::from(error).preparation_context(PreparationFailure::Communication, "reading DD0")
+    })?;
     let [high, low, ..] = descriptor.as_slice() else {
-        return Err(Diagnostic::preparation("DD0 response is shorter than two octets"));
+        return Err(Diagnostic::preparation(
+            PreparationFailure::InvalidResponse,
+            "DD0 response is shorter than two octets",
+        ));
     };
 
     Ok(u16::from_be_bytes([*high, *low]))
@@ -132,38 +134,47 @@ pub(in crate::commissioning) async fn read_management_descriptor_01(
         start_element: 1,
     };
     let value = session.read(&target, OperationExtent::property(10, 1), TransferContext::Public).await?;
-    value.try_into().map_err(|_| Diagnostic::preparation("Device Object PID 72 is not exactly ten octets"))
+    value.try_into().map_err(|_| {
+        Diagnostic::preparation(PreparationFailure::InvalidResponse, "Device Object PID 72 is not exactly ten octets")
+    })
 }
 
 pub(in crate::commissioning) async fn read_profile_serial_number(
     session: &mut ExecutionSession<'_>,
     profile: &ResolvedProfile,
 ) -> Result<Option<[u8; 6]>> {
-    let Some(resource) =
-        profile.resource("DeviceSerialNumber").map_err(|error| Diagnostic::preparation(error.to_string()))?
+    let Some(resource) = profile
+        .resource("DeviceSerialNumber")
+        .map_err(|error| Diagnostic::preparation(PreparationFailure::Profile, error.to_string()))?
     else {
         return Ok(None);
     };
     if resource.length() != 6 {
-        return Err(Diagnostic::preparation(format!(
-            "profile {} declares a {}-octet DeviceSerialNumber resource",
-            profile.mask(),
-            resource.length()
-        )));
+        return Err(Diagnostic::preparation(
+            PreparationFailure::Profile,
+            format!("profile {} declares a {}-octet DeviceSerialNumber resource", profile.mask(), resource.length()),
+        ));
     }
 
-    match resource.property_location().map_err(|error| Diagnostic::preparation(error.to_string()))? {
+    match resource
+        .property_location()
+        .map_err(|error| Diagnostic::preparation(PreparationFailure::Profile, error.to_string()))?
+    {
         Some((_, _, 0)) => {}
         location => {
-            return Err(Diagnostic::preparation(format!(
-                "DeviceSerialNumber uses unsupported live location {location:?}"
-            )));
+            return Err(Diagnostic::preparation(
+                PreparationFailure::Profile,
+                format!("DeviceSerialNumber uses unsupported live location {location:?}"),
+            ));
         }
     };
     let read = resource.read(StandardMemoryService::Classic)?;
     let value = session.read(&read.target, read.extent, TransferContext::Public).await?;
     let serial_number: [u8; 6] = value.try_into().map_err(|value: Vec<u8>| {
-        Diagnostic::preparation(format!("PID_SERIAL_NUMBER returned {} octets", value.len()))
+        Diagnostic::preparation(
+            PreparationFailure::InvalidResponse,
+            format!("PID_SERIAL_NUMBER returned {} octets", value.len()),
+        )
     })?;
 
     Ok((serial_number != [0; 6]).then_some(serial_number))
@@ -195,7 +206,10 @@ fn decode_data_security_mode(data: &[u8]) -> Result<ObservedDataSecurity> {
     match data {
         [0, 0] => Ok(ObservedDataSecurity::Disabled),
         [0, 1] => Ok(ObservedDataSecurity::Enabled),
-        _ => Err(Diagnostic::preparation("Security Mode response has an invalid service or mode value")),
+        _ => Err(Diagnostic::preparation(
+            PreparationFailure::InvalidResponse,
+            "Security Mode response has an invalid service or mode value",
+        )),
     }
 }
 

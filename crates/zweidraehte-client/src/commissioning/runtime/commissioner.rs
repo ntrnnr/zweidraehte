@@ -24,6 +24,7 @@ pub(in crate::commissioning) const SERIAL_DOMAIN_WRITE_SETTLE: Duration = Durati
 
 /// Runtime policy which is independent of product and Master Data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CommissionerOptions {
     pub scan_window: Duration,
     pub restart_delay: Duration,
@@ -188,6 +189,7 @@ impl<Observer: CommissioningObserver + ?Sized> DeviceObservation for Observer {}
 
 /// Live access and installed evidence, separate from the desired programming input.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct PreparationOptions {
     pub access: ManagementAccessOptions,
     pub variant_hint: VariantHint,

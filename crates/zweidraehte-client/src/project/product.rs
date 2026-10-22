@@ -1,6 +1,7 @@
 //! Product loading and evaluation of authored project devices.
 
 use super::product_configuration;
+use crate::configuration::ErrorDetail;
 use crate::configuration::{
     GroupFilterConfiguration, InstallationConfiguration, MaterializedDevice, MembershipRole, NetSecurityPolicy,
     ObjectMembership, SecurityIntent, ToolManagedIpConfiguration, TopologyConfiguration, Unkeyed,
@@ -23,6 +24,7 @@ use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::com_object::ComObjectType;
 
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct EvaluatedProjectDevice {
     pub id: ProjectDeviceId,
     pub resolved: MaterializedDevice<Unkeyed>,
@@ -116,17 +118,12 @@ impl ProductCache {
         if ids.is_empty() {
             return Ok(BTreeMap::new());
         }
-        let directory = project.package_store_directory().ok_or_else(|| {
-            Error::DeviceConfiguration("project source has no filesystem path for its package store".to_owned())
-        })?;
+        let directory = project.package_store_directory().ok_or_else(|| Error::NoPackageStore)?;
         let package_store = PackageStore::new(&directory);
         let mut products = BTreeMap::new();
         for (index, id) in ids.iter().copied().enumerate() {
             progress(id, index, ids.len());
-            let device = project
-                .devices
-                .get(id)
-                .ok_or_else(|| Error::DeviceConfiguration(format!("project has no device `{id}`")))?;
+            let device = project.devices.get(id).ok_or_else(|| Error::UnknownDevice(id.clone()))?;
             let ProductReference::Package { package, catalog_item } = &device.product;
             let selector = PackageCatalogSelector {
                 package: PackageDigest::from_bytes(*package.as_bytes()),
@@ -183,10 +180,7 @@ impl ProjectProduct {
         let mut net_ids = BTreeMap::new();
         for object in project_device.objects.values() {
             for membership in &object.memberships {
-                let net = project
-                    .nets
-                    .get(&membership.net)
-                    .ok_or_else(|| Error::DeviceConfiguration(format!("unknown net `{}`", membership.net)))?;
+                let net = project.nets.get(&membership.net).ok_or_else(|| Error::UnknownNet(membership.net.clone()))?;
                 object_memberships.push(ObjectMembership {
                     group_address: net.address,
                     com_object: object.com_object,
@@ -242,10 +236,10 @@ impl ProjectProduct {
                     .count()
             };
             if (flags.transmission_enable() || flags.read_enable() || flags.read_on_init()) && primary_count != 1 {
-                return Err(Error::DeviceConfiguration(format!(
+                return Err(Error::InvalidProject(ErrorDetail::new(format!(
                     "device `{}`, object {} has effective T/R/I traffic but no unique primary association",
                     project_device.id, object.number
-                )));
+                ))));
             }
             if flags.read_on_init() && !flags.update_enable() {
                 warnings.push(format!(
@@ -269,10 +263,10 @@ impl ProjectProduct {
             for membership in &authored.memberships {
                 let net = &project.nets[&membership.net];
                 check_dpt(&net.dpt, object.datapoint_type.as_deref(), object.object_type).map_err(|reason| {
-                    Error::DeviceConfiguration(format!(
+                    Error::InvalidProject(ErrorDetail::new(format!(
                         "device `{}`, object {}, net `{}`: {reason}",
                         project_device.id, object.number, net.id
-                    ))
+                    )))
                 })?;
             }
         }
@@ -287,41 +281,41 @@ fn topology_configuration(
     product: &ProductData,
 ) -> Result<TopologyConfiguration> {
     let line = project.line_topology(project_device.area, project_device.line).ok_or_else(|| {
-        Error::DeviceConfiguration(format!(
+        Error::InvalidProject(ErrorDetail::new(format!(
             "device `{}` has no unique authored topology line {}.{}",
             project_device.id, project_device.area, project_device.line
-        ))
+        )))
     })?;
 
     let group_filter = match (project_device.coupler_role(), project_device.routing) {
         (None, None) => None,
         (None, Some(_)) => {
-            return Err(Error::DeviceConfiguration(format!(
+            return Err(Error::InvalidProject(ErrorDetail::new(format!(
                 "device `{}` declares group routing but is not an address-zero topology coupler",
                 project_device.id
-            )));
+            ))));
         }
         (Some(_), None) => {
-            return Err(Error::DeviceConfiguration(format!(
+            return Err(Error::InvalidProject(ErrorDetail::new(format!(
                 "topology coupler `{}` has no group-routing policy",
                 project_device.id
-            )));
+            ))));
         }
         (Some(_), Some(policy)) => {
             let addresses = match policy {
                 CouplerRoutingPolicy::Filter => project
                     .coupler_filter_addresses(&project_device.id)
                     .map_err(|error| {
-                        Error::DeviceConfiguration(format!(
+                        Error::InvalidProject(ErrorDetail::new(format!(
                             "could not derive group filter for `{}`: {error}",
                             project_device.id
-                        ))
+                        )))
                     })?
                     .ok_or_else(|| {
-                        Error::DeviceConfiguration(format!(
+                        Error::InvalidProject(ErrorDetail::new(format!(
                             "filtering coupler `{}` produced no group-filter configuration",
                             project_device.id
-                        ))
+                        )))
                     })?,
                 CouplerRoutingPolicy::RouteAll | CouplerRoutingPolicy::BlockAll => BTreeSet::new(),
             };
@@ -353,32 +347,32 @@ fn topology_configuration(
         (Some(zweidraehte_project::DomainAddress::Ip(_)), Some(_), None) => None,
         (Some(zweidraehte_project::DomainAddress::Rf(_)) | None, None, None) => None,
         _ => {
-            return Err(Error::DeviceConfiguration(format!(
+            return Err(Error::InvalidProject(ErrorDetail::new(format!(
                 "device `{}` has inconsistent KNX/IP line and device configuration",
                 project_device.id
-            )));
+            ))));
         }
     };
     let ip = if project_device.medium == zweidraehte_project::Medium::Ip {
         match product.programming_options().ip_configuration().value {
             IpConfigurationMode::Tool => Some(authored_ip.ok_or_else(|| {
-                Error::DeviceConfiguration(format!(
+                Error::InvalidProject(ErrorDetail::new(format!(
                     "tool-managed KNX/IP product `{}` needs complete authored IP configuration",
                     project_device.id
-                ))
+                )))
             })?),
             IpConfigurationMode::Custom if authored_ip.is_none() => None,
             IpConfigurationMode::Custom => {
-                return Err(Error::DeviceConfiguration(format!(
+                return Err(Error::InvalidProject(ErrorDetail::new(format!(
                     "KNX/IP product `{}` declares IPConfig=Custom; configure its manufacturer parameters instead of the standard IP fields",
                     project_device.id
-                )));
+                ))));
             }
             IpConfigurationMode::Unknown(value) => {
-                return Err(Error::DeviceConfiguration(format!(
+                return Err(Error::InvalidProject(ErrorDetail::new(format!(
                     "KNX/IP product `{}` declares unknown IPConfig value `{value}`",
                     project_device.id
-                )));
+                ))));
             }
         }
     } else {
@@ -391,11 +385,11 @@ fn topology_configuration(
 
 fn validate_data_secure_capability(project_device: &ProjectDevice, product: &ProductData) -> Result<()> {
     if project_device.data_secure.is_enabled() && !product.supports_data_secure() {
-        return Err(Error::DeviceConfiguration(format!(
+        return Err(Error::InvalidProject(ErrorDetail::new(format!(
             "device `{}` enables Data Secure, but product `{}` does not support it",
             project_device.id,
             product.id()
-        )));
+        ))));
     }
     Ok(())
 }
@@ -465,7 +459,7 @@ mod tests {
         std::fs::write(&path, fixture.project.source()).expect("source");
         let store = ProjectStore::open(&path).expect("project");
         let project = store.authored();
-        let id = ProjectDeviceId("receiver".into());
+        let id = ProjectDeviceId::new("receiver").expect("literal is an identifier");
         let ProductReference::Package { package, catalog_item } = &project.devices[&id].product;
         let selector = PackageCatalogSelector {
             package: PackageDigest::from_bytes(*package.as_bytes()),
@@ -478,7 +472,7 @@ mod tests {
 
         let first = cache.load(project, project.devices.keys(), |_, _, _| {}).expect("cached selections");
         let second = cache.load(project, project.devices.keys(), |_, _, _| {}).expect("next refresh");
-        assert!(Arc::ptr_eq(&first[&id].selected, &second[&ProjectDeviceId("sender".into())].selected));
+        assert!(Arc::ptr_eq(&first[&id].selected, &second["sender"].selected));
 
         // Equal application IDs do not authorize reuse under another leaf or
         // digest. With no archive behind the new selector, acquisition fails.

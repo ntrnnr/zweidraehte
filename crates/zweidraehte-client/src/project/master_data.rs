@@ -79,7 +79,7 @@ impl ProjectMasterData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commissioning::CompileErrorKind;
+    use crate::commissioning::ProfileErrorKind;
     use std::error::Error as _;
     use zweidraehte_ets_files::MasterDataError;
     use zweidraehte_ets_files::schema::KnxSchemaVersion;
@@ -122,7 +122,7 @@ mod tests {
         assert!(matches!(
             ProjectMasterData::load([&product], Some(&path)),
             Err(Error::Catalog(error))
-                if error.kind == CompileErrorKind::Unsupported && error.message.contains("schema 24")
+                if error.kind() == ProfileErrorKind::Unsupported && error.message().contains("schema 24")
         ));
     }
 

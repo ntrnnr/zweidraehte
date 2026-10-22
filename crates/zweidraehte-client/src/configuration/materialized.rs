@@ -152,7 +152,7 @@ impl MaterializedDevice<Keyed> {
     pub fn resolve_profile(
         &self,
         selection: &crate::commissioning::ProfileSelection,
-    ) -> Result<crate::commissioning::ResolvedProfile, crate::commissioning::CompileError> {
+    ) -> Result<crate::commissioning::ResolvedProfile, crate::commissioning::ProfileError> {
         crate::commissioning::ResolvedProfile::for_product(&self.product, selection)
     }
 }

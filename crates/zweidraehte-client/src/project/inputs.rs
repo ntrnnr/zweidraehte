@@ -16,6 +16,7 @@ use zweidraehte_project::{AuthoredProject, NetId, ProjectDeviceId, ProjectStore}
 /// Explicit file sources. A fallback catalog cannot replace a package's own
 /// Master Data; keyring passwords and interaction belong to the caller.
 #[derive(Debug, Default, Clone, Copy)]
+#[non_exhaustive]
 pub struct ProjectInputSources<'a> {
     pub master_data: Option<&'a Path>,
     /// Name the file read by the keyring loader so changes invalidate setup.
@@ -24,11 +25,19 @@ pub struct ProjectInputSources<'a> {
 
 /// Selection and semantic intent, independent of frontend shortcut names.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct ProjectInputRequest<'a> {
     pub selected: &'a [ProjectDeviceId],
     pub selection: BatchSelection,
     pub intent: CommissioningIntent,
     pub sources: ProjectInputSources<'a>,
+}
+
+impl<'a> ProjectInputRequest<'a> {
+    /// A request without explicit Master Data or keyring files.
+    pub fn new(selected: &'a [ProjectDeviceId], selection: BatchSelection, intent: CommissioningIntent) -> Self {
+        Self { selected, selection, intent, sources: ProjectInputSources::default() }
+    }
 }
 
 /// Setup needs contain identities, never credential bytes. Missing credentials

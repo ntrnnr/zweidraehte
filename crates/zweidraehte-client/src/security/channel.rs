@@ -17,13 +17,13 @@ use zweidraehte_util::secret::SecretBytes;
 use super::SecureError;
 
 /// Convert a 48-bit sequence number to its 6-byte wire form.
-pub fn seq_to_bytes(val: u64) -> [u8; 6] {
+pub(crate) fn seq_to_bytes(val: u64) -> [u8; 6] {
     let b = val.to_be_bytes();
     [b[2], b[3], b[4], b[5], b[6], b[7]]
 }
 
 /// Convert a 6-byte wire sequence number to a u64.
-pub fn seq_from_bytes(bytes: &[u8; 6]) -> u64 {
+pub(crate) fn seq_from_bytes(bytes: &[u8; 6]) -> u64 {
     let mut b = [0u8; 8];
     b[2..8].copy_from_slice(bytes);
     u64::from_be_bytes(b)
@@ -33,7 +33,7 @@ pub fn seq_from_bytes(bytes: &[u8; 6]) -> u64 {
 ///
 /// Time-free and I/O-free; the bus task persists the counter values it
 /// returns.
-pub struct SecureChannel {
+pub(crate) struct SecureChannel {
     key: SecretBytes,
     /// `None` for devices whose keyring entry carries no serial —
     /// their counters cannot be persisted (no stable key to store
@@ -196,7 +196,7 @@ fn unwrap_with_floor(key: &[u8; 16], frame: &[u8], floor: u64) -> Result<(Vec<u8
 /// (TSSJ §3.2.6). `seq` is the client-wide secure sending sequence
 /// number; the caller consumes it from [`super::SecurityStore`] before
 /// calling.
-pub fn group_wrap(key: &[u8; 16], seq: u64, src: u16, frame: &[u8]) -> Vec<u8> {
+pub(crate) fn group_wrap(key: &[u8; 16], seq: u64, src: u16, frame: &[u8]) -> Vec<u8> {
     debug_assert!(
         KnxMessageBuffer::from_buffer(frame).ctrl2_field().is_group_addressed(),
         "group_wrap needs a group-addressed frame"
@@ -245,7 +245,7 @@ pub(crate) fn system_broadcast_wrap(key: &[u8; 16], seq: u64, src: u16, frame: &
 /// Returns the plaintext frame and the new floor (`received + 1`) for
 /// the caller to store — only on `Ok`, so an unauthenticated frame
 /// can never move the floor.
-pub fn group_unwrap(key: &[u8; 16], frame: &[u8], floor: u64) -> Result<(Vec<u8>, u64), SecureError> {
+pub(crate) fn group_unwrap(key: &[u8; 16], frame: &[u8], floor: u64) -> Result<(Vec<u8>, u64), SecureError> {
     if frame.len() < secure::MIN_FRAME_LEN {
         return Err(SecureError::TooShort);
     }

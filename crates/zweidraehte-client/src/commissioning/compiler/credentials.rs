@@ -31,6 +31,7 @@ pub enum CredentialTransition {
 /// transfer reports exactly the rows that may have reached the device without
 /// inferring keys from bytes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CredentialEffects {
     pub transitions: Vec<CredentialTransition>,
     pub group_keys: Vec<GroupAddress>,

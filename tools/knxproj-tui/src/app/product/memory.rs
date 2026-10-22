@@ -9,7 +9,7 @@ use zweidraehte_client::commissioning::{
 };
 use zweidraehte_client::configuration::{
     InstallationConfiguration, MaterializedDevice, MembershipRole as ClientMembershipRole,
-    ObjectMembership as ClientObjectMembership, ResolvedKeyMaterial, SecurityIntent,
+    ObjectMembership as ClientObjectMembership, ResolvedKeyMaterial,
 };
 use zweidraehte_client::project::product_object_flags;
 use zweidraehte_ets_files::product::ParameterLocation;
@@ -86,6 +86,7 @@ pub fn image_requirements_label(requirements: &[ImageRequirement]) -> String {
         .map(|requirement| match requirement {
             ImageRequirement::AssociationTableEntrySize { .. } => "association table row size".to_owned(),
             ImageRequirement::DataSecurityMode => "current Data Secure mode".to_owned(),
+            _ => "device-specific live fact".to_owned(),
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -284,15 +285,13 @@ impl ProductEditor {
                 })
             })
             .collect();
-        let base = InstallationConfiguration {
-            object_memberships,
-            max_apdu: authored_device.and_then(|device| device.max_apdu),
-            // Project keys are intentionally absent from UI memory. The
-            // preview redacts Security IO key spans when a caller supplies
-            // them; this product view compiles the ordinary application image.
-            security: SecurityIntent { serial_number, ..Default::default() },
-            ..InstallationConfiguration::new(address)
-        };
+        let mut base = InstallationConfiguration::new(address);
+        base.object_memberships = object_memberships;
+        base.max_apdu = authored_device.and_then(|device| device.max_apdu);
+        // Project keys are intentionally absent from UI memory. The preview
+        // redacts Security IO key spans when a caller supplies them; this
+        // product view compiles the ordinary application image.
+        base.security.serial_number = serial_number;
         let evaluated = self.view.device.evaluate(&object_settings).map_err(|error| error.to_string())?;
         let resolved = MaterializedDevice::from_evaluated(evaluated, base).map_err(|error| error.to_string())?;
         let parameters = resolved

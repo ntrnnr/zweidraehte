@@ -9,6 +9,7 @@ use zweidraehte_proto::address::IndividualAddress;
 
 /// Read-only facts bound to a prepared plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DiscoveredDevice {
     pub address: Option<IndividualAddress>,
     pub serial_number: Option<[u8; 6]>,
@@ -24,6 +25,7 @@ pub struct DiscoveredDevice {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DifferentialDecision {
     /// Execute the complete compiled image for the selected semantic scope.
     ///
@@ -57,6 +59,7 @@ pub(in crate::commissioning) enum SerialDomainPoll {
 
 /// Behavior requested when differential preconditions cannot be proven.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DifferentialPolicy {
     Disabled,
     FallBackToUndifferenced,
@@ -64,6 +67,7 @@ pub enum DifferentialPolicy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DifferentialFallback {
     MissingDeploymentHistory,
     MissingDeviceStamp,
@@ -76,6 +80,7 @@ pub enum DifferentialFallback {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DeploymentRecord {
     pub mask: MaskIdentity,
     pub variant: ProfileVariant,

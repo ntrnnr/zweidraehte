@@ -1,6 +1,6 @@
 //! Resolve the selected property's wire geometry directly from authored metadata.
 
-use super::{CompileError, ResourceOrder, SelectedResource};
+use super::{ProfileError, ResourceOrder, SelectedResource};
 use crate::commissioning::catalog::profile::{DeclaredProperty, ObjectSelector, Occurrence, ResolvedProfile};
 use crate::commissioning::procedure::{IndexedPropertyDataTypeSeed, PropertyDataTypeLookup};
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,7 +13,7 @@ impl ResolvedProfile {
         &self,
         selector: &ObjectSelector,
         property_id: u16,
-    ) -> Result<PropertyDataTypeLookup, CompileError> {
+    ) -> Result<PropertyDataTypeLookup, ProfileError> {
         let mut lookup = PropertyDataTypeLookup::default();
         for data_type in self.master_data.property_data_types() {
             let Some(pdt) = data_type.number.and_then(|number| u8::try_from(number).ok()) else { continue };
@@ -23,7 +23,7 @@ impl ResolvedProfile {
                 if let Some(previous) = lookup.declaration_types.insert(token.clone(), pdt)
                     && previous != pdt
                 {
-                    return Err(CompileError::invalid(format!(
+                    return Err(ProfileError::invalid(format!(
                         "property data type token {token} has multiple numbers"
                     )));
                 }
@@ -46,7 +46,7 @@ impl ResolvedProfile {
                 [] => None,
                 [property] => exact_pdt(&property.property_data_type),
                 _ => {
-                    return Err(CompileError::invalid(format!(
+                    return Err(ProfileError::invalid(format!(
                         "interface object {:?} declares PID {property_id} more than once",
                         object.index
                     )));
@@ -64,7 +64,7 @@ impl ResolvedProfile {
                     })
                     .is_some()
             {
-                return Err(CompileError::invalid(format!(
+                return Err(ProfileError::invalid(format!(
                     "interface object index {index} is declared more than once"
                 )));
             }
@@ -78,7 +78,7 @@ impl ResolvedProfile {
                 .as_deref()
                 .map(|token| {
                     token.strip_prefix("OT-").unwrap_or(token).parse::<u16>().map_err(|_| {
-                        CompileError::invalid(format!("invalid interface object type {token} for PID {property_id}"))
+                        ProfileError::invalid(format!("invalid interface object type {token} for PID {property_id}"))
                     })
                 })
                 .transpose()?;
@@ -87,7 +87,7 @@ impl ResolvedProfile {
             // present but untyped, so execution reads the target's description.
             let tokens = property.property_data_types.as_deref();
             if lookup.well_known.insert(object_type, tokens.and_then(exact_pdt)).is_some() {
-                return Err(CompileError::invalid(format!(
+                return Err(ProfileError::invalid(format!(
                     "global interface-object metadata has multiple definitions for {object_type:?}, PID {property_id}"
                 )));
             }
@@ -105,7 +105,7 @@ impl ResolvedProfile {
             match object {
                 ObjectSelector::Index { index } => {
                     let index = u8::try_from(*index).map_err(|_| {
-                        CompileError::invalid(format!("observed interface object index {index} exceeds the wire range"))
+                        ProfileError::invalid(format!("observed interface object index {index} exceeds the wire range"))
                     })?;
                     lookup.indexed.entry(index).or_default().descriptor = Some(*pdt);
                 }
@@ -113,7 +113,7 @@ impl ResolvedProfile {
                     if let Some(previous) = typed_descriptors.insert(*object_type, *pdt)
                         && previous != *pdt
                     {
-                        return Err(CompileError::invalid(format!(
+                        return Err(ProfileError::invalid(format!(
                             "property {property_id} on object type {object_type} has contradictory observed PDTs"
                         )));
                     }
@@ -131,7 +131,7 @@ impl ResolvedProfile {
         &self,
         selector: &ObjectSelector,
         property_id: u16,
-    ) -> Result<Option<u32>, CompileError> {
+    ) -> Result<Option<u32>, ProfileError> {
         if self.roster_types_property(selector, property_id)? {
             return self.metadata_property_width(selector, property_id, false, None);
         }
@@ -146,7 +146,7 @@ impl ResolvedProfile {
         selector: &ObjectSelector,
         property_id: u16,
         read: bool,
-    ) -> Result<Option<u32>, CompileError> {
+    ) -> Result<Option<u32>, ProfileError> {
         self.property_width(selector, property_id, read, None)
     }
 
@@ -156,7 +156,7 @@ impl ResolvedProfile {
         property_id: u16,
         read: bool,
         resources: Option<&[(SelectedResource<'_>, Option<u32>)]>,
-    ) -> Result<Option<u32>, CompileError> {
+    ) -> Result<Option<u32>, ProfileError> {
         let declared = self
             .declared_property_types
             .get(&DeclaredProperty::new(selector, property_id))
@@ -181,7 +181,7 @@ impl ResolvedProfile {
                         return Ok(Some(width));
                     }
                 }
-                return Err(CompileError::invalid(format!(
+                return Err(ProfileError::invalid(format!(
                     "property {property_id} on {selector:?} is typed by Master Data with {width}-byte elements, \
                      but the load procedure declares {property_type}"
                 )));
@@ -214,7 +214,7 @@ impl ResolvedProfile {
         property_id: u16,
         read: bool,
         resources: Option<&[(SelectedResource<'_>, Option<u32>)]>,
-    ) -> Result<Option<u32>, CompileError> {
+    ) -> Result<Option<u32>, ProfileError> {
         let objects = roster_objects(self, selector)?;
         let standard = super::rules::ip::standard_property(self, selector, property_id);
         if let Some(object) = objects.first() {
@@ -227,7 +227,7 @@ impl ResolvedProfile {
                             || self.pdt_width(&property.property_data_type, None, false) != width
                             || self.pdt_width(&property.property_data_type, None, true) != width)
                     {
-                        return Err(CompileError::invalid(format!(
+                        return Err(ProfileError::invalid(format!(
                             "property {property_id} on {selector:?}: declared PDT {} conflicts with standard IP PDT {token}",
                             property.property_data_type
                         )));
@@ -236,7 +236,7 @@ impl ResolvedProfile {
                 }
                 [] => {}
                 _ => {
-                    return Err(CompileError::invalid(format!(
+                    return Err(ProfileError::invalid(format!(
                         "interface object {selector:?} declares PID {property_id} more than once"
                     )));
                 }
@@ -292,7 +292,7 @@ impl ResolvedProfile {
             widths.extend(width);
         }
         if widths.len() > 1 {
-            return Err(CompileError::invalid(format!(
+            return Err(ProfileError::invalid(format!(
                 "property {property_id} on {selector:?} has conflicting element sizes {widths:?}"
             )));
         }
@@ -300,7 +300,7 @@ impl ResolvedProfile {
     }
 
     /// Whether the mask's interface-object roster itself declares the PID.
-    fn roster_types_property(&self, selector: &ObjectSelector, property_id: u16) -> Result<bool, CompileError> {
+    fn roster_types_property(&self, selector: &ObjectSelector, property_id: u16) -> Result<bool, ProfileError> {
         Ok(roster_objects(self, selector)?
             .first()
             .is_some_and(|object| object.properties.iter().any(|property| property.property_id == property_id)))
@@ -313,7 +313,7 @@ impl ResolvedProfile {
         property_id: u16,
         length: Option<u32>,
         read: bool,
-    ) -> Result<(bool, Option<u32>), CompileError> {
+    ) -> Result<(bool, Option<u32>), ProfileError> {
         let object_type = object_type.map(|value| format!("OT-{value}"));
         let mut candidates: Vec<_> = self
             .master_data
@@ -336,7 +336,7 @@ impl ResolvedProfile {
                 true,
                 property.property_data_types.as_deref().and_then(|tokens| self.pdt_width(tokens, length, read)),
             )),
-            _ => Err(CompileError::invalid(format!(
+            _ => Err(ProfileError::invalid(format!(
                 "global interface-object metadata has multiple definitions for {selector:?}, PID {property_id}: {:?}",
                 candidates.iter().map(|property| &property.id).collect::<Vec<_>>()
             ))),
@@ -368,7 +368,7 @@ impl ResolvedProfile {
 fn roster_objects<'a>(
     profile: &'a ResolvedProfile,
     selector: &ObjectSelector,
-) -> Result<Vec<&'a InterfaceObject>, CompileError> {
+) -> Result<Vec<&'a InterfaceObject>, ProfileError> {
     let variant = profile.source();
     let mut objects: Vec<_> = variant
         .interface_objects
@@ -381,7 +381,7 @@ fn roster_objects<'a>(
         .collect();
     match selector {
         ObjectSelector::Index { index } if objects.len() > 1 => {
-            return Err(CompileError::invalid(format!("interface object index {index} is declared more than once")));
+            return Err(ProfileError::invalid(format!("interface object index {index} is declared more than once")));
         }
         ObjectSelector::Type { occurrence, .. } if objects.len() > 1 => {
             let index = match occurrence {
@@ -401,10 +401,10 @@ pub(crate) fn property_resources<'a>(
     profile: &'a ResolvedProfile,
     selector: &ObjectSelector,
     property_id: u16,
-) -> Result<Vec<(SelectedResource<'a>, Option<u32>)>, CompileError> {
+) -> Result<Vec<(SelectedResource<'a>, Option<u32>)>, ProfileError> {
     let relevant =
         |location: &Location| location.property_id == Some(property_id) && property_object_matches(location, selector);
-    let matching_offset = |location: Option<&Location>| -> Result<Option<u32>, CompileError> {
+    let matching_offset = |location: Option<&Location>| -> Result<Option<u32>, ProfileError> {
         let Some(location) = location.filter(|location| relevant(location)) else { return Ok(None) };
         Ok(property_location(location)?.map(|(_, _, offset)| offset))
     };
@@ -437,11 +437,11 @@ pub(crate) fn property_object_matches(location: &Location, object: &ObjectSelect
     }
 }
 
-pub(crate) fn property_location(location: &Location) -> Result<Option<(ObjectSelector, u16, u32)>, CompileError> {
+pub(crate) fn property_location(location: &Location) -> Result<Option<(ObjectSelector, u16, u32)>, ProfileError> {
     if !matches!(location.address_space.as_str(), "SystemProperty" | "AppProperty" | "Property") {
         return Ok(None);
     }
-    Ok(Some(match location.to_address_space().map_err(|error| CompileError::invalid(error.to_string()))? {
+    Ok(Some(match location.to_address_space().map_err(|error| ProfileError::invalid(error.to_string()))? {
         AddressSpaceLocation::SystemProperty { interface_object_ref, property_id, start_address, occurrence }
         | AddressSpaceLocation::AppProperty { interface_object_ref, property_id, start_address, occurrence } => {
             (super::resource_view::indexed_object(interface_object_ref, occurrence)?, property_id, start_address)

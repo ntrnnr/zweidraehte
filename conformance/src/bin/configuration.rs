@@ -150,11 +150,10 @@ async fn commission_operation_with_sections(
     automatic_sections: Option<ProgramSections>,
     context: &str,
 ) -> Result<ExecutionReport, String> {
-    let commissioner = Commissioner::new(bus).with_options(CommissionerOptions {
-        scan_window: Duration::from_millis(150),
-        restart_delay: Duration::from_millis(50),
-        ..CommissionerOptions::default()
-    });
+    let mut commissioner_options = CommissionerOptions::default();
+    commissioner_options.scan_window = Duration::from_millis(150);
+    commissioner_options.restart_delay = Duration::from_millis(50);
+    let commissioner = Commissioner::new(bus).with_options(commissioner_options);
     let expected_target = target.clone();
     let mut compile_options = CompileOptions::new(target);
     compile_options.automatic_sections = automatic_sections;
@@ -383,8 +382,9 @@ fn materialized_device(
         .map_err(|error| format!("loading versioned Master Data: {error}"))?;
     let product =
         product.clone().bind_master_data(document).map_err(|error| format!("associating Master Data: {error}"))?;
-    let encoded =
-        EncodedConfiguration { parameters, com_objects: product.com_objects().to_vec(), ..Default::default() };
+    let mut encoded = EncodedConfiguration::default();
+    encoded.parameters = parameters;
+    encoded.com_objects = product.com_objects().to_vec();
     Ok(MaterializedDevice::from_parts(product, installation.clone(), encoded).into_keyed(key_material))
 }
 
@@ -523,7 +523,7 @@ async fn main() -> ExitCode {
         }
 
         let (connector, control) = client_bridge::spawn(lifecycle);
-        let bus = KnxBus::builder().attach(connector, ConnectorInfo { assigned_address: tester_ia(), max_apdu: 254 });
+        let bus = KnxBus::builder().attach(connector, ConnectorInfo::new(tester_ia(), 254));
 
         for (name, scenario) in selected {
             print!("• {name} ... ");
@@ -1074,11 +1074,7 @@ fn loose_fixture_product(mtxml: &str) -> Result<SelectedProduct, String> {
 
 fn parse_fixture_project(source: impl Into<String>, context: &str) -> Result<AuthoredProject, String> {
     let authored = AuthoredProject::parse(source).map_err(|error| format!("parsing {context} project: {error}"))?;
-    let product = &authored
-        .devices
-        .get(&ProjectDeviceId("dut".into()))
-        .ok_or_else(|| format!("{context} project has no `dut` device"))?
-        .product;
+    let product = &authored.devices.get("dut").ok_or_else(|| format!("{context} project has no `dut` device"))?.product;
     match product {
         ProductReference::Package { package, catalog_item }
             if package.to_string() == FIXTURE_PACKAGE_ID && catalog_item == FIXTURE_CATALOG_ITEM_ID => {}
@@ -1126,7 +1122,7 @@ area {} conformance {{
         desired_address.line(),
     );
     let authored = parse_fixture_project(source, "plain fixture")?;
-    let id = ProjectDeviceId("dut".into());
+    let id = ProjectDeviceId::new("dut").expect("literal is an identifier");
     let products = [(id.clone(), ProjectProduct::new(product))].into_iter().collect();
     let catalogs = ProjectMasterData::load_for(&products, None)
         .map_err(|error| format!("loading plain fixture catalog: {error}"))?;
@@ -1158,9 +1154,10 @@ fn scenario_bcu1_programmer_download<'a>(
             1,
             15,
             CommissioningIntent::AssignAddressAndDownload(DownloadMode::Full),
-            TargetSelection::ProgrammingButton(ProgrammingModePolling {
-                wait_when_none_found: false,
-                ..ProgrammingModePolling::default()
+            TargetSelection::ProgrammingButton({
+                let mut polling = ProgrammingModePolling::default();
+                polling.wait_when_none_found = false;
+                polling
             }),
         )
         .await?;
@@ -1292,7 +1289,9 @@ area 1 conformance {{
     // active rows without manufacturing an invalid table entry.
     let authored_with_stale = parse_fixture_project(project_source(true), "two-group secure fixture")?;
     let authored = parse_fixture_project(project_source(false), "one-group secure fixture")?;
-    let products = [(ProjectDeviceId("dut".into()), ProjectProduct::new(product))].into_iter().collect();
+    let products = [(ProjectDeviceId::new("dut").expect("literal is an identifier"), ProjectProduct::new(product))]
+        .into_iter()
+        .collect();
     let group_keys = [(group, group_key), (stale_group, stale_group_key)];
     let source_group_keys = [("test", group_key), ("stale", stale_group_key)];
     let keyring = fixture_keyring(serial_number, tool_key, &group_keys);
@@ -1300,7 +1299,7 @@ area 1 conformance {{
     let empty = FixtureKeySource::default();
     let catalogs = ProjectMasterData::load_for(&products, None)
         .map_err(|error| format!("loading secure fixture catalog: {error}"))?;
-    let selected = [ProjectDeviceId("dut".into())];
+    let selected = [ProjectDeviceId::new("dut").expect("literal is an identifier")];
     let selection = BatchSelection::Selected;
     let (source, imported) = match key_sources {
         SecureFixtureKeySources::Direct => (&direct as &dyn KeyMaterialSource, None),
@@ -2125,7 +2124,7 @@ async fn run_bcu2_light_switch_download(bus: &KnxBus, control: &DutControl, targ
     let product =
         ProductData::from_mtxml_str(&mtxml).map_err(|e| format!("reading the light-switch product back: {e}"))?;
 
-    let mut project = InstallationConfiguration { max_apdu: Some(15), ..InstallationConfiguration::new(dut_ia()) };
+    let mut project = InstallationConfiguration::new(dut_ia());
     // Button 1's primary object onto a group address.
     project.object_memberships = vec![ObjectMembership::primary(GroupAddress::from_three_level(3, 2, 1), 0)];
     project.max_apdu = Some(target.max_apdu());
@@ -2320,7 +2319,7 @@ fn scenario_bcu2_secure_commission<'a>(
         let product = ProductData::from_mtxml_str(&bcu2_light_switch_product::generate_secure_mtxml()?)
             .map_err(|e| format!("reading secure BCU2 light-switch product back: {e}"))?;
 
-        let mut project = InstallationConfiguration { max_apdu: Some(15), ..InstallationConfiguration::new(dut_ia()) };
+        let mut project = InstallationConfiguration::new(dut_ia());
         // The light-switch primary object transmits; its status sibling
         // receives. Link both to the same GA so the bidirectional secure test
         // follows the real product flags instead of relying on the fixture's
@@ -2695,7 +2694,7 @@ fn scenario_micro_s7_secure_commission<'a>(
         let product = ProductData::from_mtxml_str(&micro_system7_product::generate_secure_mtxml()?)
             .map_err(|e| format!("reading secure micro System 7 product back: {e}"))?;
 
-        let mut project = InstallationConfiguration { max_apdu: Some(15), ..InstallationConfiguration::new(dut_ia()) };
+        let mut project = InstallationConfiguration::new(dut_ia());
         // Object 3 is the fixture's byte-sized, fully enabled GO. System 7
         // has a real slot zero, so its GO-security flag is element four.
         project.object_memberships = vec![ObjectMembership::primary(group, 3)];
@@ -3210,7 +3209,7 @@ fn scenario_system_b_scoped_downloads<'a>(
 ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
     Box::pin(async move {
         let product = system_b_product()?;
-        let mut project = InstallationConfiguration { max_apdu: Some(15), ..InstallationConfiguration::new(dut_ia()) };
+        let mut project = InstallationConfiguration::new(dut_ia());
         project.max_apdu = Some(254);
 
         // Establish installed application identity before either scoped update.
@@ -3270,7 +3269,7 @@ fn scenario_system_b_redownload<'a>(
 
         let product = system_b_product()?;
 
-        let mut project = InstallationConfiguration { max_apdu: Some(15), ..InstallationConfiguration::new(dut_ia()) };
+        let mut project = InstallationConfiguration::new(dut_ia());
         project.max_apdu = Some(254);
 
         // First commissioning, from factory state.

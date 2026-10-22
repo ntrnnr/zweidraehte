@@ -33,7 +33,7 @@ fn secure_inputs(
     let path = directory.path().join("project.knx");
     fs::write(&path, fixture.project.source()).expect("source");
     let store = ProjectStore::open(&path).expect("reader").initialize().expect("initialize");
-    let selected = vec![ProjectDeviceId("receiver".into())];
+    let selected = vec![ProjectDeviceId::new("receiver").expect("literal is an identifier")];
     let scope = crate::project::product_scope(store.authored(), &selected, selection, intent);
     // Reuse semantic product fixtures; their package-reader contract is tested
     // by ETS-files. Filesystem acquisition itself is exercised independently.
@@ -289,7 +289,7 @@ fn missing_credentials_and_tool_key_generation_are_typed() {
     let receiver = crate::IndividualAddress::new(1, 1, 10);
     inputs.keyring = Some(Keyring::new("fixture".into(), "test".into(), "test".into()));
     assert!(matches!(inputs.plan(), Err(Error::ProjectSetup(ProjectSetupRequirement::ManagementCredential { device }))
-        if device == ProjectDeviceId("receiver".into())));
+        if device == ProjectDeviceId::new("receiver").expect("literal is an identifier")));
     inputs.keyring = Some(
         inputs
             .keyring
@@ -298,9 +298,7 @@ fn missing_credentials_and_tool_key_generation_are_typed() {
             .with_devices(vec![crate::security::KeyringDevice::new(receiver).with_fdsk(Some([0x11; 16]))]),
     );
     let plan = inputs.plan().expect("FDSK permits initial commissioning");
-    assert!(
-        inputs
-            .requirements(&plan)
-            .contains(&ProjectSetupRequirement::GenerateToolKey { device: ProjectDeviceId("receiver".into()) })
-    );
+    assert!(inputs.requirements(&plan).contains(&ProjectSetupRequirement::GenerateToolKey {
+        device: ProjectDeviceId::new("receiver").expect("literal is an identifier")
+    }));
 }

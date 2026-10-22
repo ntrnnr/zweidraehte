@@ -46,6 +46,7 @@ impl ProgramSections {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DownloadMode {
     Automatic,
     Full,
@@ -53,12 +54,14 @@ pub enum DownloadMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum UnloadMode {
     Application,
     AllConfiguration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CommissioningIntent {
     AssignAddress,
     Download(DownloadMode),
@@ -91,6 +94,7 @@ impl CommissioningIntent {
 
 /// Polling behavior for programming-mode target acquisition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ProgrammingModePolling {
     pub wait_when_none_found: bool,
     pub timeout: Duration,
@@ -105,6 +109,7 @@ impl Default for ProgrammingModePolling {
 
 /// Explicit physical-target acquisition method.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TargetSelection {
     SerialNumber([u8; 6]),
     ProgrammingButton(ProgrammingModePolling),

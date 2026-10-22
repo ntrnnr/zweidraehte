@@ -68,7 +68,7 @@ fn only_exposed_group_rows_enter_atomic_failure_recovery() {
     .expect("physical evidence requires a journal event");
     let mut written = Vec::new();
     persist_post_execution_events_with(
-        Err(Error::DeviceConfiguration("success serialization failed".into())),
+        Err(Error::StateEvidence(ErrorDetail::new("success serialization failed"))),
         Some(recovery.clone()),
         |event| {
             written.push(event);
@@ -168,7 +168,8 @@ fn confirmed_address_assignment_survives_a_later_application_failure() {
     // No progress event was emitted. Reopening proves the result itself
     // supplied enough information for durable address recovery.
     let reopened = ProjectStore::open(&path).expect("project reopens");
-    let deployment = reopened.state().expect("persisted state").deployment(&planned.id.0).expect("device evidence");
+    let deployment =
+        reopened.state().expect("persisted state").deployment(planned.id.as_str()).expect("device evidence");
     assert_eq!(
         deployment.manifest.section(ProgrammingSection::Address),
         planned.desired_manifest.section(ProgrammingSection::Address),
@@ -376,7 +377,7 @@ pub(in crate::project) fn persistence_fixture(intent: CommissioningIntent) -> (P
     .expect("persistence fixture compiles");
     let planned = PlannedProjectDevice {
         serial_addressing: super::super::SerialAddressingSupport::Unknown,
-        id: ProjectDeviceId("button".into()),
+        id: ProjectDeviceId::new("button").expect("literal is an identifier"),
         device,
         evaluated_intent: intent,
         target_override: None,

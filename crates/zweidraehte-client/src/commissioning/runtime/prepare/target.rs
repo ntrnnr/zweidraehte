@@ -5,6 +5,7 @@ use crate::AddressTarget;
 use crate::commissioning::compiler::program::CompiledProgram;
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::error::DiagnosticResult as Result;
+use crate::commissioning::error::PreparationFailure;
 use crate::commissioning::input::{ProgrammingModePolling, TargetSelection};
 use crate::commissioning::runtime::commissioner::{
     Commissioner, CommissioningObserver, DeviceObservation, OPEN_MEDIUM_COLLECTION_WINDOW,
@@ -27,7 +28,10 @@ impl Commissioner<'_> {
                 let addresses = network
                     .read_individual_addresses(AddressTarget::Serial(*serial_number), self.options.scan_window)
                     .await
-                    .map_err(|error| Diagnostic::from(error).preparation_context("locating serial-number target"))?;
+                    .map_err(|error| {
+                        Diagnostic::from(error)
+                            .preparation_context(PreparationFailure::Communication, "locating serial-number target")
+                    })?;
                 let address = unique_target(addresses, "serial number")?;
 
                 Ok(AcquiredTarget { address, serial_number: Some(*serial_number) })
@@ -37,22 +41,25 @@ impl Commissioner<'_> {
                 let address = unique_target(addresses, "physical programming mode")?;
                 let devices =
                     network.read_programming_mode_devices(self.options.scan_window).await.map_err(|error| {
-                        Diagnostic::from(error).preparation_context("reading the programming-mode serial number")
+                        Diagnostic::from(error).preparation_context(
+                            PreparationFailure::Communication,
+                            "reading the programming-mode serial number",
+                        )
                     })?;
                 let serial_number = match devices.as_slice() {
                     [] => None,
                     [device] if device.address == address => Some(device.serial_number),
                     [device] => {
-                        return Err(Diagnostic::preparation(format!(
-                            "programming-mode address scans disagree ({address} and {})",
-                            device.address
-                        )));
+                        return Err(Diagnostic::preparation(
+                            PreparationFailure::AmbiguousTarget,
+                            format!("programming-mode address scans disagree ({address} and {})", device.address),
+                        ));
                     }
                     devices => {
-                        return Err(Diagnostic::preparation(format!(
-                            "{} devices answered the programming-mode serial query",
-                            devices.len()
-                        )));
+                        return Err(Diagnostic::preparation(
+                            PreparationFailure::AmbiguousTarget,
+                            format!("{} devices answered the programming-mode serial query", devices.len()),
+                        ));
                     }
                 };
 
@@ -71,10 +78,16 @@ impl Commissioner<'_> {
         observer: &impl CommissioningObserver,
     ) -> Result<Vec<IndividualAddress>> {
         if polling.wait_when_none_found && polling.timeout.is_zero() {
-            return Err(Diagnostic::preparation("programming-mode polling timeout must not be zero"));
+            return Err(Diagnostic::preparation(
+                PreparationFailure::InvalidOptions,
+                "programming-mode polling timeout must not be zero",
+            ));
         }
         if polling.wait_when_none_found && polling.poll_interval.is_zero() {
-            return Err(Diagnostic::preparation("programming-mode polling interval must not be zero"));
+            return Err(Diagnostic::preparation(
+                PreparationFailure::InvalidOptions,
+                "programming-mode polling interval must not be zero",
+            ));
         }
 
         let scan = async {
@@ -83,7 +96,8 @@ impl Commissioner<'_> {
                 let network = self.bus.network_management();
                 let (target, window) = programming_mode_scan(open_medium, self.options.scan_window);
                 let found = network.read_individual_addresses(target, window).await.map_err(|error| {
-                    Diagnostic::from(error).preparation_context("scanning physical programming mode")
+                    Diagnostic::from(error)
+                        .preparation_context(PreparationFailure::Communication, "scanning physical programming mode")
                 })?;
                 if !found.is_empty() || !polling.wait_when_none_found {
                     return Ok(found);
@@ -94,9 +108,12 @@ impl Commissioner<'_> {
         };
 
         if polling.wait_when_none_found {
-            tokio::time::timeout(polling.timeout, scan)
-                .await
-                .map_err(|_| Diagnostic::preparation("physical programming-mode polling timed out"))?
+            tokio::time::timeout(polling.timeout, scan).await.map_err(|_| {
+                Diagnostic::preparation(
+                    PreparationFailure::TargetNotFound,
+                    "physical programming-mode polling timed out",
+                )
+            })?
         } else {
             scan.await
         }
@@ -116,11 +133,15 @@ impl Commissioner<'_> {
             let found = network
                 .read_domain_addresses(AddressTarget::Serial(serial_number), OPEN_MEDIUM_COLLECTION_WINDOW)
                 .await
-                .map_err(|error| Diagnostic::from(error).preparation_context("reading the serial-number RF domain"))?;
+                .map_err(|error| {
+                    Diagnostic::from(error)
+                        .preparation_context(PreparationFailure::Communication, "reading the serial-number RF domain")
+                })?;
             unique_domain_target(found, "the prepared serial number")?
         } else {
             if !matches!(plan.target(), TargetSelection::ProgrammingButton(_)) {
                 return Err(Diagnostic::preparation(
+                    PreparationFailure::Unsupported,
                     "RF domain assignment without a serial number requires physical programming mode",
                 ));
             }
@@ -129,20 +150,25 @@ impl Commissioner<'_> {
                 .read_domain_addresses(AddressTarget::OpenMediumProgrammingMode, OPEN_MEDIUM_COLLECTION_WINDOW)
                 .await
                 .map_err(|error| {
-                    Diagnostic::from(error).preparation_context("reading the programming-mode RF domain")
+                    Diagnostic::from(error).preparation_context(
+                        PreparationFailure::Communication,
+                        "reading the programming-mode RF domain",
+                    )
                 })?;
             unique_domain_target(found, "physical programming mode")?
         };
 
         if address != expected_address {
-            return Err(Diagnostic::preparation(format!(
-                "RF domain discovery selected {address}, but target discovery selected {expected_address}"
-            )));
+            return Err(Diagnostic::preparation(
+                PreparationFailure::AmbiguousTarget,
+                format!("RF domain discovery selected {address}, but target discovery selected {expected_address}"),
+            ));
         }
         if current.encoded_len() != desired.encoded_len() {
-            return Err(Diagnostic::preparation(format!(
-                "the selected device reports a {current:?} domain, incompatible with desired {desired:?}"
-            )));
+            return Err(Diagnostic::preparation(
+                PreparationFailure::Capability,
+                format!("the selected device reports a {current:?} domain, incompatible with desired {desired:?}"),
+            ));
         }
 
         Ok(current != desired)

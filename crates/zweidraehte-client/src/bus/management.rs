@@ -31,6 +31,7 @@ pub const RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Result of a function property command or state read.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct FunctionPropertyResult {
     pub return_code: u8,
     pub data: Vec<u8>,
@@ -43,6 +44,9 @@ pub struct FunctionPropertyResult {
 /// object type and one-based instance, with a 12-bit property ID. Each
 /// property operation on [`DeviceConnection`](crate::DeviceConnection)
 /// selects its service from this addressing.
+///
+/// Exhaustive by design: KNX defines exactly these two property addressing
+/// forms, and the procedure IR uses this type as an operand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PropertyAddress {
     Indexed { object_index: u8, property_id: u8 },
@@ -86,6 +90,7 @@ impl PropertyAddress {
 
 /// Result of a property description read, for either addressing.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PropertyDescription {
     pub prop_id: u16,
     pub prop_idx: u16,

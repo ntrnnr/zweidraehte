@@ -22,8 +22,10 @@ use zweidraehte_proto::address::GroupAddress;
 
 use super::session::LockedProjectStore;
 use super::{PlannedProjectDevice, credential_commitments, set_credential_commitments};
+use crate::configuration::ErrorDetail;
 /// Header of an exported ETS keyring.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct KeyringExport {
     pub project_name: String,
     /// The exporting tool and its version.
@@ -31,6 +33,12 @@ pub struct KeyringExport {
     /// Written with whole-second precision. The keyring derives its
     /// encryption IV from this text, so the format is fixed here.
     pub created: time::OffsetDateTime,
+}
+
+impl KeyringExport {
+    pub fn new(project_name: impl Into<String>, created_by: impl Into<String>, created: time::OffsetDateTime) -> Self {
+        Self { project_name: project_name.into(), created_by: created_by.into(), created }
+    }
 }
 
 /// Build the ETS keyring representation of a project's active security
@@ -51,7 +59,9 @@ pub fn build_project_keyring(
         .replace_nanosecond(0)
         .expect("zero nanoseconds are always in range")
         .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|error| Error::DeviceConfiguration(format!("keyring creation time is not RFC 3339: {error}")))?;
+        .map_err(|error| {
+            Error::KeyringExport(ErrorDetail::new(format!("keyring creation time is not RFC 3339: {error}")))
+        })?;
 
     // A live SIAT read may be newer than the direct observation of its
     // sender. ETS has one sequence value per device, so export the greatest
@@ -78,10 +88,10 @@ pub fn build_project_keyring(
         if let Some(previous) = group_keys.insert(address, key)
             && previous != key
         {
-            return Err(Error::DeviceConfiguration(format!(
+            return Err(Error::KeyringExport(ErrorDetail::new(format!(
                 "multiple project nets assign different keys to group address {}",
                 net.address
-            )));
+            ))));
         }
     }
 
@@ -104,9 +114,9 @@ pub fn build_project_keyring(
                 0 => (None, None),
                 1 => authored.into_iter().next().expect("one authored IP backbone exists"),
                 _ => {
-                    return Err(Error::DeviceConfiguration(
-                        "the ETS keyring format cannot represent multiple authored KNX/IP backbones".into(),
-                    ));
+                    return Err(Error::KeyringExport(ErrorDetail::new(
+                        "the ETS keyring format cannot represent multiple authored KNX/IP backbones",
+                    )));
                 }
             };
             Ok(KeyringBackbone::new(multicast_address, latency_ms).with_key(Some(key)))
@@ -116,16 +126,16 @@ pub fn build_project_keyring(
     let mut devices = Vec::new();
     let mut occupied_addresses = BTreeSet::new();
     for device in project.devices.values().filter(|device| device.active) {
-        let scope = KeyScope::Device(device.id.0.clone());
+        let scope = KeyScope::Device(device.id.to_string());
         let fdsk = keys.read(&KeyId { scope: scope.clone(), kind: KeyKind::Fdsk }, None)?;
         let tool_key = keys.read(&KeyId { scope, kind: KeyKind::ToolKey }, None)?;
         let mut serial = device.serial;
         if let Some(embedded) = fdsk.as_ref().and_then(|record| record.embedded_serial) {
             if serial.is_some_and(|configured| configured != embedded) {
-                return Err(Error::DeviceConfiguration(format!(
+                return Err(Error::KeyringExport(ErrorDetail::new(format!(
                     "device `{}` serial disagrees with its FDSK certificate",
                     device.id
-                )));
+                ))));
             }
             serial = serial.or(Some(embedded));
         }
@@ -144,10 +154,10 @@ pub fn build_project_keyring(
             continue;
         }
         if !occupied_addresses.insert(device.address) {
-            return Err(Error::DeviceConfiguration(format!(
+            return Err(Error::KeyringExport(ErrorDetail::new(format!(
                 "multiple keyring devices use individual address {}",
                 device.address
-            )));
+            ))));
         }
         // The IP records in keys.toml are already one-way DAC/password
         // derivations. `.knxkeys` stores the originating plaintext strings,
@@ -171,10 +181,10 @@ pub fn build_project_keyring(
             continue;
         }
         if !occupied_addresses.insert(sender.address) {
-            return Err(Error::DeviceConfiguration(format!(
+            return Err(Error::KeyringExport(ErrorDetail::new(format!(
                 "managed and external keyring devices share individual address {}",
                 sender.address
-            )));
+            ))));
         }
         devices.push(KeyringDevice::new(sender.address).with_sequence_number(sequence_number));
     }
@@ -202,9 +212,9 @@ pub(super) fn intent_with_baseline(
     }
     let Some(mode) = intent.download_mode() else { return Ok(intent) };
     if matches!(mode, DownloadMode::Partial(_)) || differential == DifferentialPolicy::RequireVerified {
-        return Err(Error::DeviceConfiguration(
-            "partial and verified differential downloads require a current full-download baseline".into(),
-        ));
+        return Err(Error::StateEvidence(ErrorDetail::new(
+            "partial and verified differential downloads require a current full-download baseline",
+        )));
     }
     // All section bits do not mean Full: native load controls distinguish the
     // intent itself, so a baseline reset must select the actual full procedure.
@@ -397,12 +407,12 @@ pub(super) fn record_programming_failure(
         Ok(proofs) => (proofs, None),
         Err(error) => (Vec::new(), Some(error)),
     };
-    let recovery = programming_invalidation_event(&planned.id.0, sections, proofs);
+    let recovery = programming_invalidation_event(planned.id.as_str(), sections, proofs);
     let mut state_errors: Vec<_> =
         evidence_error.into_iter().chain(record_recovery_event(shared, recovery.as_ref())).collect();
     if address.is_some() {
         let event = ProjectEvent::RecordCommissioningOutcome {
-            device: planned.id.0.clone(),
+            device: planned.id.to_string(),
             outcome: CommissioningOutcome::Programmed {
                 established: planned.desired_manifest.retain_sections([ProgrammingSection::Address]),
                 commissioning: None,
@@ -497,7 +507,7 @@ pub(super) fn record_success(
     recovery_sections.remove(&ProgrammingSection::Configuration);
     recovery_sections.extend(confirmed_mutations);
     let recovery = programming_invalidation_event(
-        &planned.id.0,
+        planned.id.as_str(),
         recovery_sections,
         credentials.as_ref().map(|evidence| evidence.exposed.clone()).unwrap_or_default(),
     );
@@ -531,7 +541,7 @@ pub(super) fn success_events(
             || report.sections.values().any(|outcome| *outcome != CommissioningSectionOutcome::Cleared)
         {
             return Ok(programming_invalidation_event(
-                &planned.id.0,
+                planned.id.as_str(),
                 report.effects().affected_sections().clone(),
                 exposed_group_keys,
             )
@@ -539,7 +549,7 @@ pub(super) fn success_events(
             .collect());
         }
         return Ok(vec![ProjectEvent::RecordCommissioningOutcome {
-            device: planned.id.0.clone(),
+            device: planned.id.to_string(),
             outcome: CommissioningOutcome::Unloaded {
                 preserve_network_configuration: mode == UnloadMode::Application,
                 serial: report.discovered.serial_number.as_ref().map(format_serial),
@@ -565,7 +575,9 @@ pub(super) fn success_events(
     let commissioning_deployment = application_downloaded
         .then(|| project_deployment_from_report(report))
         .transpose()
-        .map_err(|error| Error::DeviceConfiguration(format!("could not persist commissioning evidence: {error}")))?
+        .map_err(|error| {
+            Error::StateEvidence(ErrorDetail::new(format!("could not persist commissioning evidence: {error}")))
+        })?
         .flatten();
     let fully_verified = report.plan.is_full_program_scope()
         && (report.section(ProgrammingSection::Address) == CommissioningSectionOutcome::Programmed
@@ -580,7 +592,7 @@ pub(super) fn success_events(
         .all(|section| report.section(section) == CommissioningSectionOutcome::Programmed);
 
     let mut events: Vec<_> = programming_invalidation_event(
-        &planned.id.0,
+        planned.id.as_str(),
         report
             .sections
             .iter()
@@ -591,7 +603,7 @@ pub(super) fn success_events(
     .into_iter()
     .collect();
     events.push(ProjectEvent::RecordCommissioningOutcome {
-        device: planned.id.0.clone(),
+        device: planned.id.to_string(),
         outcome: CommissioningOutcome::Programmed {
             established,
             commissioning: commissioning_deployment.map(Box::new),
@@ -609,20 +621,22 @@ pub(super) fn group_key_exposure_manifest(
     let mut manifest = ProgrammingManifest::default();
     for address in addresses {
         let net = net_ids.get(address).ok_or_else(|| {
-            Error::DeviceConfiguration(format!("exposed group key for {address} has no planned net identity"))
+            Error::StateEvidence(ErrorDetail::new(format!(
+                "exposed group key for {address} has no planned net identity"
+            )))
         })?;
         let id = KeyId { scope: KeyScope::Group(net.clone()), kind: KeyKind::GroupKey };
         let proofs: Vec<_> = commitments.iter().filter(|proof| proof.id == id).cloned().collect();
         if proofs.is_empty() {
-            return Err(Error::DeviceConfiguration(format!(
+            return Err(Error::StateEvidence(ErrorDetail::new(format!(
                 "exposed group key for net `{net}` lacks credential evidence"
-            )));
+            ))));
         }
         manifest.credentials.extend(proofs);
     }
     manifest.credentials.sort_by(|a, b| a.id.cmp(&b.id));
     manifest.credentials.dedup();
-    manifest.validate().map_err(Error::DeviceConfiguration)?;
+    manifest.validate().map_err(|detail| Error::StateEvidence(ErrorDetail::new(detail)))?;
     Ok(manifest)
 }
 

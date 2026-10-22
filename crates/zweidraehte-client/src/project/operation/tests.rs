@@ -51,7 +51,7 @@ fn bus(security: SecurityStore, closed: Arc<AtomicUsize>, fail: bool) -> KnxBus 
 
 fn completed() -> ProjectDeviceCommissioningReport {
     let (_, report) = persistence_fixture(CommissioningIntent::Download(DownloadMode::Full));
-    ProjectDeviceCommissioningReport { id: ProjectDeviceId("relay".into()), report }
+    ProjectDeviceCommissioningReport { id: ProjectDeviceId::new("relay").expect("literal is an identifier"), report }
 }
 
 fn assigned_effects() -> ExecutionEffects {
@@ -80,7 +80,7 @@ async fn finalization_keeps_partial_assignment_and_every_cleanup_failure() {
         let physical = completed();
         let result = if primary_failure {
             Err(Error::ProjectBatch(Box::new(ProjectBatchFailure {
-                device: Some(ProjectDeviceId("button".into())),
+                device: Some(ProjectDeviceId::new("button").expect("literal is an identifier")),
                 stage: ProjectBatchFailureStage::Commissioning,
                 report: ProjectBatchReport::from_devices(vec![physical]),
                 source: Some(Box::new(
@@ -95,7 +95,7 @@ async fn finalization_keeps_partial_assignment_and_every_cleanup_failure() {
             })))
         } else {
             let mut assignment = completed();
-            assignment.id = ProjectDeviceId("button".into());
+            assignment.id = ProjectDeviceId::new("button").expect("literal is an identifier");
             assignment.report.effects = assigned_effects();
             Ok(ProjectBatchReport::from_devices(vec![physical, assignment]))
         };
@@ -109,8 +109,13 @@ async fn finalization_keeps_partial_assignment_and_every_cleanup_failure() {
             panic!("typed batch failure");
         };
         assert_eq!(failure.report.devices.len(), if primary_failure { 1 } else { 2 });
-        assert!(failure.report.affected_devices.contains(&ProjectDeviceId("button".into())));
-        assert_eq!(failure.report.learned_targets[&ProjectDeviceId("button".into())].serial_number, Some(SERIAL));
+        assert!(
+            failure
+                .report
+                .affected_devices
+                .contains(&ProjectDeviceId::new("button").expect("literal is an identifier"))
+        );
+        assert_eq!(failure.report.learned_targets["button"].serial_number, Some(SERIAL));
         assert!(failure.report.serial_updates.is_empty());
         assert_eq!(failure.source.is_some(), primary_failure);
         assert!(matches!(&failure.finalization[..], [
@@ -140,7 +145,7 @@ async fn assignment_is_saved_even_when_the_remaining_application_fails() {
             .await
             .expect("connect operation");
     let failure = ProjectBatchFailure {
-        device: Some(ProjectDeviceId("button".into())),
+        device: Some(ProjectDeviceId::new("button").expect("literal is an identifier")),
         stage: ProjectBatchFailureStage::Commissioning,
         report: ProjectBatchReport::from_devices(vec![completed()]),
         source: Some(Box::new(
@@ -156,10 +161,10 @@ async fn assignment_is_saved_even_when_the_remaining_application_fails() {
     };
     assert!(failure.finalization.is_empty());
     assert_eq!(failure.report.devices.len(), 1);
-    assert_eq!(failure.report.serial_updates[&ProjectDeviceId("button".into())], Some(SERIAL));
+    assert_eq!(failure.report.serial_updates["button"], Some(SERIAL));
     let store = ProjectStore::open(path).expect("reopen authored state");
-    assert_eq!(store.authored().devices[&ProjectDeviceId("button".into())].serial, Some(SERIAL));
-    assert_eq!(store.authored().devices[&ProjectDeviceId("relay".into())].serial, Some([0, 0xFA, 0, 0, 0, 2]));
+    assert_eq!(store.authored().devices["button"].serial, Some(SERIAL));
+    assert_eq!(store.authored().devices["relay"].serial, Some([0, 0xFA, 0, 0, 0, 2]));
     assert_eq!(closed.load(Ordering::Relaxed), 1);
 }
 

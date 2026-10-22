@@ -7,8 +7,8 @@ use zweidraehte_project::{KeyOrigin, MutableProjectState};
 #[test]
 fn partial_scopes_merge_only_with_the_same_complete_input_revision() {
     let fixture = secure_fixture();
-    let receiver = ProjectDeviceId("receiver".into());
-    let sender = ProjectDeviceId("sender".into());
+    let receiver = ProjectDeviceId::new("receiver").expect("literal is an identifier");
+    let sender = ProjectDeviceId::new("sender").expect("literal is an identifier");
     let planner = ProjectPlanner::new(&fixture.project, &fixture.products)
         .with_state(&fixture.state)
         .with_keyring(&fixture.keyring)
@@ -37,7 +37,7 @@ fn partial_scopes_merge_only_with_the_same_complete_input_revision() {
 
 #[test]
 fn snapshot_retains_the_catalog_resolution_diagnostic() {
-    use crate::commissioning::{CompileError, CompileErrorKind};
+    use crate::commissioning::{ProfileError, ProfileErrorKind};
     use std::error::Error as _;
 
     let fixture = secure_fixture();
@@ -52,13 +52,10 @@ fn snapshot_retains_the_catalog_resolution_diagnostic() {
         .expect_err("catalog cannot resolve the device mask");
 
     assert!(matches!(error, Error::Catalog(_)));
-    let cause = error
-        .source()
-        .expect("catalog diagnostic")
-        .downcast_ref::<CompileError>()
-        .expect("typed compilation diagnostic");
-    assert_eq!(cause.kind, CompileErrorKind::Unsupported);
-    assert!(cause.message.contains("DD0 0705"));
+    let cause =
+        error.source().expect("catalog diagnostic").downcast_ref::<ProfileError>().expect("typed profile diagnostic");
+    assert_eq!(cause.kind(), ProfileErrorKind::Unsupported);
+    assert!(cause.message().contains("DD0 0705"));
 }
 
 #[test]

@@ -5,6 +5,7 @@ use std::fmt;
 
 /// Supported resource realization, parsed before image or procedure compilation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum ResourceFlavour {
     /// Master Data token `AddressTable_Bcu1`.
     AddressTableBcu1,
@@ -135,6 +136,7 @@ impl ResourceFlavour {
 
 /// Supported management behavior; exact resources remain profile data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum ManagementModel {
     /// Master Data token `Bcu1`.
     Bcu1,

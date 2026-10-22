@@ -1,6 +1,6 @@
 //! Family lifecycle and stamp contracts used during final lowering.
 
-use crate::commissioning::error::CompileError;
+use crate::commissioning::error::{CompileError, ProfileError};
 
 use crate::commissioning::catalog::profile::{ObjectSelector, ResolvedProfile};
 use crate::commissioning::image::{ImageLocation, ImageSpace, SparseDeviceImage};
@@ -79,9 +79,9 @@ pub(crate) fn validate_download_stamp_output(
     profile: &ResolvedProfile,
     image: &SparseDeviceImage,
     procedure: &mut NormalizedProcedure,
-) -> Result<(), CompileError> {
+) -> Result<(), ProfileError> {
     let failure = |reason| {
-        CompileError::invalid(format!(
+        ProfileError::invalid(format!(
             "profile {mask} cannot capture its download stamps before restart: {reason}",
             mask = profile.mask.full_id.clone()
         ))

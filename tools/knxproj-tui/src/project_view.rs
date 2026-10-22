@@ -172,7 +172,7 @@ impl ProjectKeyEditor {
         let mut entries = Vec::new();
         for device in store.authored().devices.keys() {
             for (kind, suffix) in [(KeyKind::Fdsk, "FDSK"), (KeyKind::ToolKey, "tool key")] {
-                let id = KeyId { scope: KeyScope::Device(device.0.clone()), kind };
+                let id = KeyId { scope: KeyScope::Device(device.to_string()), kind };
                 let key = by_id.get(&(id, None));
                 entries.push(KeyEditorEntry {
                     target: if kind == KeyKind::Fdsk {
@@ -234,9 +234,9 @@ impl ProjectOverview {
                 // inputs and is rendered by the topology view. This overview
                 // reports only the physical evidence available in the store.
                 let programming = store.state().map_or("no deployment evidence", |state| {
-                    if state.inconsistent_devices.contains(&device.id.0) {
+                    if state.inconsistent_devices.iter().any(|inconsistent| inconsistent == device.id.as_str()) {
                         "deployment inconsistent"
-                    } else if state.deployments.contains_key(&device.id.0) {
+                    } else if state.deployments.contains_key(device.id.as_str()) {
                         "deployment evidence recorded"
                     } else {
                         "no deployment evidence"
@@ -358,7 +358,8 @@ mod tests {
              } }\n",
         )
         .expect("project parses");
-        let navigation = ProjectNavigation::from_project(&project, ProjectDeviceId("relay".into()));
+        let navigation =
+            ProjectNavigation::from_project(&project, ProjectDeviceId::new("relay").expect("literal is an identifier"));
 
         assert_eq!(navigation.topology[0].label, "Area 1");
         assert_eq!(navigation.topology[1].label, "Line 1");
@@ -368,7 +369,7 @@ mod tests {
         assert!(navigation.nets[0].label.contains("1/0/1  Ceiling lights  [lights]"));
         assert_eq!(
             navigation.selected_target(),
-            Some(&ProjectNavigationTarget::Device(ProjectDeviceId("relay".into())))
+            Some(&ProjectNavigationTarget::Device(ProjectDeviceId::new("relay").expect("literal is an identifier")))
         );
     }
 

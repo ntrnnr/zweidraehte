@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 use zweidraehte_client::project::{
-    BatchSelection, ProgrammingPolicy, ProjectBatchReport, ProjectInputRequest, ProjectInputSources,
-    ProjectOperationInputs, ProjectSetupRequirement, Result as ProjectResult, SerialAddressingSupport,
+    BatchSelection, ProgrammingPolicy, ProjectBatchReport, ProjectInputRequest, ProjectOperationInputs,
+    ProjectSetupRequirement, Result as ProjectResult, SerialAddressingSupport,
 };
 
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -178,20 +178,11 @@ async fn run(mut job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<DownloadO
     }
 
     let selection = programming_batch_selection(job.affected_only);
-    let inputs = ProjectOperationInputs::load(
-        store,
-        ProjectInputRequest {
-            selected: &selected,
-            selection,
-            intent: requested_intent,
-            sources: ProjectInputSources {
-                master_data: job.master_data.as_deref(),
-                keyring_path: job.security.keyring_path(),
-            },
-        },
-        || job.security.load_keyring().map_err(Into::into),
-    )
-    .map_err(|error| format!("loading project programming inputs: {}", error_message(&error)))?;
+    let mut request = ProjectInputRequest::new(&selected, selection, requested_intent);
+    request.sources.master_data = job.master_data.as_deref();
+    request.sources.keyring_path = job.security.keyring_path();
+    let inputs = ProjectOperationInputs::load(store, request, || job.security.load_keyring().map_err(Into::into))
+        .map_err(|error| format!("loading project programming inputs: {}", error_message(&error)))?;
     let product_scope = inputs.product_scope().clone();
     let mut programming =
         inputs.into_programming().map_err(|error| format!("planning project download: {}", error_message(&error)))?;
@@ -242,7 +233,7 @@ async fn run(mut job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<DownloadO
         .devices()
         .iter()
         .filter(|device| {
-            plan.impact().selected.contains(&device.id()) && device.commissioning().intent.mutates_address()
+            plan.impact().selected.contains(device.id()) && device.commissioning().intent.mutates_address()
         })
         .map(|device| device.id().clone())
         .collect::<Vec<_>>();
@@ -489,20 +480,12 @@ async fn run_unload(job: UnloadJob, tx: &Sender<DownloadMsg>) -> Result<Download
     let store = ProjectStore::open(&job.project_path).map_err(|error| format!("opening project: {error}"))?;
 
     let selected = [job.device.clone()];
-    let inputs = ProjectOperationInputs::load(
-        store,
-        ProjectInputRequest {
-            selected: &selected,
-            selection: BatchSelection::Selected,
-            intent: CommissioningIntent::Unload(job.scope.mode()),
-            sources: ProjectInputSources {
-                master_data: job.master_data.as_deref(),
-                keyring_path: job.security.keyring_path(),
-            },
-        },
-        || job.security.load_keyring().map_err(Into::into),
-    )
-    .map_err(|error| format!("loading project unload inputs: {}", error_message(&error)))?;
+    let mut request =
+        ProjectInputRequest::new(&selected, BatchSelection::Selected, CommissioningIntent::Unload(job.scope.mode()));
+    request.sources.master_data = job.master_data.as_deref();
+    request.sources.keyring_path = job.security.keyring_path();
+    let inputs = ProjectOperationInputs::load(store, request, || job.security.load_keyring().map_err(Into::into))
+        .map_err(|error| format!("loading project unload inputs: {}", error_message(&error)))?;
     let product_scope = inputs.product_scope().clone();
     let mut programming =
         inputs.into_programming().map_err(|error| format!("resolving project device: {}", error_message(&error)))?;
@@ -575,6 +558,8 @@ fn forward_commissioning_event(event: CommissioningEvent, tx: &Sender<DownloadMs
         }
         CommissioningEvent::Data { done, total } => DownloadMsg::Data(done, total),
         CommissioningEvent::ProgressText(text) => DownloadMsg::Task(text, 0, 0),
+        // A newer engine may report events this worker has no message for.
+        _ => return,
     };
     let _ = tx.send(message);
 }
@@ -594,6 +579,7 @@ fn stage_label(stage: CommissioningStage) -> &'static str {
         CommissioningStage::RestoringDeviceState => "Restoring temporary device state",
         CommissioningStage::Disconnecting => "Closing device-management session",
         CommissioningStage::Complete => unreachable!("the completion notification is handled before labeling"),
+        _ => "Commissioning device",
     }
 }
 
@@ -605,6 +591,7 @@ fn differential_fallback_label(reason: DifferentialFallback) -> &'static str {
         DifferentialFallback::ProfileChanged => "the exact programming profile changed",
         DifferentialFallback::UnprovenImageCoverage => "download stamps do not prove previous image coverage",
         DifferentialFallback::NoUsefulDifference => "the differential image would not save traffic",
+        _ => "a differential download is unavailable",
     }
 }
 
@@ -617,6 +604,8 @@ fn commissioning_plan_label(plan: &CompiledProgram) -> String {
         }
         CommissioningIntent::Unload(UnloadMode::Application) => "application unload".into(),
         CommissioningIntent::Unload(UnloadMode::AllConfiguration) => "complete configuration unload".into(),
+        CommissioningIntent::Unload(_) => "unload".into(),
+        _ => "commissioning".into(),
     }
 }
 

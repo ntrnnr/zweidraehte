@@ -1342,7 +1342,7 @@ async fn group_write_on_secured_ga_is_wrapped() {
 
     // The device side verifies with the same group key; a fresh sender
     // is at floor 1 and the timestamp-seeded seq is far above it.
-    let (plain, _) = zweidraehte_client::security::group_unwrap(&GROUP_KEY, &frame, 1).expect("frame verifies");
+    let (plain, _) = crate::security::channel::group_unwrap(&GROUP_KEY, &frame, 1).expect("frame verifies");
     let msg = KnxMessageBuffer::from_buffer(plain.as_slice());
     assert_eq!(msg.get_apci_code(), ApciCode::GroupValueWrite);
 
@@ -1375,12 +1375,12 @@ async fn secure_group_indication_is_decrypted_and_replay_dropped() {
     unsupported[0] &= !0x80;
     unsupported[5] |= 4; // LTE addressing, not an ordinary group address.
     let foreign_format =
-        zweidraehte_client::security::group_wrap(&GROUP_KEY, 1000, u16::from_be_bytes(device_ia().0), &unsupported);
+        crate::security::channel::group_wrap(&GROUP_KEY, 1000, u16::from_be_bytes(device_ia().0), &unsupported);
     mock.indicate(&foreign_format);
     assert!(tokio::time::timeout(Duration::from_secs(5), events.recv()).await.is_err());
     assert_eq!(store.load_sender_seq(device_ia()), original_floor, "unsupported format cannot consume the sequence");
 
-    let wrapped = zweidraehte_client::security::group_wrap(&GROUP_KEY, 500, u16::from_be_bytes(device_ia().0), &plain);
+    let wrapped = crate::security::channel::group_wrap(&GROUP_KEY, 500, u16::from_be_bytes(device_ia().0), &plain);
     mock.indicate(&wrapped);
 
     let telegram = tokio::time::timeout(Duration::from_secs(5), events.recv())

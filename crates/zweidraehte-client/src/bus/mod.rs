@@ -1,4 +1,10 @@
 //! The root bus handle.
+//!
+//! # Errors
+//!
+//! Every bus, device-connection and network-management operation returns
+//! [`BusError`]. Connectors report transport failures as a `BusError` too, so
+//! no other error type crosses this boundary.
 
 use std::net::SocketAddrV4;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -96,13 +96,13 @@ pub(in crate::project) fn manifest(parameter: u8, group: u8) -> ProgrammingManif
 
 pub(in crate::project) fn state_with(device: &ProjectDeviceId, manifest: ProgrammingManifest) -> MutableProjectState {
     let mut state = MutableProjectState::new("state".into());
-    state.deployments.insert(device.0.clone(), DeviceDeploymentEvidence { manifest, ..Default::default() });
+    state.deployments.insert(device.to_string(), DeviceDeploymentEvidence { manifest, ..Default::default() });
     state
 }
 
 #[test]
 fn absent_sections_are_not_matching_deployment_evidence() {
-    let device = ProjectDeviceId("unobserved-button".into());
+    let device = ProjectDeviceId::new("unobserved-button").expect("literal is an identifier");
     let desired = ProgrammingManifest::default();
     let state = state_with(&device, desired.clone());
 
@@ -111,7 +111,7 @@ fn absent_sections_are_not_matching_deployment_evidence() {
 
 #[test]
 fn pending_image_preserves_only_independent_address_evidence() {
-    let device = ProjectDeviceId("unobserved-button".into());
+    let device = ProjectDeviceId::new("unobserved-button").expect("literal is an identifier");
     let desired = manifest(1, 1);
     let state = state_with(&device, desired.clone());
 
@@ -124,17 +124,17 @@ fn pending_image_preserves_only_independent_address_evidence() {
 
 #[test]
 fn comparison_reports_only_the_changed_compiler_section() {
-    let device = ProjectDeviceId("button".into());
+    let device = ProjectDeviceId::new("button").expect("literal is an identifier");
     let deployed = manifest(1, 1);
     let desired = manifest(2, 1);
     let state = state_with(&device, deployed);
     let status = device_programming_status(&device, Some(&state), &desired);
 
     assert_eq!(
-        changed_sections(state.deployment(&device.0), &desired),
+        changed_sections(state.deployment(device.as_str()), &desired),
         BTreeSet::from([ProgrammingSection::Parameters]),
     );
-    assert_eq!(changed_program_sections(state.deployment(&device.0), &desired), ProgramSections::PARAMETERS);
+    assert_eq!(changed_program_sections(state.deployment(device.as_str()), &desired), ProgramSections::PARAMETERS);
     assert!(status.individual_address);
     assert!(status.application_program);
     assert!(!status.parameters);
@@ -144,7 +144,7 @@ fn comparison_reports_only_the_changed_compiler_section() {
 
 #[test]
 fn siat_artifact_change_invalidates_group_communication_without_an_event() {
-    let device = ProjectDeviceId("receiver".into());
+    let device = ProjectDeviceId::new("receiver").expect("literal is an identifier");
     let deployed = manifest(1, 1);
     let desired = manifest(1, 2);
     let state = state_with(&device, deployed);
@@ -160,7 +160,7 @@ fn siat_artifact_change_invalidates_group_communication_without_an_event() {
 
 #[test]
 fn absent_application_program_two_is_not_required() {
-    let device = ProjectDeviceId("button".into());
+    let device = ProjectDeviceId::new("button").expect("literal is an identifier");
     let desired = manifest(1, 1);
     let state = state_with(&device, desired.clone());
 
@@ -169,25 +169,25 @@ fn absent_application_program_two_is_not_required() {
 
 #[test]
 fn inconsistent_device_never_uses_matching_evidence() {
-    let device = ProjectDeviceId("button".into());
+    let device = ProjectDeviceId::new("button").expect("literal is an identifier");
     let desired = manifest(1, 1);
     let mut state = state_with(&device, desired.clone());
-    state.inconsistent_devices.push(device.0.clone());
+    state.inconsistent_devices.push(device.to_string());
 
     assert_eq!(device_programming_status(&device, Some(&state), &desired), DeviceProgrammingStatus::NONE);
 }
 
 #[test]
 fn application_unload_removes_a_sender_from_regenerated_siat() {
-    let sender = ProjectDeviceId("sender".into());
+    let sender = ProjectDeviceId::new("sender").expect("literal is an identifier");
     let mut state = state_with(&sender, manifest(1, 1));
     assert!(deployment_allows_siat_sender(&sender, Some(&state)));
 
-    let deployment = state.deployments.get_mut(&sender.0).expect("sender evidence");
+    let deployment = state.deployments.get_mut(sender.as_str()).expect("sender evidence");
     deployment.manifest.sections.clear();
     assert!(deployment_allows_siat_sender(&sender, Some(&state)));
 
-    state.deployments.get_mut(&sender.0).expect("sender evidence").application_unloaded = true;
+    state.deployments.get_mut(sender.as_str()).expect("sender evidence").application_unloaded = true;
     assert!(!deployment_allows_siat_sender(&sender, Some(&state)));
 }
 
@@ -276,8 +276,8 @@ fn shared_product_definitions_keep_device_edits_independent() {
     use zweidraehte_ets_files::runtime::model::ParameterValue;
 
     let fixture = secure_fixture();
-    let receiver = &fixture.products[&ProjectDeviceId("receiver".into())];
-    let sender = &fixture.products[&ProjectDeviceId("sender".into())];
+    let receiver = &fixture.products["receiver"];
+    let sender = &fixture.products["sender"];
     assert!(std::ptr::eq(receiver.document(), sender.document()));
     assert!(std::ptr::eq(receiver.product(), sender.product()));
 
@@ -293,7 +293,7 @@ fn status_preview_and_batch_share_evaluation_and_secure_peer_scope() {
     let SecureFixture { project, products, catalog: _, catalogs, keyring, state, sender } = secure_fixture();
     let planner =
         ProjectPlanner::new(&project, &products).with_state(&state).with_keyring(&keyring).with_master_data(&catalogs);
-    let id = ProjectDeviceId("receiver".into());
+    let id = ProjectDeviceId::new("receiver").expect("literal is an identifier");
     let selection = BTreeSet::from([id.clone()]);
     let view = planner.programming_view_for(&selection).expect("status evaluates secure peers");
     let batch = planner
@@ -361,13 +361,18 @@ fn status_preview_and_batch_share_evaluation_and_secure_peer_scope() {
     assert_eq!(device.commissioning().intent, CommissioningIntent::AssignAddress);
     assert!(matches!(device.commissioning().target, TargetSelection::KnownPreviousAddress(value) if value == previous));
     assert!(
-        address.set_target(&ProjectDeviceId("missing".into()), TargetSelection::ExistingAddress(previous)).is_err()
+        address
+            .set_target(
+                &ProjectDeviceId::new("missing").expect("literal is an identifier"),
+                TargetSelection::ExistingAddress(previous)
+            )
+            .is_err()
     );
 
     // Imported SIAT may name a managed sender which has no authored net link.
     // Its management credentials are a read dependency, never another target.
     let mut imported_project = project.clone();
-    let sender_id = ProjectDeviceId("sender".into());
+    let sender_id = ProjectDeviceId::new("sender").expect("literal is an identifier");
     imported_project.devices.get_mut(&sender_id).expect("sender exists").objects.clear();
     let mut imported = keyring;
     imported.devices[1].sequence_number = 0;
@@ -393,7 +398,7 @@ fn status_preview_and_batch_share_evaluation_and_secure_peer_scope() {
         .with_master_data(&catalogs)
         .plan_commissioning(&[id], BatchSelection::Selected, CommissioningIntent::Download(DownloadMode::Full));
     assert!(
-        matches!(missing, Err(Error::MissingSenderInput { device, address }) if device == sender_id.0 && address == sender)
+        matches!(missing, Err(Error::MissingSenderInput { device, address }) if device == sender_id && address == sender)
     );
 }
 

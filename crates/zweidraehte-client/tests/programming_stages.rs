@@ -6,7 +6,7 @@ use zweidraehte_client::ManagementCredential;
 use zweidraehte_client::commissioning::ImageLocation;
 use zweidraehte_client::commissioning::input::{CommissioningIntent, DownloadMode, ProgrammingInput, TargetSelection};
 use zweidraehte_client::commissioning::inspection::ProcedureOperation;
-use zweidraehte_client::commissioning::{CompileErrorKind, CompileOptions, ResolvedProfile};
+use zweidraehte_client::commissioning::{CompileErrorKind, CompileOptions, ProfileErrorKind, ResolvedProfile};
 use zweidraehte_client::commissioning::{DesiredDataSecurity, ObservedDataSecurity};
 use zweidraehte_client::commissioning::{ObservedTarget, ProgrammingFacts};
 use zweidraehte_client::commissioning::{ProfileSelection, ResourceManagementStyle};
@@ -57,7 +57,8 @@ fn resolve(input: &ProgrammingInput, selection: &ProfileSelection) -> ResolvedPr
 
 /// Assemble the fixture device at 1.1.23 through the public expert path.
 fn device(product: ProductData, encoded: EncodedConfiguration) -> MaterializedDevice {
-    let installation = InstallationConfiguration { max_apdu: Some(15), ..InstallationConfiguration::new(ADDRESS) };
+    let mut installation = InstallationConfiguration::new(ADDRESS);
+    installation.max_apdu = Some(15);
     MaterializedDevice::from_parts(product, installation, encoded).into_keyed(ResolvedKeyMaterial::default())
 }
 
@@ -83,10 +84,9 @@ fn fixture_catalog(xml: &str) -> (Arc<MasterData>, ProfileSelection, Materialize
 fn management_credentials_do_not_change_authored_control_guards() {
     for credential in [ManagementCredential::Plaintext, ManagementCredential::ToolKey] {
         let (_catalog, selection, device, options) = fixture();
-        let facts = ProgrammingFacts {
-            target: Some(ObservedTarget { credential, ..plain_facts().target.expect("fixture has target evidence") }),
-            data_security: ObservedDataSecurity::Disabled,
-        };
+        let mut facts = plain_facts();
+        facts.target.as_mut().expect("fixture has target evidence").credential = credential;
+        facts.data_security = ObservedDataSecurity::Disabled;
         let input =
             ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options).with_facts(facts);
 
@@ -280,7 +280,11 @@ fn disabled_security_requires_observation_only_when_group_scope_is_selected() {
             options.automatic_sections = Some(sections);
             let input =
                 ProgrammingInput::new(device.clone(), CommissioningIntent::Download(DownloadMode::Automatic), options)
-                    .with_facts(ProgrammingFacts { data_security: mode, ..plain_facts() });
+                    .with_facts({
+                        let mut facts = plain_facts();
+                        facts.data_security = mode;
+                        facts
+                    });
 
             input.preview(&resolve(&input, &selection)).expect("disabled desired security has no image writes");
 
@@ -310,11 +314,7 @@ fn disabled_security_requires_observation_only_when_group_scope_is_selected() {
 }
 
 fn plain_facts() -> ProgrammingFacts {
-    ProgrammingFacts::new(ObservedTarget {
-        previous_address: IndividualAddress::new(1, 1, 23),
-        serial_number: None,
-        credential: ManagementCredential::Plaintext,
-    })
+    ProgrammingFacts::new(ObservedTarget::new(IndividualAddress::new(1, 1, 23), ManagementCredential::Plaintext))
 }
 
 #[test]
@@ -357,8 +357,8 @@ fn loose_input_requires_an_associated_document_before_resolution() {
     let input = ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options);
 
     let error = input.device().resolve_profile(&selection).expect_err("resolution cannot choose another source");
-    assert_eq!(error.kind, CompileErrorKind::MissingEvidence);
-    assert!(error.message.contains("Master Data"));
+    assert_eq!(error.kind(), ProfileErrorKind::MissingEvidence);
+    assert!(error.message().contains("Master Data"));
 }
 
 #[test]

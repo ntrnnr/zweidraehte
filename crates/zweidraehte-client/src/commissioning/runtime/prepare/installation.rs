@@ -4,6 +4,7 @@ use super::revalidate::read_bound_evidence;
 use crate::commissioning::compiler::program::CompiledProgram;
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::error::DiagnosticResult as Result;
+use crate::commissioning::error::PreparationFailure;
 use crate::commissioning::evidence::{
     DeploymentRecord, DeviceStamp, DifferentialDecision, DifferentialFallback, DifferentialPolicy,
 };
@@ -72,8 +73,12 @@ pub(crate) fn baseline_stamp_reads(plan: &CompiledProgram, baseline: &Deployment
         .iter()
         .map(|candidate| {
             let service = match baseline.device_stamps.iter().find(|stamp| stamp.resource == candidate.id) {
-                Some(stamp) => super::reads::stamp_service(&candidate.read, &stamp.value)
-                    .ok_or_else(|| Diagnostic::preparation("download-stamp baseline has an invalid read extent"))?,
+                Some(stamp) => super::reads::stamp_service(&candidate.read, &stamp.value).ok_or_else(|| {
+                    Diagnostic::preparation(
+                        PreparationFailure::DeploymentEvidence,
+                        "download-stamp baseline has an invalid read extent",
+                    )
+                })?,
                 None => candidate.read.clone(),
             };
             Ok(BoundRead {
@@ -157,12 +162,18 @@ pub(crate) fn finish_baseline(
     if reads.len() != plan.download_stamps().len()
         || reads.iter().zip(plan.download_stamps()).any(|(read, candidate)| read.resource != candidate.id)
     {
-        return Err(Diagnostic::preparation("download-stamp observations do not cover the bound candidates"));
+        return Err(Diagnostic::preparation(
+            PreparationFailure::DeploymentEvidence,
+            "download-stamp observations do not cover the bound candidates",
+        ));
     }
     let mut stamps = Vec::new();
     for read in reads {
         let ReadExpectation::Exact(value) = &read.expected else {
-            return Err(Diagnostic::preparation("download-stamp evidence has not been observed"));
+            return Err(Diagnostic::preparation(
+                PreparationFailure::DeploymentEvidence,
+                "download-stamp evidence has not been observed",
+            ));
         };
         let expected = baseline.device_stamps.iter().find(|stamp| stamp.resource == read.resource);
         let reason = match (expected, value) {

@@ -2,7 +2,7 @@ pub(super) use crate::commissioning::catalog_testing::*;
 use std::num::NonZeroU16;
 
 use crate::commissioning::catalog::profile::{ObjectSelector, Occurrence, ProfileDisposition, ResourceManagementStyle};
-use crate::commissioning::error::CompileErrorKind;
+use crate::commissioning::error::ProfileErrorKind;
 use zweidraehte_ets_files::product::{ProductData, PropertyObject, PropertyParameterLocation};
 use zweidraehte_ets_files::schema::{LdCtrlWriteProp, LoadControl, LoadProcedure};
 

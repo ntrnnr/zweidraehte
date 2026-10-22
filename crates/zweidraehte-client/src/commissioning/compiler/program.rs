@@ -44,6 +44,7 @@ impl CommissioningApduRequirements {
 
 /// Computed inspection summary; the image and controls remain authoritative.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ProgramSummary {
     pub sections: Option<ProgramSections>,
     pub full_download: bool,

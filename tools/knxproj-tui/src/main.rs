@@ -113,7 +113,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let device_id = args
             .device
             .as_ref()
-            .map(|id| ProjectDeviceId(id.clone()))
+            .map(|id| ProjectDeviceId::new(id.as_str()))
+            .transpose()?
             .or_else(|| authored.devices.keys().next().cloned())
             .ok_or("the project contains no devices")?;
         let authored_device =
@@ -153,7 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             editor,
             ProjectContext {
                 path: args.file.clone(),
-                device: ProjectDeviceId("standalone-product".into()),
+                device: ProjectDeviceId::new("standalone-product").expect("literal is an identifier"),
                 authored: None,
                 original_source: None,
             },
@@ -464,7 +465,7 @@ fn add_catalog_device(
     })?;
     validate_catalog_medium(&leaf, line.medium)?;
 
-    let device_id = ProjectDeviceId(request.device_id);
+    let device_id = request.device_id;
     let draft = ProjectDeviceDraft {
         id: device_id.clone(),
         active: true,
@@ -832,7 +833,7 @@ mod tests {
 
     #[test]
     fn project_bindings_put_primary_first_without_reencoding_addresses() {
-        use zweidraehte_project::{AuthoredProject, ProjectDeviceId};
+        use zweidraehte_project::AuthoredProject;
 
         let project = AuthoredProject::parse(r#"
           ga secondary = 0/0/1
@@ -847,7 +848,7 @@ mod tests {
             }
           } }
         "#).expect("project with primary written last");
-        let relay = &project.devices[&ProjectDeviceId("relay".into())];
+        let relay = &project.devices["relay"];
         assert_eq!(project_object_bindings(&project, relay), [(0, vec![
             GroupAddress([255, 255]),
             GroupAddress([0, 1])

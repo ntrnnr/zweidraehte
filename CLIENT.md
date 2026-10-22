@@ -157,9 +157,12 @@ A product compiles against the document bound to it: callers resolve one
 `ProgrammingInput::compile` and `preview`. The compiler never resolves again,
 and refuses a profile resolved for another product or document.
 `ResolvedProfile::resolve` resolves from Master Data alone for inspection.
-Profile resolution returns `CompileError`, including its kind and authored
-control path; it rejects documents outside the supported schema range, while
-an unversioned document stays inspectable offline.
+Profile resolution and resource lookups return `ProfileError`, whose kind
+separates invalid Master Data, unsupported tokens and missing device
+observations. It rejects documents outside the supported schema range, while
+an unversioned document stays inspectable offline. A compile that meets a
+profile failure converts it into a `CompileError` with the matching kind and
+the authored control path.
 
 Project adapters preserve these as `Error::MasterDataLoad` and `Error::Catalog`;
 the former string-only `Error::MasterData` variant is removed. Library callers
@@ -333,7 +336,11 @@ the two calls; `Commissioner::commission` does all three steps and asks.
 For a `CommissioningError`, inspect `error.effects()` and
 `error.diagnostic().cleanup_failures()`. A confirmed assignment supplies recovery identity
 through `error.effects().learned_target()`. Use the project session to persist
-these outcomes; progress callbacks are optional.
+these outcomes; progress callbacks are optional. `error.diagnostic().kind()`
+names the failing stage. `DiagnosticKind::Preparation` carries a
+`PreparationFailure`, such as `ManagementAccess`, `TargetNotFound` or
+`AmbiguousTarget`, and means nothing was written. Frontends branch on these
+kinds, never on message text.
 
 Connectors and bus services return `BusResult<T>` / `BusError`; those errors
 contain no project or commissioning outcomes. `project::Error`
@@ -342,7 +349,18 @@ converts upward at project boundaries. `project::Error::ProjectBatch` owns a box
 raw device codes, optional legacy mappings and original bus/I/O source chains.
 Product errors pass through configuration and client adapters by value; the
 ETS owner boxes only the rare, large AP2 conflict payload. Error messages and
-typed causes are preserved.
+typed causes are preserved. `project::Error` names devices and nets with their
+typed identifiers. Its other variants classify the failure by domain, such as
+an invalid project, a keyring conflict or missing state evidence, and carry an
+`ErrorDetail` for display that only the library constructs. Frontends report
+their own failures with their own error types.
+
+Public errors, options, reports and growing vocabularies are
+`#[non_exhaustive]`. Build an options value from `Default` or its constructor,
+then assign fields; match such enums with a wildcard arm. Types whose
+documentation says "Exhaustive by design" stay matchable: enums fixed by KNX,
+image coordinates, and the procedure IR, whose inspection adapters must fail
+to build when an operation is added.
 
 Raw management accepts a borrowed `ManagementKeys` view. Obtain it from
 `ResolvedKeyMaterial::management_credentials()` or assemble it from serial,

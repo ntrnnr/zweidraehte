@@ -15,7 +15,7 @@ fn resolution_rejects_unsupported_schema_generations() {
 
     let error = resolve_catalog_profile(&unsupported, None, &selection).expect_err("schema 24 is not compiled");
 
-    assert_eq!(error.kind, CompileErrorKind::Unsupported);
+    assert_eq!(error.kind, ProfileErrorKind::Unsupported);
     assert!(error.message.contains("schema 24"));
 }
 
@@ -42,7 +42,7 @@ fn bound_master_data_completes_products_without_schema_provenance() {
 fn compilation_requires_bound_master_data() {
     let error = bound_master_data(&ProductData::default()).expect_err("loose products have no document");
 
-    assert_eq!(error.kind, CompileErrorKind::MissingEvidence);
+    assert_eq!(error.kind, ProfileErrorKind::MissingEvidence);
 }
 
 #[test]
@@ -53,7 +53,7 @@ fn live_commissioning_rejects_missing_master_data_schema_namespace() {
     let error =
         validate_for_live_commissioning(&catalog).expect_err("versionless Master Data cannot reach live commissioning");
 
-    assert_eq!(error.kind, CompileErrorKind::MissingEvidence);
+    assert_eq!(error.kind, ProfileErrorKind::MissingEvidence);
     assert!(error.message.contains("namespace (None)"));
 }
 
@@ -73,7 +73,7 @@ fn live_commissioning_rejects_unsupported_master_data_schema() {
     let catalog = parse_master_data(&xml).expect("newer catalog remains inspectable");
     assert!(matches!(
         validate_for_live_commissioning(&catalog),
-        Err(error) if error.kind == CompileErrorKind::Unsupported && error.message.contains("schema 24")
+        Err(error) if error.kind == ProfileErrorKind::Unsupported && error.message.contains("schema 24")
     ));
 }
 

@@ -31,7 +31,7 @@ async fn cancellation_before_preparation_sends_no_sender_probe() {
         impact: Default::default(),
         devices: vec![planned],
         siat_senders: vec![ManagedSiatSender {
-            device: ProjectDeviceId("sender".into()),
+            device: ProjectDeviceId::new("sender").expect("literal is an identifier"),
             address: crate::IndividualAddress::new(1, 1, 24),
             query: true,
             zero_sequence_policy: ZeroSiatSequencePolicy::Untouched,
@@ -96,7 +96,7 @@ async fn queued_programming_persists_before_next_preflight_and_retains_reports()
             .plan_commissioning(&[], BatchSelection::All, CommissioningIntent::Download(DownloadMode::Full))
             .expect("static queue validates");
         initial.set_policy(ProgrammingPolicy { differential: DifferentialPolicy::Disabled, ..Default::default() });
-        let second = ProjectDeviceId("second".into());
+        let second = ProjectDeviceId::new("second").expect("literal is an identifier");
         initial
             .set_target(&second, TargetSelection::KnownPreviousAddress(crate::IndividualAddress::new(1, 1, 11)))
             .expect("target override");
@@ -174,7 +174,9 @@ async fn queued_programming_persists_before_next_preflight_and_retains_reports()
 
             impl CommissioningObserver<ProjectDeviceId> for QueueObserver<'_> {
                 fn event(&mut self, id: &ProjectDeviceId, event: CommissioningEvent) {
-                    if id.0 != "first" || !matches!(event, CommissioningEvent::Stage(CommissioningStage::Complete)) {
+                    if id.as_str() != "first"
+                        || !matches!(event, CommissioningEvent::Stage(CommissioningStage::Complete))
+                    {
                         return;
                     }
                     if self.failure == Some("cancellation") {
@@ -223,8 +225,13 @@ async fn queued_programming_persists_before_next_preflight_and_retains_reports()
                 (None, Ok(report)) => assert_eq!(report.devices.len(), 2),
                 (Some(mode), Err(Error::ProjectBatch(error))) => {
                     assert_eq!(error.report.devices.len(), 1);
-                    assert_eq!(error.report.devices[0].id.0, "first");
-                    assert!(error.report.affected_devices.contains(&ProjectDeviceId("first".into())));
+                    assert_eq!(error.report.devices[0].id.clone().into_string(), "first");
+                    assert!(
+                        error
+                            .report
+                            .affected_devices
+                            .contains(&ProjectDeviceId::new("first").expect("literal is an identifier"))
+                    );
                     assert_eq!(error.finalization.len(), usize::from(mode == "journal"));
                     assert_eq!(
                         error.stage,

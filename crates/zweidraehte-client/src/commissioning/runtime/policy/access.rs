@@ -4,6 +4,7 @@ use crate::commissioning::catalog::profile::{ResolvedProfile, ResourceManagement
 use crate::commissioning::compiler::program::CompiledProgram;
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::error::DiagnosticResult as Result;
+use crate::commissioning::error::PreparationFailure;
 use crate::commissioning::input::{CommissioningIntent, DownloadMode};
 use crate::commissioning::runtime::AuthorizationPolicy;
 use crate::commissioning::runtime::commissioner::{CommissionerOptions, FREE_ACCESS_KEY, STANDARD_APDU_LENGTH};
@@ -16,26 +17,42 @@ pub(in crate::commissioning) fn validate_options(
     configured_max_apdu: Option<u16>,
 ) -> Result<()> {
     if options.scan_window.is_zero() {
-        return Err(Diagnostic::preparation("the target scan window must not be zero"));
+        return Err(Diagnostic::preparation(
+            PreparationFailure::InvalidOptions,
+            "the target scan window must not be zero",
+        ));
     }
     if options.load_state_poll_attempts == 0 {
-        return Err(Diagnostic::preparation("load-state polling requires at least one attempt"));
+        return Err(Diagnostic::preparation(
+            PreparationFailure::InvalidOptions,
+            "load-state polling requires at least one attempt",
+        ));
     }
     if options.load_state_poll_interval.is_zero() {
-        return Err(Diagnostic::preparation("the load-state polling interval must not be zero"));
+        return Err(Diagnostic::preparation(
+            PreparationFailure::InvalidOptions,
+            "the load-state polling interval must not be zero",
+        ));
     }
     if options.required_authorization_level > 15 {
-        return Err(Diagnostic::preparation("the required authorization level exceeds four bits"));
+        return Err(Diagnostic::preparation(
+            PreparationFailure::InvalidOptions,
+            "the required authorization level exceeds four bits",
+        ));
     }
     if options.minimum_equal_run == 0 {
-        return Err(Diagnostic::preparation("the differential minimum-equal run must not be zero"));
+        return Err(Diagnostic::preparation(
+            PreparationFailure::InvalidOptions,
+            "the differential minimum-equal run must not be zero",
+        ));
     }
     if let Some(configured_max_apdu) = configured_max_apdu
         && configured_max_apdu < STANDARD_APDU_LENGTH
     {
-        return Err(Diagnostic::preparation(format!(
-            "the configured maximum APDU {configured_max_apdu} is below the KNX standard-frame capacity"
-        )));
+        return Err(Diagnostic::preparation(
+            PreparationFailure::InvalidOptions,
+            format!("the configured maximum APDU {configured_max_apdu} is below the KNX standard-frame capacity"),
+        ));
     }
 
     Ok(())
@@ -43,7 +60,10 @@ pub(in crate::commissioning) fn validate_options(
 
 pub(in crate::commissioning) fn validate_credential_inputs(credentials: &ResolvedKeyMaterial) -> Result<()> {
     if credentials.tool_key().is_some() && credentials.tool_key() == credentials.fdsk() {
-        return Err(Diagnostic::preparation("the Tool Key must differ from the FDSK"));
+        return Err(Diagnostic::preparation(
+            PreparationFailure::InvalidOptions,
+            "the Tool Key must differ from the FDSK",
+        ));
     }
 
     Ok(())
@@ -54,29 +74,36 @@ pub(in crate::commissioning) fn resolve_profile_authorization(
     required_level: u8,
     access: &ManagementAccessOptions,
 ) -> Result<AuthorizationPolicy> {
-    let Some(declared_levels) =
-        profile.feature("AuthorizeLevels").map_err(|error| Diagnostic::preparation(error.to_string()))?
+    let Some(declared_levels) = profile
+        .feature("AuthorizeLevels")
+        .map_err(|error| Diagnostic::preparation(PreparationFailure::Profile, error.to_string()))?
     else {
         return Ok(AuthorizationPolicy::None);
     };
     let declared_levels = u8::try_from(declared_levels).map_err(|_| {
-        Diagnostic::preparation(format!(
-            "profile {} has invalid AuthorizeLevels value {declared_levels:?}",
-            profile.mask()
-        ))
+        Diagnostic::preparation(
+            PreparationFailure::Profile,
+            format!("profile {} has invalid AuthorizeLevels value {declared_levels:?}", profile.mask()),
+        )
     })?;
     if !(1..=16).contains(&declared_levels) {
-        return Err(Diagnostic::preparation(format!(
-            "profile {} declares {declared_levels} authorization levels, but KNX supports 1 through 16",
-            profile.mask()
-        )));
+        return Err(Diagnostic::preparation(
+            PreparationFailure::Profile,
+            format!(
+                "profile {} declares {declared_levels} authorization levels, but KNX supports 1 through 16",
+                profile.mask()
+            ),
+        ));
     }
 
     if required_level >= declared_levels {
-        return Err(Diagnostic::preparation(format!(
-            "authorization level {required_level} is unavailable for profile {} with {declared_levels} declared levels",
-            profile.mask()
-        )));
+        return Err(Diagnostic::preparation(
+            PreparationFailure::Capability,
+            format!(
+                "authorization level {required_level} is unavailable for profile {} with {declared_levels} declared levels",
+                profile.mask()
+            ),
+        ));
     }
 
     Ok(AuthorizationPolicy::LegacyKey { key: access.access_key().unwrap_or(FREE_ACCESS_KEY).into(), required_level })
@@ -106,13 +133,17 @@ pub(in crate::commissioning) fn validate_apdu_requirements(
         let Some(required) = required else {
             continue;
         };
-        let required_wire = required
-            .checked_add(overhead)
-            .ok_or_else(|| Diagnostic::preparation(format!("secure {phase} APDU requirement overflows")))?;
+        let required_wire = required.checked_add(overhead).ok_or_else(|| {
+            Diagnostic::preparation(
+                PreparationFailure::Capability,
+                format!("secure {phase} APDU requirement overflows"),
+            )
+        })?;
         if required_wire > wire_max {
-            return Err(Diagnostic::preparation(format!(
-                "{phase} requires wire APDU {required_wire}, but interface/target/project allow {wire_max}"
-            )));
+            return Err(Diagnostic::preparation(
+                PreparationFailure::Capability,
+                format!("{phase} requires wire APDU {required_wire}, but interface/target/project allow {wire_max}"),
+            ));
         }
     }
 
@@ -127,9 +158,12 @@ pub(in crate::commissioning) fn validate_partial_management_style(
         && let (Some(observed), Some(target)) = (observed, plan.profile().management_style())
         && observed != target
     {
-        return Err(Diagnostic::preparation(format!(
-            "the requested operation needs installed {observed:?} management, but the project resolves {target:?}"
-        )));
+        return Err(Diagnostic::preparation(
+            PreparationFailure::Capability,
+            format!(
+                "the requested operation needs installed {observed:?} management, but the project resolves {target:?}"
+            ),
+        ));
     }
 
     Ok(())

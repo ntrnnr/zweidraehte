@@ -1780,7 +1780,7 @@ impl App {
         };
 
         let defaults = CatalogProjectDefaults {
-            existing_device_ids: project.devices.keys().map(|id| id.0.clone()).collect(),
+            existing_device_ids: project.devices.keys().map(|id| id.to_string()).collect(),
             existing_addresses: project.devices.values().map(|device| device.address).collect(),
             area: current.address.area(),
             line: current.address.line(),
@@ -2836,7 +2836,7 @@ mod project_editor_tests {
             product,
             context: ProjectContext {
                 path: PathBuf::from("fixture.knx"),
-                device: ProjectDeviceId("fixture".into()),
+                device: ProjectDeviceId::new("fixture").expect("literal is an identifier"),
                 authored: None,
                 original_source: None,
             },
@@ -3089,7 +3089,7 @@ mod project_editor_tests {
         let project_path = directory.path().join("project.knx");
         fs::write(&project_path, PROJECT_STATUS_FIXTURE).expect("project fixture is written");
 
-        let button = ProjectDeviceId("button".into());
+        let button = ProjectDeviceId::new("button").expect("literal is an identifier");
         {
             let store = zweidraehte_project::ProjectStore::open(&project_path).expect("project store opens");
             store.initialize().expect("project state initializes");
@@ -3116,7 +3116,10 @@ mod project_editor_tests {
         let (_directory, app, button) = app_with_project();
 
         assert_eq!(app.project_programming_status(&button), None);
-        assert_eq!(app.project_programming_status(&ProjectDeviceId("relay".into())), None);
+        assert_eq!(
+            app.project_programming_status(&ProjectDeviceId::new("relay").expect("literal is an identifier")),
+            None
+        );
     }
 
     #[test]
@@ -3164,7 +3167,7 @@ mod project_editor_tests {
     #[test]
     fn persisted_serials_merge_by_id_without_saving_or_discarding_drafts() {
         let (_directory, mut app, button) = app_with_project();
-        let relay = ProjectDeviceId("relay".into());
+        let relay = ProjectDeviceId::new("relay").expect("literal is an identifier");
         app.project.navigation_mut().expect("navigation").select(&ProjectNavigationTarget::Device(relay.clone()));
         let mut context = app.project.context().cloned().expect("project context");
         let authored = context.authored.as_ref().expect("authored project");
@@ -3206,18 +3209,11 @@ mod project_editor_tests {
         let (tx, receiver) = std::sync::mpsc::channel();
         let (control, _) = tokio::sync::mpsc::unbounded_channel();
         app.operations.start(DeviceOperation::Unloading, receiver, control);
-        let failure = ProjectBatchFailure {
-            device: Some(button.clone()),
-            stage: ProjectBatchFailureStage::Finalization,
-            report: ProjectBatchReport {
-                serial_updates: BTreeMap::from([(button.clone(), Some([0, 0xFA, 0, 0, 0, 1]))]),
-                affected_devices: BTreeSet::from([button.clone()]),
-                ..Default::default()
-            },
-            source: None,
-            state_errors: vec![],
-            finalization: vec![],
-        };
+        let mut report = ProjectBatchReport::default();
+        report.serial_updates = BTreeMap::from([(button.clone(), Some([0, 0xFA, 0, 0, 0, 1]))]);
+        report.affected_devices = BTreeSet::from([button.clone()]);
+        let mut failure = ProjectBatchFailure::new(ProjectBatchFailureStage::Finalization, report);
+        failure.device = Some(button.clone());
         tx.send(crate::download::DownloadMsg::Done(Ok(crate::download::DownloadOutcome {
             project_path: PathBuf::from("another/project.knx"),
             summary: String::new(),
@@ -3237,7 +3233,7 @@ mod project_editor_tests {
 
         // A failure in this project can still have changed durable evidence.
         // Refresh from its original scope even if selection has moved elsewhere.
-        let relay = ProjectDeviceId("relay".into());
+        let relay = ProjectDeviceId::new("relay").expect("literal is an identifier");
         let mut context = app.project.context().cloned().expect("context");
         context.device = relay.clone();
         let project_path = context.path.clone();
@@ -3248,13 +3244,12 @@ mod project_editor_tests {
         tx.send(crate::download::DownloadMsg::Done(Ok(crate::download::DownloadOutcome {
             project_path,
             summary: String::new(),
-            execution: Err(ProjectError::ProjectBatch(Box::new(ProjectBatchFailure {
-                device: Some(button.clone()),
-                stage: ProjectBatchFailureStage::Commissioning,
-                report: ProjectBatchReport { affected_devices: BTreeSet::from([button.clone()]), ..Default::default() },
-                source: None,
-                state_errors: vec![],
-                finalization: vec![],
+            execution: Err(ProjectError::ProjectBatch(Box::new({
+                let mut report = ProjectBatchReport::default();
+                report.affected_devices = BTreeSet::from([button.clone()]);
+                let mut failure = ProjectBatchFailure::new(ProjectBatchFailureStage::Commissioning, report);
+                failure.device = Some(button.clone());
+                failure
             }))),
             status_scope: BTreeSet::from([button.clone()]),
         })))
@@ -3349,7 +3344,7 @@ mod project_editor_tests {
     #[test]
     fn startup_status_installs_one_complete_project_view() {
         let (_directory, mut app, button) = app_with_project();
-        let relay = ProjectDeviceId("relay".into());
+        let relay = ProjectDeviceId::new("relay").expect("literal is an identifier");
         let tx = status_worker(&mut app);
         tx.send(crate::status::StatusRefreshMsg::Progress {
             generation: app.project.generation(),
@@ -3381,7 +3376,7 @@ mod project_editor_tests {
     #[test]
     fn refresh_does_not_preserve_rows_outside_the_new_snapshot() {
         let (_directory, mut app, button) = app_with_project();
-        let relay = ProjectDeviceId("relay".into());
+        let relay = ProjectDeviceId::new("relay").expect("literal is an identifier");
         let snapshot = status_snapshot(&app, BTreeSet::from([button.clone(), relay.clone()]));
         install_snapshot(&mut app, snapshot);
         let tx = status_worker(&mut app);
@@ -3515,17 +3510,7 @@ mod project_editor_tests {
         let path = app.project.context().expect("context").path.clone();
         fs::write(&path, "# empty saved project\n").expect("source");
         let snapshot = ProjectStatusCache::default()
-            .load(
-                ProjectStatusRequest {
-                    project_path: &path,
-                    draft: None,
-                    scope: None,
-                    master_data: None,
-                    keyring_path: None,
-                },
-                || Ok(None),
-                |_, _, _| {},
-            )
+            .load(ProjectStatusRequest::new(&path), || Ok(None), |_, _, _| {})
             .expect("coherent inputs")
             .snapshot()
             .expect("status");
@@ -3582,7 +3567,7 @@ mod project_editor_tests {
     #[test]
     fn parameter_edit_invalidates_the_previous_revision() {
         let (_directory, mut app, button) = app_with_project();
-        let relay = ProjectDeviceId("relay".into());
+        let relay = ProjectDeviceId::new("relay").expect("literal is an identifier");
         let snapshot = status_snapshot(&app, BTreeSet::from([button.clone(), relay.clone()]));
         install_snapshot(&mut app, snapshot);
         assert!(app.project_programming_status(&relay).is_some());
@@ -3622,7 +3607,7 @@ mod project_editor_tests {
     #[test]
     fn object_flag_edit_invalidates_the_previous_revision() {
         let (_directory, mut app, button) = app_with_project();
-        let relay = ProjectDeviceId("relay".into());
+        let relay = ProjectDeviceId::new("relay").expect("literal is an identifier");
         let snapshot = status_snapshot(&app, BTreeSet::from([button.clone(), relay.clone()]));
         install_snapshot(&mut app, snapshot);
         assert!(app.project_programming_status(&relay).is_some());
@@ -3637,7 +3622,7 @@ mod project_editor_tests {
     #[test]
     fn group_link_edit_invalidates_the_previous_revision() {
         let (_directory, mut app, button) = app_with_project();
-        let relay = ProjectDeviceId("relay".into());
+        let relay = ProjectDeviceId::new("relay").expect("literal is an identifier");
         let snapshot = status_snapshot(&app, BTreeSet::from([button.clone(), relay.clone()]));
         install_snapshot(&mut app, snapshot);
         assert!(app.project_programming_status(&relay).is_some());
@@ -3652,7 +3637,7 @@ mod project_editor_tests {
     #[test]
     fn data_secure_edit_invalidates_the_previous_revision() {
         let (_directory, mut app, button) = app_with_project();
-        let relay = ProjectDeviceId("relay".into());
+        let relay = ProjectDeviceId::new("relay").expect("literal is an identifier");
         let snapshot = status_snapshot(&app, BTreeSet::from([button.clone(), relay.clone()]));
         install_snapshot(&mut app, snapshot);
         assert!(app.project_programming_status(&relay).is_some());
@@ -3994,7 +3979,7 @@ mod project_editor_tests {
              } }\n",
         )
         .expect("project parses");
-        let active_device = ProjectDeviceId("button".into());
+        let active_device = ProjectDeviceId::new("button").expect("literal is an identifier");
         let mut app = parameter_ref_default_app();
         app.project.replace_context(ProjectContext {
             path: PathBuf::from("project.knx"),

@@ -248,12 +248,14 @@ impl core::fmt::Debug for SecurityConfig {
     }
 }
 
+/// Exhaustive by design: one object's protection is its number and protection level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GroupObjectSecurity {
     pub com_object: u16,
     pub protection: GroupObjectProtection,
 }
 
+/// Exhaustive by design: Data Secure group traffic is plain, authenticated, or authenticated and encrypted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GroupObjectProtection {
     Plain,

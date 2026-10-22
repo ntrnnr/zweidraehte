@@ -8,6 +8,7 @@ use crate::commissioning::catalog::profile::{
 use crate::commissioning::compiler::program::CompiledProgram;
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::error::DiagnosticResult as Result;
+use crate::commissioning::error::PreparationFailure;
 use crate::commissioning::input::security::ObservedDataSecurity;
 use crate::commissioning::procedure::operands::{ServiceRead, StandardMemoryService};
 use crate::commissioning::runtime::ExecutionSession;
@@ -18,11 +19,15 @@ use crate::commissioning::runtime::prepared::PreparedEvidence;
 use zweidraehte_proto::address::IndividualAddress;
 
 pub(crate) fn management_style_read(profile: &ResolvedProfile) -> Result<Option<ServiceRead>> {
-    let Some(resource) =
-        profile.resource("ManagementStyle").map_err(|error| Diagnostic::preparation(error.to_string()))?
+    let Some(resource) = profile
+        .resource("ManagementStyle")
+        .map_err(|error| Diagnostic::preparation(PreparationFailure::Profile, error.to_string()))?
     else {
         return if profile.management_model() == ManagementModel::Bcu2 {
-            Err(Diagnostic::preparation("BCU2 profile has no remote management-style probe"))
+            Err(Diagnostic::preparation(
+                PreparationFailure::Profile,
+                "BCU2 profile has no remote management-style probe",
+            ))
         } else {
             Ok(None)
         };
@@ -31,22 +36,29 @@ pub(crate) fn management_style_read(profile: &ResolvedProfile) -> Result<Option<
         .source
         .location
         .as_ref()
-        .ok_or_else(|| Diagnostic::preparation("management-style probe has no location"))?
+        .ok_or_else(|| Diagnostic::preparation(PreparationFailure::Profile, "management-style probe has no location"))?
         .to_address_space()
-        .map_err(|error| Diagnostic::preparation(error.to_string()))?;
+        .map_err(|error| Diagnostic::preparation(PreparationFailure::Profile, error.to_string()))?;
     if matches!(location, zweidraehte_ets_files::schema::master_data::AddressSpaceLocation::Constant { .. }) {
         return Ok(None);
     }
-    if resource.flavour().map_err(|error| Diagnostic::preparation(error.to_string()))?
+    if resource.flavour().map_err(|error| Diagnostic::preparation(PreparationFailure::Profile, error.to_string()))?
         != Some(ResourceFlavour::ManagementStyleBcu2)
     {
-        return Err(Diagnostic::preparation("management-style resource has unsupported coding"));
+        return Err(Diagnostic::preparation(
+            PreparationFailure::Profile,
+            "management-style resource has unsupported coding",
+        ));
     }
     if !matches!(location, zweidraehte_ets_files::schema::master_data::AddressSpaceLocation::StandardMemory { .. }) {
-        return Err(Diagnostic::preparation("management-style probe has unsupported online location"));
+        return Err(Diagnostic::preparation(
+            PreparationFailure::Profile,
+            "management-style probe has unsupported online location",
+        ));
     }
-    u8::try_from(resource.length())
-        .map_err(|_| Diagnostic::preparation("management-style probe exceeds one transfer"))?;
+    u8::try_from(resource.length()).map_err(|_| {
+        Diagnostic::preparation(PreparationFailure::Profile, "management-style probe exceeds one transfer")
+    })?;
     Ok(Some(resource.read(StandardMemoryService::Classic)?))
 }
 
@@ -94,6 +106,7 @@ impl ExecutionSession<'_> {
                 let observed_mode = read_data_security_mode(self).await?;
                 if observed_mode != expected {
                     return Err(Diagnostic::preparation(
+                        PreparationFailure::TargetChanged,
                         "Security Mode changed after preparation; prepare commissioning again",
                     ));
                 }
@@ -104,24 +117,33 @@ impl ExecutionSession<'_> {
         let (observed, observed_descriptor, observed_management_style) = self.finish(observations).await?;
 
         if observed != plan.profile().mask().dd0 {
-            return Err(Diagnostic::preparation(format!(
-                "the device at {address} changed after Diagnostic::preparation (expected DD0 {:04X}, observed {observed:04X})",
-                plan.profile().mask().dd0
-            )));
+            return Err(Diagnostic::preparation(
+                PreparationFailure::TargetChanged,
+                format!(
+                    "the device at {address} changed after Diagnostic::preparation (expected DD0 {:04X}, observed {observed:04X})",
+                    plan.profile().mask().dd0
+                ),
+            ));
         }
         if observed_descriptor != plan.profile().mask().management_descriptor_01 {
-            return Err(Diagnostic::preparation(format!(
-                "the device at {address} changed after Diagnostic::preparation (PID 72 no longer identifies {})",
-                plan.profile().mask()
-            )));
+            return Err(Diagnostic::preparation(
+                PreparationFailure::TargetChanged,
+                format!(
+                    "the device at {address} changed after Diagnostic::preparation (PID 72 no longer identifies {})",
+                    plan.profile().mask()
+                ),
+            ));
         }
         let expected_style = evidence.management_style.as_ref().map(|(_, style)| *style);
         if observed_management_style != expected_style {
-            return Err(Diagnostic::preparation(format!(
-                "the installed management realization at {address} changed after preparation \
+            return Err(Diagnostic::preparation(
+                PreparationFailure::TargetChanged,
+                format!(
+                    "the installed management realization at {address} changed after preparation \
                  (expected {:?}, observed {observed_management_style:?})",
-                expected_style
-            )));
+                    expected_style
+                ),
+            ));
         }
 
         if let Some(serial_number) = plan.observed_target().serial_number {
@@ -131,13 +153,17 @@ impl ExecutionSession<'_> {
                 .read_individual_addresses(AddressTarget::Serial(serial_number), self.config.scan_window)
                 .await
                 .map_err(|error| {
-                    Diagnostic::from(error).preparation_context("revalidating the selected serial number")
+                    Diagnostic::from(error).preparation_context(
+                        PreparationFailure::Communication,
+                        "revalidating the selected serial number",
+                    )
                 })?;
             let serial_address = unique_target(addresses, "the prepared serial number")?;
             if serial_address != address {
-                return Err(Diagnostic::preparation(format!(
-                    "the prepared serial number moved from {address} to {serial_address} before execution"
-                )));
+                return Err(Diagnostic::preparation(
+                    PreparationFailure::TargetChanged,
+                    format!("the prepared serial number moved from {address} to {serial_address} before execution"),
+                ));
             }
         }
 
@@ -150,9 +176,11 @@ pub(in crate::commissioning) async fn read_bound_management_style(
     probe: &ServiceRead,
 ) -> Result<ResourceManagementStyle> {
     let value = session.read(&probe.target, probe.extent, TransferContext::Public).await?;
-    let value = value
-        .first()
-        .copied()
-        .ok_or_else(|| Diagnostic::preparation("management-style identity probe returned no bytes"))?;
+    let value = value.first().copied().ok_or_else(|| {
+        Diagnostic::preparation(
+            PreparationFailure::InvalidResponse,
+            "management-style identity probe returned no bytes",
+        )
+    })?;
     Ok(if value == 0 { ResourceManagementStyle::LoadStateMachine } else { ResourceManagementStyle::Simple })
 }

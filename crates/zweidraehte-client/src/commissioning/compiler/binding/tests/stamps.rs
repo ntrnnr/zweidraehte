@@ -229,7 +229,7 @@ fn configure_stamp_fixture(
         StandardMemoryService::Classic,
     )?;
     program.stamp_output = crate::commissioning::catalog::rules::resolved_download_stamp_output(profile, stamps)?;
-    validate_download_stamp_output(profile, image, program)
+    Ok(validate_download_stamp_output(profile, image, program)?)
 }
 
 fn parse_stamp_controls(

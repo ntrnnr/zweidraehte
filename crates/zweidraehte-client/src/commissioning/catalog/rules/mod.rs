@@ -8,7 +8,7 @@ pub(crate) mod lifecycle;
 pub(crate) use stamps::{resolved_download_stamp_resources, resolved_download_stamp_resources_with_pei_program};
 
 use crate::commissioning::catalog::profile::{ManagementModel, ResolvedProfile, ResourceManagementStyle};
-use crate::commissioning::error::CompileError;
+use crate::commissioning::error::ProfileError;
 use crate::commissioning::procedure::RestartKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,7 +77,7 @@ impl ResolvedProfile {
 }
 
 impl ResolvedProfile {
-    pub(crate) fn supports_full_image_stamp_coverage(&self) -> Result<bool, CompileError> {
+    pub(crate) fn supports_full_image_stamp_coverage(&self) -> Result<bool, ProfileError> {
         // Flavour 1 stamps cover restricted ranges, so equality does not establish
         // that every byte from the previous desired image remains resident.
         Ok(self.management_model != ManagementModel::SystemB || self.feature("DownloadStamp")? != Some(1))
@@ -85,9 +85,9 @@ impl ResolvedProfile {
 }
 
 impl ResolvedProfile {
-    pub(crate) fn validate_programming(&self) -> Result<(), CompileError> {
+    pub(crate) fn validate_programming(&self) -> Result<(), ProfileError> {
         if self.management_model == ManagementModel::None {
-            Err(CompileError::unsupported("this profile has no programming management model"))
+            Err(ProfileError::unsupported("this profile has no programming management model"))
         } else {
             Ok(())
         }
@@ -185,7 +185,7 @@ pub(crate) fn product_property_object(object: PropertyObject) -> ObjectSelector 
     }
 }
 
-pub(crate) fn product_segment(product: &ProductData, segment: &Segment) -> Result<ImageLocation, CompileError> {
+pub(crate) fn product_segment(product: &ProductData, segment: &Segment) -> Result<ImageLocation, ProfileError> {
     if let Some(address) = segment.address {
         return Ok(ImageLocation {
             space: if segment.user_memory == Some(true) { ImageSpace::UserMemory } else { ImageSpace::StandardMemory },
@@ -194,13 +194,13 @@ pub(crate) fn product_segment(product: &ProductData, segment: &Segment) -> Resul
     }
 
     let machine = segment.load_state_machine.ok_or_else(|| {
-        CompileError::invalid(format!(
+        ProfileError::invalid(format!(
             "product segment {0:?} has neither an absolute address nor a load-state machine",
             segment.id.clone()
         ))
     })?;
     let offset = product.relative_segment_offset(&segment.id).ok_or_else(|| {
-        CompileError::invalid(format!("relative product segment {0:?} has no allocation offset", segment.id.clone()))
+        ProfileError::invalid(format!("relative product segment {0:?} has no allocation offset", segment.id.clone()))
     })?;
 
     Ok(ImageLocation {
@@ -209,9 +209,9 @@ pub(crate) fn product_segment(product: &ProductData, segment: &Segment) -> Resul
     })
 }
 
-pub(crate) fn resource(resource: &SelectedResource<'_>) -> Result<ImageLocation, CompileError> {
+pub(crate) fn resource(resource: &SelectedResource<'_>) -> Result<ImageLocation, ProfileError> {
     resource.image_location()?.ok_or_else(|| {
-        CompileError::invalid(format!(
+        ProfileError::invalid(format!(
             "resource {0:?} does not have a writable image location",
             resource.name().to_owned()
         ))

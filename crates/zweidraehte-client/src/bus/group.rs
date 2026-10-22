@@ -4,6 +4,8 @@ use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::messages::knx::{ApciCode, DestinationAddress, KnxMessageBuffer, offsets};
 
 /// The group-communication service a telegram carries.
+///
+/// Exhaustive by design: these are the three KNX group services.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GroupService {
     /// A_GroupValue_Read — a request for the current value; carries no data.
@@ -21,6 +23,7 @@ pub enum GroupService {
 /// the DPT-encoded bytes. DPT decoding is left to the consumer — see
 /// [`zweidraehte_proto::dpt`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct GroupTelegram {
     pub source: IndividualAddress,
     pub group: GroupAddress,

@@ -13,6 +13,7 @@ use zweidraehte_ets_files::archive::{
     PackageCatalogIndex, PackageCatalogLeaf, PackageCatalogOnlyReason, PackageCatalogSection, PackageCatalogSelector,
     PackageInstantiation, PackageInstantiationBlock, PackageRegistration, PackageRegistrationStatus,
 };
+use zweidraehte_project::ProjectDeviceId;
 use zweidraehte_proto::address::IndividualAddress;
 
 /// Registration status carried independently by a Product and its
@@ -292,7 +293,7 @@ impl CatalogProjectDefaults {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CatalogAddRequest<S> {
     pub selector: S,
-    pub device_id: String,
+    pub device_id: ProjectDeviceId,
     pub address: IndividualAddress,
 }
 
@@ -389,12 +390,12 @@ impl<S: Clone> CatalogAddForm<S> {
     }
 
     fn validate(&mut self, defaults: &CatalogProjectDefaults) -> Option<CatalogAddRequest<S>> {
-        if !valid_project_identifier(&self.device_id) {
+        let Ok(device_id) = ProjectDeviceId::new(self.device_id.as_str()) else {
             self.error = Some(
                 "Device ID must start with a letter or underscore and contain only letters, digits, `_`, or `-`".into(),
             );
             return None;
-        }
+        };
         if defaults.existing_device_ids.contains(&self.device_id) {
             self.error = Some(format!("Project already contains device `{}`", self.device_id));
             return None;
@@ -418,7 +419,7 @@ impl<S: Clone> CatalogAddForm<S> {
         }
 
         self.error = None;
-        Some(CatalogAddRequest { selector: self.leaf.selector.clone(), device_id: self.device_id.clone(), address })
+        Some(CatalogAddRequest { selector: self.leaf.selector.clone(), device_id, address })
     }
 }
 
@@ -782,12 +783,6 @@ fn suggested_device_id<S>(leaf: &CatalogLeafView<S>, existing: &BTreeSet<String>
     unreachable!("an unbounded numeric suffix eventually produces a unique ID")
 }
 
-fn valid_project_identifier(value: &str) -> bool {
-    let mut characters = value.chars();
-    characters.next().is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
-        && characters.all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
-}
-
 pub fn parse_individual_address(value: &str) -> Result<IndividualAddress, String> {
     value.parse().map_err(|error| format!("Individual address: {error}; expected area.line.device"))
 }
@@ -981,7 +976,7 @@ mod tests {
 
         let request = dialog.activate().expect("valid defaults confirm");
         assert_eq!(request.selector, "old");
-        assert_eq!(request.device_id, "ta-10-2");
+        assert_eq!(request.device_id.as_str(), "ta-10-2");
         assert_eq!(request.address, IndividualAddress::new(1, 1, 2));
     }
 

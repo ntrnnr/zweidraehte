@@ -6,6 +6,7 @@
 
 use super::revision::FileRevision;
 use super::session::LockedProjectStore;
+use crate::configuration::ErrorDetail;
 use crate::project::error::{Error, Result};
 use crate::security::Keyring;
 use std::collections::BTreeMap;
@@ -26,6 +27,7 @@ use zweidraehte_util::secret::SecretBytes;
 /// Counts safe to display before importing. External senders count as related
 /// keyring entries, but not as matched managed devices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct KeyringImportSummary {
     pub matched_devices: usize,
     pub matched_groups: usize,
@@ -115,7 +117,7 @@ impl KeyringImportPlan {
             merge_serial(&mut serial, imported.serial, "ETS keyring")?;
             if let Some(fdsk) = imported.fdsk() {
                 records.push(imported_key_record(
-                    KeyId { scope: KeyScope::Device(device.id.0.clone()), kind: KeyKind::Fdsk },
+                    KeyId { scope: KeyScope::Device(device.id.to_string()), kind: KeyKind::Fdsk },
                     None,
                     SecretBytes::new(fdsk),
                     serial,
@@ -123,7 +125,7 @@ impl KeyringImportPlan {
             }
             if let Some(tool_key) = imported.tool_key() {
                 records.push(imported_key_record(
-                    KeyId { scope: KeyScope::Device(device.id.0.clone()), kind: KeyKind::ToolKey },
+                    KeyId { scope: KeyScope::Device(device.id.to_string()), kind: KeyKind::ToolKey },
                     None,
                     SecretBytes::new(tool_key),
                     None,
@@ -134,19 +136,22 @@ impl KeyringImportPlan {
             {
                 if security.routing == IpServiceSecurity::Secure {
                     let line = store.authored().line_topology(device.area, device.line).ok_or_else(|| {
-                        Error::DeviceConfiguration(format!("device `{}` has no unique KNX/IP topology line", device.id))
+                        Error::InvalidProject(ErrorDetail::new(format!(
+                            "device `{}` has no unique KNX/IP topology line",
+                            device.id
+                        )))
                     })?;
                     let DomainAddress::Ip(authored_multicast) = line.domain.ok_or_else(|| {
-                        Error::DeviceConfiguration(format!(
+                        Error::InvalidProject(ErrorDetail::new(format!(
                             "IP Secure device `{}` has no routing multicast address",
                             device.id
-                        ))
+                        )))
                     })?
                     else {
-                        return Err(Error::DeviceConfiguration(format!(
+                        return Err(Error::InvalidProject(ErrorDetail::new(format!(
                             "IP Secure device `{}` is not on a KNX/IP domain",
                             device.id
-                        )));
+                        ))));
                     };
                     validate_imported_backbone(
                         Some(keyring),
@@ -172,7 +177,7 @@ impl KeyringImportPlan {
                     if let Some(code) = imported_authentication_code(Some(keyring), Some(imported), device.address)? {
                         records.push(imported_key_record(
                             KeyId {
-                                scope: KeyScope::IpInterface(device.id.0.clone()),
+                                scope: KeyScope::IpInterface(device.id.to_string()),
                                 kind: KeyKind::DeviceAuthenticationCode,
                             },
                             None,
@@ -187,7 +192,7 @@ impl KeyringImportPlan {
                         {
                             records.push(imported_key_record(
                                 KeyId {
-                                    scope: KeyScope::IpUser { interface: device.id.0.clone(), user_id: *user_id },
+                                    scope: KeyScope::IpUser { interface: device.id.to_string(), user_id: *user_id },
                                     kind: KeyKind::IpPasswordHash,
                                 },
                                 None,
@@ -204,9 +209,9 @@ impl KeyringImportPlan {
                 let next =
                     imported.sequence_number.checked_add(1).filter(|next| *next <= 0xFFFF_FFFF_FFFF).ok_or_else(
                         || {
-                            Error::DeviceConfiguration(
-                                "ETS device sequence number has no representable 48-bit successor".into(),
-                            )
+                            Error::KeyringImport(ErrorDetail::new(
+                                "ETS device sequence number has no representable 48-bit successor",
+                            ))
                         },
                     )?;
                 events.push(ProjectEvent::ObserveDeviceOutgoing { serial: format_serial(&serial), next });
@@ -224,7 +229,7 @@ impl KeyringImportPlan {
             };
             matched_keyring_devices.insert(index);
             if imported.sequence_number > 0xFFFF_FFFF_FFFF {
-                return Err(Error::DeviceConfiguration("ETS sender sequence number exceeds 48 bits".into()));
+                return Err(Error::KeyringImport(ErrorDetail::new("ETS sender sequence number exceeds 48 bits")));
             }
             if imported.sequence_number > 0 {
                 events.push(ProjectEvent::ObserveSender {
@@ -238,10 +243,10 @@ impl KeyringImportPlan {
         for net in store.authored().nets.values() {
             let raw = u16::from_be_bytes(net.address.0);
             if let Some(previous) = nets_by_address.insert(raw, &net.id) {
-                return Err(Error::DeviceConfiguration(format!(
+                return Err(Error::KeyringImport(ErrorDetail::new(format!(
                     "nets `{previous}` and `{}` use the same group address {}",
                     net.id, net.address
-                )));
+                ))));
             }
         }
         let mut active_epochs = Vec::new();
@@ -324,10 +329,10 @@ pub(super) fn select_keyring_device(
         let mut matches = keyring.devices.iter().enumerate().filter(|(_, device)| device.serial == Some(serial));
         let selected = matches.next();
         if matches.next().is_some() {
-            return Err(Error::DeviceConfiguration(format!(
+            return Err(Error::KeyringImport(ErrorDetail::new(format!(
                 "ETS keyring contains multiple devices with serial {}",
                 format_serial(&serial)
-            )));
+            ))));
         }
         if policy == DeviceMatchPolicy::Import {
             return Ok(selected);
@@ -337,9 +342,9 @@ pub(super) fn select_keyring_device(
             // A serial match must not bypass conflicting ownership of the
             // address being assigned, whichever order the entries have.
             if at_desired.is_some_and(|(_, device)| device.serial.is_some_and(|candidate| candidate != serial)) {
-                return Err(Error::DeviceConfiguration(
-                    "ETS keyring assigns the desired individual address to a different serial number".into(),
-                ));
+                return Err(Error::KeyringImport(ErrorDetail::new(
+                    "ETS keyring assigns the desired individual address to a different serial number",
+                )));
             }
             return Ok(selected);
         }
@@ -354,7 +359,9 @@ fn unique_at_address(keyring: &Keyring, address: IndividualAddress) -> Result<Op
     let mut matches = keyring.devices.iter().enumerate().filter(|(_, device)| device.individual_address == address);
     let selected = matches.next();
     if matches.next().is_some() {
-        return Err(Error::DeviceConfiguration(format!("ETS keyring repeats individual address {address}")));
+        return Err(Error::KeyringImport(ErrorDetail::new(format!(
+            "ETS keyring repeats individual address {address}"
+        ))));
     }
     Ok(selected)
 }
@@ -367,21 +374,23 @@ pub(super) fn validate_imported_backbone(
     if let Some(backbone) = keyring.and_then(|keyring| keyring.backbone.as_ref()) {
         if let Some(address) = backbone.multicast_address.as_deref() {
             let address = address.parse::<Ipv4Addr>().map_err(|_| {
-                Error::DeviceConfiguration(format!("ETS keyring has malformed backbone multicast address `{address}`"))
+                Error::KeyringImport(ErrorDetail::new(format!(
+                    "ETS keyring has malformed backbone multicast address `{address}`"
+                )))
             })?;
             if address.octets() != multicast_address {
-                return Err(Error::DeviceConfiguration(format!(
+                return Err(Error::KeyringImport(ErrorDetail::new(format!(
                     "ETS keyring backbone multicast address {address} conflicts with the authored KNX/IP topology"
-                )));
+                ))));
             }
         }
         if let Some(latency) = backbone.latency_ms
             && latency != u32::from(latency_tolerance_ms)
         {
-            return Err(Error::DeviceConfiguration(format!(
+            return Err(Error::KeyringImport(ErrorDetail::new(format!(
                 "ETS keyring backbone latency {latency} ms conflicts with authored {} ms",
                 latency_tolerance_ms
-            )));
+            ))));
         }
     }
 
@@ -446,7 +455,9 @@ pub(super) fn merge_secret(
 ) -> Result<()> {
     incoming.key16_ref().map_err(KeyStoreError::from)?;
     match current {
-        Some(current) if current.as_slice() != incoming.as_slice() => Err(Error::DeviceConfiguration(conflict())),
+        Some(current) if current.as_slice() != incoming.as_slice() => {
+            Err(Error::KeyringImport(ErrorDetail::new(conflict())))
+        }
         Some(_) => Ok(()),
         None => {
             *current = Some(incoming);
@@ -466,11 +477,11 @@ fn unique_imported_secret(values: impl IntoIterator<Item = [u8; 16]>, what: &str
 pub(super) fn merge_serial(target: &mut Option<[u8; 6]>, candidate: Option<[u8; 6]>, source: &str) -> Result<()> {
     let Some(candidate) = candidate else { return Ok(()) };
     match target {
-        Some(existing) if *existing != candidate => Err(Error::DeviceConfiguration(format!(
+        Some(existing) if *existing != candidate => Err(Error::KeyringImport(ErrorDetail::new(format!(
             "serial {} conflicts with {source} serial {}",
             format_serial(existing),
             format_serial(&candidate)
-        ))),
+        )))),
         Some(_) => Ok(()),
         None => {
             *target = Some(candidate);

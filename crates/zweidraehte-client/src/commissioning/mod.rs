@@ -4,6 +4,23 @@
 //! [`ProgrammingInput::preview`] builds its desired image without device I/O.
 //! [`Commissioner::prepare`] observes the device and binds the program to a
 //! bus. [`Commissioner::execute`] consumes that [`PreparedProgram`].
+//!
+//! # Errors
+//!
+//! - Profile resolution and Master Data lookups on [`ResolvedProfile`] and
+//!   [`SelectedResource`] return [`ProfileError`]. Recording an observed
+//!   association-table row size returns [`AssociationTableEntrySizeError`].
+//! - [`ProgrammingInput::compile`] and [`ProgrammingInput::preview`] return
+//!   [`CompileError`]. A profile failure met while compiling arrives converted,
+//!   with the matching [`CompileErrorKind`].
+//! - Building a [`SparseDeviceImage`] segment by hand returns [`ImageError`].
+//! - [`Commissioner::prepare`], [`Commissioner::execute`] and
+//!   [`Commissioner::commission`] return [`CommissioningError`]. Its
+//!   [`Diagnostic`] names the failing stage through [`DiagnosticKind`]; a
+//!   preparation failure carries a [`PreparationFailure`] and wrote nothing.
+//!   Its [`ExecutionEffects`] say what the device may already hold.
+//! - An observer refuses a prepared program by returning a
+//!   [`CommissioningVeto`], which carries the caller's own error.
 
 pub use input::facts::{ObservedTarget, ProgrammingFacts};
 pub use input::security::{DesiredDataSecurity, ObservedDataSecurity};
@@ -34,7 +51,9 @@ mod test_support;
 
 pub use crate::commissioning::compiler::image::{CompiledTableKind, CompiledTableSpan, ProgramImage};
 pub use crate::commissioning::error::ImageError;
-pub use crate::commissioning::error::{CompileError, CompileErrorKind, OverflowedTable};
+pub use crate::commissioning::error::{
+    CompileError, CompileErrorKind, OverflowedTable, ProfileError, ProfileErrorKind,
+};
 pub use crate::commissioning::evidence::{
     DeploymentRecord, DeviceStamp, DifferentialDecision, DifferentialFallback, DifferentialPolicy, DiscoveredDevice,
 };
@@ -63,7 +82,7 @@ pub use catalog::profile::{
 pub use compiler::credentials::{CredentialEffects, CredentialTransition};
 pub use error::{
     CleanupFailure, CleanupOperation, CommissioningError, Diagnostic, DiagnosticKind, LearnedTarget, MutationStatus,
-    Result, TransportCause,
+    PreparationFailure, Result, TransportCause,
 };
 pub use input::{
     CommissioningIntent, DownloadMode, ProgramSections, ProgrammingInput, ProgrammingModePolling, TargetSelection,

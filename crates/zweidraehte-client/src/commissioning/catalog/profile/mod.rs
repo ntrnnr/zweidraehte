@@ -12,6 +12,7 @@ pub use zweidraehte_project::{MaskIdentity, ObjectSelector, Occurrence, Resource
 
 /// Identity of the selected programming configuration inside a mask entry.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub struct ProfileVariant {
     /// Stable position in the source document, retained for diagnostics and
     /// fingerprints. Selection never relies on this ordering.
@@ -55,12 +56,15 @@ pub enum ProfileDisposition {
 }
 
 /// Management realization declared by the selected resource.
+///
+/// Exhaustive by design: these are the two management styles a resource can select.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ResourceManagementStyle {
     Simple,
     LoadStateMachine,
 }
 
+/// Exhaustive by design: Master Data loading rejects unknown access tokens, so only a schema change extends this set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadAccess {
     None,
@@ -68,6 +72,7 @@ pub enum ReadAccess {
     Runtime,
 }
 
+/// Exhaustive by design: Master Data loading rejects unknown access tokens, so only a schema change extends this set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteAccess {
     None,
@@ -75,6 +80,7 @@ pub enum WriteAccess {
     Manufacturer,
 }
 
+/// Exhaustive by design: a resource has exactly one read and one write access level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResourceAccessRights {
     pub read: ReadAccess,
@@ -92,6 +98,7 @@ pub(crate) struct ProfileDiscovery {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum VariantHint {
     Automatic,
     LegacyVersion(i32),
@@ -165,6 +172,7 @@ impl ProfileSelection {
 
 /// Exact identifier of a selected Master Data procedure.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub struct ProcedureId {
     pub procedure_type: String,
     pub subtype: Option<String>,

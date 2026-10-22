@@ -18,12 +18,66 @@ pub struct SourceSpan {
     pub end: usize,
 }
 
+/// The authored name of one device, unique within a project.
+///
+/// The field is private so every identifier satisfies the project grammar's
+/// `identifier` rule: an ASCII letter or `_`, followed by ASCII letters,
+/// digits, `_` or `-`. An identifier that renders into a project document
+/// therefore parses back to the same device.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ProjectDeviceId(pub String);
+pub struct ProjectDeviceId(String);
+
+/// A device name that the project grammar cannot express.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("`{0}` is not a project identifier (start with a letter or `_`, then letters, digits, `_` or `-`)")]
+pub struct InvalidDeviceId(String);
+
+impl ProjectDeviceId {
+    pub fn new(id: impl Into<String>) -> Result<Self, InvalidDeviceId> {
+        let id = id.into();
+        let mut characters = id.chars();
+        let starts = characters.next().is_some_and(|first| first.is_ascii_alphabetic() || first == '_');
+        if starts && characters.all(|next| next.is_ascii_alphanumeric() || matches!(next, '_' | '-')) {
+            Ok(Self(id))
+        } else {
+            Err(InvalidDeviceId(id))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl FromStr for ProjectDeviceId {
+    type Err = InvalidDeviceId;
+
+    fn from_str(id: &str) -> Result<Self, Self::Err> {
+        Self::new(id)
+    }
+}
 
 impl std::fmt::Display for ProjectDeviceId {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for ProjectDeviceId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+// Ordering and hashing are those of the wrapped string, so maps keyed by
+// device id can be queried with a borrowed name.
+impl std::borrow::Borrow<str> for ProjectDeviceId {
+    fn borrow(&self) -> &str {
+        &self.0
     }
 }
 
@@ -452,6 +506,16 @@ pub struct Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_ids_follow_the_grammar_identifier_rule() {
+        for valid in ["button", "_spare", "ta-10-2", "Relay_2"] {
+            assert_eq!(valid.parse::<ProjectDeviceId>().expect("grammar identifier").as_str(), valid);
+        }
+        for invalid in ["", "2nd-button", "-button", "living room", "küche"] {
+            assert!(ProjectDeviceId::new(invalid).is_err(), "{invalid:?} must be rejected");
+        }
+    }
 
     #[test]
     fn package_ids_round_trip_through_the_canonical_project_spelling() {

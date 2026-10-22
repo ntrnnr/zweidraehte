@@ -8,6 +8,7 @@ use super::inputs::{CatalogAcquisition, ProductInputs, ProjectResourceCache};
 use super::revision::FileRevision;
 use super::{BatchSelection, ProgrammingView, ProjectMasterData, ProjectPlanner, ProjectProduct};
 use crate::commissioning::{CommissioningIntent, DownloadMode};
+use crate::configuration::ErrorDetail;
 use crate::project::error::{Error, Result};
 use crate::security::Keyring;
 use sha2::{Digest, Sha256};
@@ -81,6 +82,7 @@ impl ProgrammingSnapshot {
 /// File acquisition options. `draft` pairs unsaved intent with its exact saved
 /// base, so an external edit cannot be mistaken for the draft's durable input.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ProjectStatusRequest<'a> {
     pub project_path: &'a Path,
     pub draft: Option<(&'a AuthoredProject, &'a str)>,
@@ -88,6 +90,13 @@ pub struct ProjectStatusRequest<'a> {
     pub master_data: Option<&'a Path>,
     /// If the keyring loader reads a file, name it here for consistency checks.
     pub keyring_path: Option<&'a Path>,
+}
+
+impl<'a> ProjectStatusRequest<'a> {
+    /// The saved project at `project_path`, every device, and no extra files.
+    pub fn new(project_path: &'a Path) -> Self {
+        Self { project_path, draft: None, scope: None, master_data: None, keyring_path: None }
+    }
 }
 
 /// Parsed immutable packages survive refreshes, keyed by store and exact leaf.
@@ -212,7 +221,7 @@ impl ProjectPlanner<'_> {
         hash.part(format!("{:?}", self.project).as_bytes());
         hash.json(&self.state)?;
         for (id, product) in self.products {
-            hash.part(id.0.as_bytes());
+            hash.part(id.as_str().as_bytes());
             hash.json(product.document())?;
             hash.json(&product.product().programming_identity())?;
             let catalog = self.master_data.cloned().unwrap_or_default().for_product(product.product())?;
@@ -253,7 +262,7 @@ impl RevisionHasher {
     }
     fn json(&mut self, value: &impl serde::Serialize) -> Result<()> {
         let canonical = serde_json::to_value(value)
-            .map_err(|error| Error::ProductData(format!("serialize status inputs: {error}")))?;
+            .map_err(|error| Error::ProductData(ErrorDetail::new(format!("serialize status inputs: {error}"))))?;
         self.part(canonical.to_string().as_bytes());
         Ok(())
     }

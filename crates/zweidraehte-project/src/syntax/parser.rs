@@ -327,7 +327,8 @@ fn parse_device(
 ) -> Result<ProjectDevice, ParseError> {
     let device_span = span(&pair);
     let mut fields = meaningful(pair);
-    let id = ProjectDeviceId(required_text(fields.next(), Rule::identifier));
+    let id = ProjectDeviceId::new(required_text(fields.next(), Rule::identifier))
+        .expect("the grammar's identifier rule is the device-id rule");
     let mut package = None;
     let mut catalog_item = None;
     let mut active = None;
@@ -1100,12 +1101,12 @@ external_sender visualisation {
         assert_eq!(project.source(), PROJECT);
         assert_eq!(project.nets[&NetId("kitchen_switch".into())].address, GroupAddress::from_three_level(1, 0, 1));
         assert_eq!(project.nets[&NetId("kitchen_switch".into())].name.as_deref(), Some("Kitchen switch"));
-        assert_eq!(project.devices[&ProjectDeviceId("button".into())].serial, Some([0x00, 0xFA, 0, 0, 0, 1]));
+        assert_eq!(project.devices["button"].serial, Some([0x00, 0xFA, 0, 0, 0, 1]));
         assert_eq!(project.language.as_deref(), Some("de-DE"));
-        assert!(project.devices[&ProjectDeviceId("button".into())].active);
-        assert_eq!(project.devices[&ProjectDeviceId("button".into())].data_secure, DataSecureMode::Enabled);
-        assert_eq!(project.devices[&ProjectDeviceId("relay".into())].data_secure, DataSecureMode::Enabled);
-        assert_eq!(project.devices[&ProjectDeviceId("relay".into())].objects[&0].memberships.len(), 2);
+        assert!(project.devices["button"].active);
+        assert_eq!(project.devices["button"].data_secure, DataSecureMode::Enabled);
+        assert_eq!(project.devices["relay"].data_secure, DataSecureMode::Enabled);
+        assert_eq!(project.devices["relay"].objects[&0].memberships.len(), 2);
     }
 
     #[test]
@@ -1121,7 +1122,7 @@ external_sender visualisation {
 
     #[test]
     fn package_selector_keeps_the_exact_digest_and_catalog_item() {
-        let relay = ProjectDeviceId("relay".into());
+        let relay = ProjectDeviceId::new("relay").expect("literal is an identifier");
         let project = AuthoredProject::parse(PROJECT).expect("project parses");
 
         assert_eq!(project.devices[&relay].product, ProductReference::Package {
@@ -1198,8 +1199,8 @@ external_sender visualisation {
         let project = AuthoredProject::parse(PROJECT.replace("device relay {", "device relay { active false"))
             .expect("inactive project parses");
 
-        assert!(project.devices[&ProjectDeviceId("button".into())].active);
-        assert!(!project.devices[&ProjectDeviceId("relay".into())].active);
+        assert!(project.devices["button"].active);
+        assert!(!project.devices["relay"].active);
 
         let error = AuthoredProject::parse(PROJECT.replace("device relay {", "device relay { active maybe"))
             .expect_err("unknown active state is rejected");
@@ -1226,7 +1227,7 @@ external_sender visualisation {
             .replace("param \"M-00FA_A-0001_P-1\" = 3", "param \"M-00FA_A-0001_P-1\" = -1.5 // retained")
             .replace("catalog_item \"M-00FA_H-1_P-1_CI-1\"", "catalog_item \"M-00FA_H-1_P-1_CI-\\\"1\"");
         let project = AuthoredProject::parse(source).expect("extended lexical forms parse");
-        assert_eq!(project.devices[&ProjectDeviceId("button".into())].parameters[0].value, ParamValue::Float(-1.5));
+        assert_eq!(project.devices["button"].parameters[0].value, ParamValue::Float(-1.5));
     }
 
     #[test]
@@ -1246,7 +1247,7 @@ external_sender visualisation {
     fn omitted_data_secure_mode_defaults_to_disabled() {
         let source = PROJECT.replacen("            data_secure enabled\n", "", 1);
         let project = AuthoredProject::parse(source).expect("project parses");
-        assert_eq!(project.devices[&ProjectDeviceId("button".into())].data_secure, DataSecureMode::Disabled);
+        assert_eq!(project.devices["button"].data_secure, DataSecureMode::Disabled);
     }
 
     #[test]
@@ -1270,11 +1271,8 @@ external_sender visualisation {
             project.line_topology(1, 2).expect("RF line exists").domain,
             Some(DomainAddress::Rf([0x00, 0xFA, 0x12, 0x34, 0x56, 0x78]))
         );
-        assert_eq!(project.devices[&ProjectDeviceId("rf_coupler".into())].rf_mode, Some(RfDeviceMode::Multi));
-        assert_eq!(
-            project.devices[&ProjectDeviceId("rf_coupler".into())].routing,
-            Some(CouplerRoutingPolicy::RouteAll)
-        );
+        assert_eq!(project.devices["rf_coupler"].rf_mode, Some(RfDeviceMode::Multi));
+        assert_eq!(project.devices["rf_coupler"].routing, Some(CouplerRoutingPolicy::RouteAll));
     }
 
     #[test]
@@ -1310,7 +1308,7 @@ external_sender visualisation {
         let line = project.line_topology(1, 0).expect("IP backbone exists");
         assert_eq!(line.domain, Some(DomainAddress::Ip([224, 0, 23, 12])));
         assert_eq!(line.ip.expect("line IP values").project_installation_id.encode(), 0x02a3);
-        let device = &project.devices[&ProjectDeviceId("router".into())];
+        let device = &project.devices["router"];
         let ip = device.ip.as_ref().expect("device IP values");
         assert!(matches!(ip.assignment, IpAssignment::Fixed { address: [192, 0, 2, 10], .. }));
         let security = ip.security.as_ref().expect("IP Secure intent");

@@ -7,6 +7,7 @@ use zweidraehte_proto::messages::apdu::restart::RestartError;
 use zweidraehte_proto::messages::knxip::ConnectionStatus;
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum BusError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

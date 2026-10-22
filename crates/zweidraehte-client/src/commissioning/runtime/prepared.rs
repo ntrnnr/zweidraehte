@@ -10,6 +10,7 @@ use std::fmt;
 use zweidraehte_proto::address::IndividualAddress;
 
 use super::credentials::ManagementAccess;
+use crate::commissioning::error::PreparationFailure;
 use crate::commissioning::runtime::AuthorizationPolicy;
 use zweidraehte_util::secret::SecretBytes;
 
@@ -123,6 +124,7 @@ impl PreparedProgram {
             Ok(())
         } else {
             Err(Diagnostic::preparation(
+                PreparationFailure::TargetChanged,
                 "prepared commissioning belongs to a different KNX bus instance; prepare it again on this bus",
             ))
         }
@@ -168,7 +170,9 @@ mod tests {
         let error = crate::commissioning::runtime::prepared::PreparedProgram::check_bus(7, 8)
             .expect_err("a different bus must fail before execution");
 
-        assert_eq!(error.kind(), crate::commissioning::DiagnosticKind::Preparation);
-        assert!(error.message.contains("different KNX bus instance"));
+        assert_eq!(
+            error.kind(),
+            crate::commissioning::DiagnosticKind::Preparation(crate::commissioning::PreparationFailure::TargetChanged)
+        );
     }
 }

@@ -8,6 +8,8 @@ use zweidraehte_ets_files::product::ProductData;
 /// Unknown evidence never authorizes a serial-number shortcut.
 /// This selects acquisition before discovery; live profile validation remains
 /// necessary before programming.
+///
+/// Exhaustive by design: support is known present, known absent, or unknown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SerialAddressingSupport {
     Supported,

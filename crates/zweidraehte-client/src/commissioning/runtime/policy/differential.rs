@@ -2,6 +2,7 @@
 
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::error::DiagnosticResult as Result;
+use crate::commissioning::error::PreparationFailure;
 use crate::commissioning::evidence::{DeviceStamp, DifferentialDecision, DifferentialFallback, DifferentialPolicy};
 use crate::commissioning::input::CommissioningIntent;
 
@@ -13,6 +14,7 @@ pub(in crate::commissioning) fn validate_differential_inputs(
     let downloads_application = intent.download_mode().is_some();
     if !downloads_application && (policy != DifferentialPolicy::Disabled || has_deployment_evidence) {
         return Err(Diagnostic::preparation(
+            PreparationFailure::InvalidOptions,
             "differential policy and deployment evidence are valid only for download intents",
         ));
     }
@@ -25,7 +27,10 @@ pub(in crate::commissioning) fn differential_fallback(
     reason: DifferentialFallback,
 ) -> Result<DifferentialDecision> {
     if policy == DifferentialPolicy::RequireVerified {
-        return Err(Diagnostic::preparation(format!("verified differential download is unavailable: {reason:?}")));
+        return Err(Diagnostic::preparation(
+            PreparationFailure::Unsupported,
+            format!("verified differential download is unavailable: {reason:?}"),
+        ));
     }
 
     Ok(DifferentialDecision::FellBackToUndifferenced { reason })
@@ -41,10 +46,10 @@ pub(in crate::commissioning) fn verified_undifferenced_fallback(
     device_stamps: Vec<DeviceStamp>,
 ) -> Result<DifferentialDecision> {
     if policy == DifferentialPolicy::RequireVerified {
-        return Err(Diagnostic::preparation(format!(
-            "verified differential download is unavailable: {:?}",
-            DifferentialFallback::NoUsefulDifference
-        )));
+        return Err(Diagnostic::preparation(
+            PreparationFailure::Unsupported,
+            format!("verified differential download is unavailable: {:?}", DifferentialFallback::NoUsefulDifference),
+        ));
     }
 
     Ok(DifferentialDecision::VerifiedUndifferenced { previous_image_fingerprint, device_stamps })

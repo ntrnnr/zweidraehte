@@ -5,6 +5,7 @@ use crate::AddressTarget;
 use crate::bus::KnxBus;
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::error::DiagnosticResult as Result;
+use crate::commissioning::error::PreparationFailure;
 use crate::commissioning::input::CommissioningIntent;
 use crate::commissioning::runtime::commissioner::OPEN_MEDIUM_COLLECTION_WINDOW;
 use std::time::Duration;
@@ -23,10 +24,12 @@ pub(in crate::commissioning) fn requested_topology_network_configuration(intent:
 pub(in crate::commissioning) fn open_medium_domain(domain: DomainAddress) -> Result<OpenMediumDomainAddress> {
     match domain {
         DomainAddress::Rf(value) if value != [0; 6] && value != [u8::MAX; 6] => Ok(OpenMediumDomainAddress::Rf(value)),
-        DomainAddress::Rf(value) => Err(Diagnostic::preparation(format!(
-            "RF domain address {value:02x?} is reserved as a void or ex-factory value"
-        ))),
+        DomainAddress::Rf(value) => Err(Diagnostic::preparation(
+            PreparationFailure::InvalidOptions,
+            format!("RF domain address {value:02x?} is reserved as a void or ex-factory value"),
+        )),
         DomainAddress::Ip(_) => Err(Diagnostic::preparation(
+            PreparationFailure::InvalidOptions,
             "KNX/IP multicast is compiled through the IP Parameter Object, never open-medium domain services",
         )),
     }
@@ -72,7 +75,8 @@ pub(in crate::commissioning) async fn verify_programming_mode_address(
 ) -> Result<()> {
     let (target, window) = programming_mode_scan(open_medium, window);
     let found = bus.network_management().read_individual_addresses(target, window).await.map_err(|error| {
-        Diagnostic::from(error).preparation_context("verifying the programming-mode individual address")
+        Diagnostic::from(error)
+            .preparation_context(PreparationFailure::Communication, "verifying the programming-mode individual address")
     })?;
 
     verify_programming_mode_address_responses(&found, expected)
@@ -86,7 +90,10 @@ pub(in crate::commissioning) fn verify_programming_mode_address_responses(
     if actual == expected {
         Ok(())
     } else {
-        Err(Diagnostic::preparation(format!("programming-mode IA assignment produced {actual}, expected {expected}")))
+        Err(Diagnostic::preparation(
+            PreparationFailure::InvalidResponse,
+            format!("programming-mode IA assignment produced {actual}, expected {expected}"),
+        ))
     }
 }
 

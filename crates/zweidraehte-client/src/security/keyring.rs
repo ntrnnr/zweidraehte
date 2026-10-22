@@ -28,6 +28,8 @@ struct SynchronizedCredential {
 /// plain management only, even though its FDSK is printed on the label.
 /// The keyring can hold that FDSK (for later commissioning) without
 /// forcing secure communication.
+///
+/// Exhaustive by design: a device runs its management either plain or secure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceSecurityMode {
     /// Plain management — no wrapping, no sync handshake.
@@ -144,7 +146,7 @@ pub struct SecurityStore {
 /// Milliseconds since the KNX Data Secure epoch 2018-01-05T00:00:00Z —
 /// the conventional wall-clock floor for a tool's sending sequence
 /// number (ETS and xknx seed the same way).
-pub fn knx_sequence_timestamp_floor() -> u64 {
+pub(crate) fn knx_sequence_timestamp_floor() -> u64 {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     const KNX_EPOCH: Duration = Duration::from_secs(1_515_110_400); // 2018-01-05T00:00:00Z
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(KNX_EPOCH).saturating_sub(KNX_EPOCH).as_millis() as u64
@@ -208,7 +210,7 @@ impl SecurityStore {
     /// `Plain`). `Err(MissingKey)` means the entry demands security but
     /// carries no key — failing the connect is better than a silent
     /// plaintext downgrade.
-    pub fn make_channel(&self, ia: IndividualAddress) -> Result<Option<SecureChannel>, SecureError> {
+    pub(crate) fn make_channel(&self, ia: IndividualAddress) -> Result<Option<SecureChannel>, SecureError> {
         let Some(entry) = self.entries.get(&ia) else {
             return Ok(None);
         };

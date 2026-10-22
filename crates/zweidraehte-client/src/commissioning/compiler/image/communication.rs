@@ -157,7 +157,7 @@ impl<'a> CommunicationTables<'a> {
                 None => match profile_location {
                     Ok(location) => location,
                     Err(_) if !self.demand.is_complete() => continue,
-                    Err(error) => return Err(error),
+                    Err(error) => return Err(error.into()),
                 },
             };
             // BCU2's formatter returns without an object-table patch when

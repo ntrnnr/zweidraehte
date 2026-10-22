@@ -28,6 +28,7 @@ pub use usb::{UsbConnector, UsbSelector};
 
 /// What the driver learns from a connector once it is open.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct ConnectorInfo {
     /// The individual address this bus access sends from (the tunnel's
     /// assigned additional IA, or the USB interface's own address).
@@ -35,6 +36,12 @@ pub struct ConnectorInfo {
     /// The interface-side maximum APDU length. The effective limit towards
     /// a target device is `min(this, device max APDU from PID 56)`.
     pub max_apdu: u16,
+}
+
+impl ConnectorInfo {
+    pub fn new(assigned_address: IndividualAddress, max_apdu: u16) -> Self {
+        Self { assigned_address, max_apdu }
+    }
 }
 
 /// A bus access transporting raw cEMI frames.

@@ -14,6 +14,7 @@ use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 
 use zweidraehte_ets_files::product::ComObjectDef;
 
+/// Exhaustive by design: a group link is either the object's primary address or an additional one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MembershipRole {
     Primary,
@@ -25,6 +26,8 @@ pub enum MembershipRole {
 /// A device's memberships list every primary link before any additional one.
 /// [`super::MaterializedDevice`] establishes that order on construction; the
 /// association table encodes links in exactly this order.
+///
+/// Exhaustive by design: one group link is its address, object and role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObjectMembership {
     pub group_address: GroupAddress,
@@ -48,6 +51,8 @@ impl ObjectMembership {
 
 /// Installation intent for one group address. `Automatic` is resolved
 /// only after the selected key sources are available.
+///
+/// Exhaustive by design: it mirrors the four net security choices of the project language.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum NetSecurityPolicy {
     Plain,
@@ -63,6 +68,8 @@ pub enum NetSecurityPolicy {
 /// encoded for its target storage. A procedure branches on the semantic value
 /// of the referenced ETS control, including a ref-specific default, rather
 /// than on the bytes eventually patched into a base parameter.
+///
+/// Exhaustive by design: these are the value kinds a load-procedure condition compares.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcedureParameterValue {
     Signed(i64),
@@ -78,6 +85,8 @@ pub enum ProcedureParameterValue {
 /// Activity is explicit because an inactive selector has no value and skips
 /// the whole `choose`. Omitting a selector and falling
 /// back to its product default would therefore compile a different procedure.
+///
+/// Exhaustive by design: a selector is its activity and value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcedureParameter {
     pub active: bool,
@@ -92,14 +101,23 @@ pub use zweidraehte_ets_files::product::{MaterializedModule, MaterializedModuleA
 /// not copied from one device's application program. Route-all and block-all
 /// policies deliberately retain an empty set.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct GroupFilterConfiguration {
     pub policy: CouplerRoutingPolicy,
     pub addresses: BTreeSet<GroupAddress>,
 }
 
+impl GroupFilterConfiguration {
+    /// A filter with `policy` and no explicitly passed group addresses.
+    pub fn new(policy: CouplerRoutingPolicy) -> Self {
+        Self { policy, addresses: BTreeSet::new() }
+    }
+}
+
 /// Complete non-secret standard KNX/IP Parameter Object intent for a product
 /// whose `ApplicationProgram/@IPConfig` is `Tool`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ToolManagedIpConfiguration {
     pub project_installation_id: ProjectInstallationId,
     pub assignment: IpAssignment,
@@ -111,6 +129,28 @@ pub struct ToolManagedIpConfiguration {
     pub password_users: Vec<std::num::NonZeroU8>,
 }
 
+impl ToolManagedIpConfiguration {
+    /// An unsecured interface without a friendly name, extra tunnelling
+    /// addresses or password users.
+    pub fn new(
+        project_installation_id: ProjectInstallationId,
+        assignment: IpAssignment,
+        routing_multicast_address: [u8; 4],
+        multicast_ttl: u8,
+    ) -> Self {
+        Self {
+            project_installation_id,
+            assignment,
+            routing_multicast_address,
+            multicast_ttl,
+            friendly_name: String::new(),
+            additional_individual_addresses: Vec::new(),
+            security: None,
+            password_users: Vec::new(),
+        }
+    }
+}
+
 /// Non-secret topology and device-medium values required by medium and router masks.
 ///
 /// The open-medium domain belongs to the authored RF line, while RF device
@@ -119,6 +159,7 @@ pub struct ToolManagedIpConfiguration {
 /// generic image compiler use project topology without leaking it into the
 /// compiler input.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TopologyConfiguration {
     pub domain_address: Option<DomainAddress>,
     pub rf_device_mode: Option<RfDeviceMode>,
@@ -132,6 +173,7 @@ pub struct TopologyConfiguration {
 /// [`super::MaterializedDevice<super::Keyed>`] holds the resolved
 /// [`super::ResolvedKeyMaterial`] instead, so the two cannot disagree.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SecurityIntent {
     /// Serial number that binds the device's FDSK and serial-number addressing.
     pub serial_number: Option<[u8; 6]>,
@@ -147,6 +189,7 @@ pub struct SecurityIntent {
 /// evaluation ([`EncodedConfiguration`]); callers cannot inject a second
 /// product image through this input.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct InstallationConfiguration {
     pub individual_address: IndividualAddress,
     /// Group links in any order; primary links are encoded first.
@@ -180,6 +223,7 @@ impl InstallationConfiguration {
 /// product evaluation. Expert adapters holding an evaluation made elsewhere
 /// supply them to [`super::MaterializedDevice::from_parts`] instead.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct EncodedConfiguration {
     /// Stored parameter values in write order; a later entry for the same
     /// storage overwrites an earlier one.
@@ -196,6 +240,8 @@ pub struct EncodedConfiguration {
 ///
 /// Distinct from the typed `zweidraehte_ets_files::runtime::model::ParameterValue`
 /// an editor holds: this is the byte image the compiler patches.
+///
+/// Exhaustive by design: an encoded parameter is its identifier and bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedParameter {
     /// The parameter's full MTXML identifier.

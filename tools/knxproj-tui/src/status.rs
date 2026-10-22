@@ -34,13 +34,10 @@ pub(crate) fn spawn(mut job: StatusRefreshJob, tx: Sender<StatusRefreshMsg>) {
 }
 
 fn calculate(job: &mut StatusRefreshJob, tx: &Sender<StatusRefreshMsg>) -> Result<StatusRefreshOutcome, String> {
-    let request = ProjectStatusRequest {
-        project_path: &job.project_path,
-        draft: Some((&job.draft.0, &job.draft.1)),
-        scope: None,
-        master_data: job.master_data.as_deref(),
-        keyring_path: job.security.as_ref().and_then(SecurityArgs::keyring_path),
-    };
+    let mut request = ProjectStatusRequest::new(&job.project_path);
+    request.draft = Some((&job.draft.0, &job.draft.1));
+    request.master_data = job.master_data.as_deref();
+    request.keyring_path = job.security.as_ref().and_then(SecurityArgs::keyring_path);
     let inputs = job
         .cache
         .load(

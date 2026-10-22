@@ -6,7 +6,7 @@ use super::{
 };
 use crate::commissioning::catalog::{SelectedResource, bound_master_data, resolve_profile};
 use crate::commissioning::error::AssociationTableEntrySizeError;
-use crate::commissioning::error::CompileError;
+use crate::commissioning::error::ProfileError;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use zweidraehte_ets_files::MasterData;
@@ -52,7 +52,7 @@ impl ResolvedProfile {
     /// (variant selection, the BCU2 realization, product compatibility) are
     /// not made, and the result cannot be compiled; resolve for a product with
     /// [`Self::for_product`] instead.
-    pub fn resolve(master_data: &Arc<MasterData>, selection: &ProfileSelection) -> Result<Self, CompileError> {
+    pub fn resolve(master_data: &Arc<MasterData>, selection: &ProfileSelection) -> Result<Self, ProfileError> {
         resolve_profile(master_data, None, selection)
     }
 
@@ -60,7 +60,7 @@ impl ResolvedProfile {
     ///
     /// Returns an error when the product has no bound document, or when the
     /// selection does not identify a profile compatible with the product.
-    pub fn for_product(product: &ProductData, selection: &ProfileSelection) -> Result<Self, CompileError> {
+    pub fn for_product(product: &ProductData, selection: &ProfileSelection) -> Result<Self, ProfileError> {
         resolve_profile(bound_master_data(product)?, Some(product), selection)
     }
 
@@ -95,7 +95,7 @@ impl ResolvedProfile {
         self.source().interface_objects.as_ref().map_or(&[], |objects| objects.objects.as_slice())
     }
 
-    pub fn feature(&self, name: &str) -> Result<Option<u32>, CompileError> {
+    pub fn feature(&self, name: &str) -> Result<Option<u32>, ProfileError> {
         let mut selected = self
             .source()
             .features
@@ -104,10 +104,10 @@ impl ResolvedProfile {
             .filter(|feature| feature.name == name);
         let Some(feature) = selected.next() else { return Ok(None) };
         if selected.next().is_some() {
-            return Err(CompileError::invalid(format!("selected profile declares feature {name:?} more than once")));
+            return Err(ProfileError::invalid(format!("selected profile declares feature {name:?} more than once")));
         }
         feature.value.parse().map(Some).map_err(|_| {
-            CompileError::invalid(format!("profile feature {name:?} has non-numeric value {:?}", feature.value))
+            ProfileError::invalid(format!("profile feature {name:?} has non-numeric value {:?}", feature.value))
         })
     }
 
@@ -122,11 +122,11 @@ impl ResolvedProfile {
             .into_iter()
     }
 
-    pub fn resource(&self, name: &str) -> Result<Option<SelectedResource<'_>>, CompileError> {
+    pub fn resource(&self, name: &str) -> Result<Option<SelectedResource<'_>>, ProfileError> {
         self.selected_resource(name)
     }
 
-    pub fn resource_by_id(&self, id: &ResourceId) -> Result<Option<SelectedResource<'_>>, CompileError> {
+    pub fn resource_by_id(&self, id: &ResourceId) -> Result<Option<SelectedResource<'_>>, ProfileError> {
         self.resource(&id.0)
     }
 
@@ -135,11 +135,11 @@ impl ResolvedProfile {
         object: &ObjectSelector,
         property_id: u16,
         read: bool,
-    ) -> Result<Option<u32>, CompileError> {
+    ) -> Result<Option<u32>, ProfileError> {
         self.selected_property_element_size(object, property_id, read)
     }
 
-    pub fn image_requirements(&self) -> Result<Vec<ImageRequirement>, CompileError> {
+    pub fn image_requirements(&self) -> Result<Vec<ImageRequirement>, ProfileError> {
         let Some(resource) = self.resource("GroupAssociationTable")? else { return Ok(Vec::new()) };
         Ok(if resource.flavour()? == Some(ResourceFlavour::AssociationTableSystemB) {
             vec![ImageRequirement::AssociationTableEntrySize { resource: resource.id }]
@@ -214,19 +214,19 @@ impl ResolvedProfile {
         object: ObjectSelector,
         property_id: u16,
         pdt: u8,
-    ) -> Result<Self, CompileError> {
+    ) -> Result<Self, ProfileError> {
         let object = schema_selector(object);
 
         let master_data = &self.master_data;
         let Some(token) = master_data.property_data_type_token(u16::from(pdt)) else {
-            return Err(CompileError::invalid(format!(
+            return Err(ProfileError::invalid(format!(
                 "property {property_id} on {object:?}: target reports PDT {pdt:#04x}, which Master Data does not declare"
             )));
         };
         let (Some(write_width), Some(read_width)) =
             (master_data.property_data_type_size(token), master_data.property_data_type_read_size(token))
         else {
-            return Err(CompileError::invalid(format!(
+            return Err(ProfileError::invalid(format!(
                 "property {property_id} on {object:?}: target reports PDT {token}, which has no fixed element size"
             )));
         };
@@ -239,14 +239,14 @@ impl ResolvedProfile {
             (None, None) => {}
             (Some(write), Some(read)) if (write, read) == (write_width, read_width) => return Ok(self),
             _ => {
-                return Err(CompileError::invalid(format!(
+                return Err(ProfileError::invalid(format!(
                     "property {property_id} on {object:?} is already typed by Master Data with other widths than PDT {token}"
                 )));
             }
         }
 
         match self.observed_property_types.insert((object.clone(), property_id), pdt) {
-            Some(previous) if previous != pdt => Err(CompileError::invalid(format!(
+            Some(previous) if previous != pdt => Err(ProfileError::invalid(format!(
                 "property {property_id} on {object:?} was observed with PDTs {previous:#04x} and {pdt:#04x}"
             ))),
             _ => Ok(self),
@@ -312,6 +312,8 @@ pub(crate) fn schema_selector(object: ObjectSelector) -> ObjectSelector {
 ///
 /// Both realizations use a two-octet entry count. The row width is a target
 /// capability, not a choice based on the current number of links or objects.
+///
+/// Exhaustive by design: the association table has exactly these two entry layouts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AssociationTableEntrySize {
     /// One-octet TSAP followed by one-octet ASAP.
@@ -325,6 +327,7 @@ pub enum AssociationTableEntrySize {
 /// A requirement is not an image error or an invitation to select a default.
 /// The observer supplies the fact before the same compiler resumes.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum ImageRequirement {
     AssociationTableEntrySize { resource: ResourceId },
     DataSecurityMode,

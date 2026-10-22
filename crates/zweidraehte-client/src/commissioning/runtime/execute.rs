@@ -3,6 +3,7 @@
 use super::ExecutionSession;
 use crate::commissioning::error::CommissioningError;
 use crate::commissioning::error::DiagnosticResult as Result;
+use crate::commissioning::error::PreparationFailure;
 use crate::commissioning::image::SparseDeviceImage;
 use crate::commissioning::input::ProgrammingInput;
 use crate::commissioning::report::effects::ExecutionEffects;
@@ -88,9 +89,10 @@ impl Commissioner<'_> {
     ) -> crate::commissioning::Result<ExecutionReport> {
         let prepared = self.prepare(input, options, observer).await?;
         observer.approve(&(), &prepared).map_err(|veto| {
-            CommissioningError::before_execution(crate::commissioning::Diagnostic::preparation(format!(
-                "the prepared program was not approved: {veto}"
-            )))
+            CommissioningError::before_execution(crate::commissioning::Diagnostic::preparation(
+                PreparationFailure::Vetoed,
+                format!("the prepared program was not approved: {veto}"),
+            ))
         })?;
         self.execute(prepared, observer).await
     }

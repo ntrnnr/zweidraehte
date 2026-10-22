@@ -16,6 +16,7 @@ use crate::configuration::{
 };
 use crate::project::error::{Error, Result};
 
+use crate::configuration::ErrorDetail;
 use zweidraehte_ets_files::keyring::{Keyring, KeyringDevice};
 use zweidraehte_project::{
     KeyEncoding, KeyId, KeyKind, KeyMaterialSource, KeyMetadata, KeyOrigin, KeyRecord, KeyScope, KeyState,
@@ -30,12 +31,12 @@ pub(super) fn validate_application_security(
     security: Option<&SecurityConfig>,
 ) -> Result<()> {
     match (device.security_intent().data_secure_enabled, security.is_some()) {
-        (true, false) => Err(Error::DeviceConfiguration(
-            "Data Secure is enabled but no application-security configuration was supplied".to_string(),
-        )),
-        (false, true) => Err(Error::DeviceConfiguration(
-            "application-security configuration was supplied while Data Secure is disabled".to_string(),
-        )),
+        (true, false) => Err(Error::InvalidProject(ErrorDetail::new(
+            "Data Secure is enabled but no application-security configuration was supplied",
+        ))),
+        (false, true) => Err(Error::InvalidProject(ErrorDetail::new(
+            "application-security configuration was supplied while Data Secure is disabled",
+        ))),
         _ => Ok(()),
     }
 }
@@ -45,7 +46,7 @@ pub(super) fn validate_application_security(
 /// protocol-facing keys in the compiled configuration.
 pub fn resolve_project_key_material(
     device: &MaterializedDevice<Unkeyed>,
-    device_id: &str,
+    device_id: &ProjectDeviceId,
     net_ids: &BTreeMap<GroupAddress, String>,
     project_siat: &[(IndividualAddress, u64)],
     source: &dyn KeyMaterialSource,
@@ -56,7 +57,7 @@ pub fn resolve_project_key_material(
     let (material, keyring_device) =
         resolve_management_keys(intent.serial_number, device.individual_address(), device_id, source, keyring)?;
     if data_secure_enabled && material.serial_number().is_none() {
-        return Err(ProjectSetupRequirement::DeviceSerial { device: ProjectDeviceId(device_id.into()) }.into());
+        return Err(ProjectSetupRequirement::DeviceSerial { device: device_id.clone() }.into());
     }
     let mut provenance = material.provenance().to_vec();
 
@@ -64,15 +65,17 @@ pub fn resolve_project_key_material(
     let mut group_keys = Vec::new();
     for (&address, &policy) in &intent.net_security {
         let net_id = net_ids.get(&address).ok_or_else(|| {
-            Error::DeviceConfiguration(format!("group address {address} has no logical project net identifier"))
+            Error::InvalidProject(ErrorDetail::new(format!(
+                "group address {address} has no logical project net identifier"
+            )))
         })?;
         let id = KeyId { scope: KeyScope::Group(net_id.clone()), kind: KeyKind::GroupKey };
         if !data_secure_enabled
             && matches!(policy, NetSecurityPolicy::Authentication | NetSecurityPolicy::AuthenticationConfidentiality)
         {
-            return Err(Error::DeviceConfiguration(format!(
+            return Err(Error::InvalidProject(ErrorDetail::new(format!(
                 "device `{device_id}` has Data Secure disabled but is linked to secured net `{net_id}`"
-            )));
+            ))));
         }
         // A key retained from an earlier topology must be inert when the
         // effective policy is plain. Reading it here would also turn an
@@ -115,9 +118,9 @@ pub fn resolve_project_key_material(
             .find(|(_, protection)| **protection != GroupObjectProtection::Plain)
             .and_then(|(address, _)| net_ids.get(address))
             .map_or("unknown", String::as_str);
-        return Err(Error::DeviceConfiguration(format!(
+        return Err(Error::InvalidProject(ErrorDetail::new(format!(
             "device `{device_id}` has Data Secure disabled but automatic policy secures net `{net_id}`"
-        )));
+        ))));
     }
     let siat = merge_project_siat(device, project_siat, keyring, keyring_device, &resolved_groups);
     let application_security = data_secure_enabled.then_some(SecurityConfig::new(group_keys, siat, group_objects));
@@ -126,7 +129,7 @@ pub fn resolve_project_key_material(
     let ip_secure_management =
         device.topology().ip.as_ref().is_some_and(|configuration| configuration.security.is_some());
     if (data_secure_enabled || ip_secure_management) && material.tool_key().is_none() && material.fdsk().is_none() {
-        return Err(ProjectSetupRequirement::ManagementCredential { device: ProjectDeviceId(device_id.into()) }.into());
+        return Err(ProjectSetupRequirement::ManagementCredential { device: device_id.clone() }.into());
     }
 
     let mut material = material.with_secured_groups(resolved_groups).with_provenance(provenance);
@@ -144,7 +147,7 @@ pub fn resolve_project_key_material(
 pub(super) fn resolve_management_keys<'a>(
     serial: Option<[u8; 6]>,
     address: IndividualAddress,
-    device_id: &str,
+    device_id: &ProjectDeviceId,
     source: &dyn KeyMaterialSource,
     keyring: Option<&'a Keyring>,
 ) -> Result<(ResolvedKeyMaterial, Option<&'a KeyringDevice>)> {
@@ -192,7 +195,7 @@ pub(super) fn resolve_management_keys<'a>(
 
 fn resolve_ip_secure_configuration(
     device: &MaterializedDevice<Unkeyed>,
-    device_id: &str,
+    device_id: &ProjectDeviceId,
     source: &dyn KeyMaterialSource,
     keyring: Option<&Keyring>,
     keyring_device: Option<&KeyringDevice>,
@@ -220,7 +223,7 @@ fn resolve_ip_secure_configuration(
         .flatten();
     merge_imported_secret(&mut backbone_key, imported_backbone, backbone_id, provenance, "IP Secure backbone key")?;
     if routing_secure && backbone_key.is_none() {
-        return Err(ProjectSetupRequirement::BackboneKey { device: ProjectDeviceId(device_id.into()) }.into());
+        return Err(ProjectSetupRequirement::BackboneKey { device: device_id.clone() }.into());
     }
 
     let dac_id = KeyId { scope: KeyScope::IpInterface(device_id.to_string()), kind: KeyKind::DeviceAuthenticationCode };
@@ -239,9 +242,7 @@ fn resolve_ip_secure_configuration(
         "IP Secure Device Authentication Code",
     )?;
     if user_security && device_authentication_code.is_none() {
-        return Err(
-            ProjectSetupRequirement::DeviceAuthenticationCode { device: ProjectDeviceId(device_id.into()) }.into()
-        );
+        return Err(ProjectSetupRequirement::DeviceAuthenticationCode { device: device_id.clone() }.into());
     }
 
     let mut password_hashes = Vec::new();
@@ -256,10 +257,7 @@ fn resolve_ip_secure_configuration(
             let imported = imported_password_hash(keyring, keyring_device, device.individual_address(), user_id)?;
             merge_imported_secret(&mut value, imported, id, provenance, &description)?;
             let value = value.ok_or_else(|| {
-                Error::from(ProjectSetupRequirement::IpPasswordHash {
-                    device: ProjectDeviceId(device_id.into()),
-                    user: user_id,
-                })
+                Error::from(ProjectSetupRequirement::IpPasswordHash { device: device_id.clone(), user: user_id })
             })?;
             password_hashes.push((user_id, value));
         }
@@ -338,7 +336,7 @@ fn imported_device_scope(serial: Option<[u8; 6]>, address: IndividualAddress) ->
 /// even when its only FDSK provenance came from a serial-addressed ETS entry.
 pub(super) fn install_generated_tool_key(material: &mut ResolvedKeyMaterial, device: &ProjectDeviceId, key: [u8; 16]) {
     let metadata = secret_metadata(
-        KeyId { scope: KeyScope::Device(device.0.clone()), kind: KeyKind::ToolKey },
+        KeyId { scope: KeyScope::Device(device.to_string()), kind: KeyKind::ToolKey },
         &key.into(),
         KeyOrigin::Generated,
         KeyEncoding::Hex,
@@ -359,10 +357,10 @@ fn resolve_group_objects(
         let protection = *groups.get(&membership.group_address).unwrap_or(&GroupObjectProtection::Plain);
         match objects.insert(membership.com_object, protection) {
             Some(previous) if previous != protection => {
-                return Err(Error::DeviceConfiguration(format!(
+                return Err(Error::InvalidProject(ErrorDetail::new(format!(
                     "communication object {} belongs to group addresses with incompatible security policies",
                     membership.com_object
-                )));
+                ))));
             }
             _ => {}
         }
@@ -462,7 +460,7 @@ mod tests {
     fn project_security_resolves_to_typed_tables() {
         let resolved = resolve_project_key_material(
             &device(&configuration()),
-            "button",
+            &ProjectDeviceId::new("button").expect("literal is an identifier"),
             &net_ids(),
             &[(IndividualAddress::new(1, 1, 10), 44)],
             &project_source(),
@@ -485,7 +483,7 @@ mod tests {
 
         let resolved = resolve_project_key_material(
             &device(&configuration),
-            "button",
+            &ProjectDeviceId::new("button").expect("literal is an identifier"),
             &net_ids(),
             &[],
             &project_source(),
@@ -535,9 +533,16 @@ mod tests {
             KeyOrigin::Manual,
         );
 
-        let resolved =
-            resolve_project_key_material(&device(&configuration), "button", &net_ids(), &[], &source, None, true)
-                .expect("IP Secure material resolves");
+        let resolved = resolve_project_key_material(
+            &device(&configuration),
+            &ProjectDeviceId::new("button").expect("literal is an identifier"),
+            &net_ids(),
+            &[],
+            &source,
+            None,
+            true,
+        )
+        .expect("IP Secure material resolves");
         let ip = resolved.ip_secure().expect("private IP Secure material exists");
 
         assert_eq!(ip.backbone_key.as_ref().expect("backbone key").key16().expect("key width"), [0x31; 16]);
@@ -598,7 +603,7 @@ mod tests {
             .with_interfaces(vec![candidate, foreign]);
             let merged = resolve_project_key_material(
                 &device(&configuration),
-                "button",
+                &ProjectDeviceId::new("button").expect("literal is an identifier"),
                 &net_ids(),
                 &[],
                 &source,
@@ -644,7 +649,7 @@ mod tests {
 
         let error = resolve_project_key_material(
             &device(&configuration),
-            "router",
+            &ProjectDeviceId::new("router").expect("literal is an identifier"),
             &net_ids(),
             &[],
             &TestSource::default(),
@@ -668,7 +673,7 @@ mod tests {
         assert!(
             resolve_project_key_material(
                 &device(&configuration),
-                "button",
+                &ProjectDeviceId::new("button").expect("literal is an identifier"),
                 &BTreeMap::from(
                     [(GroupAddress::from_three_level(1, 2, 3), "switch".into()), (second, "plain".into()),]
                 ),
@@ -686,7 +691,7 @@ mod tests {
             .insert(GroupAddress::from_three_level(1, 2, 3), NetSecurityPolicy::Automatic);
         let error = resolve_project_key_material(
             &device(&configuration),
-            "button",
+            &ProjectDeviceId::new("button").expect("literal is an identifier"),
             &BTreeMap::from([(GroupAddress::from_three_level(1, 2, 3), "switch".into()), (second, "plain".into())]),
             &[],
             &project_source(),
@@ -732,7 +737,7 @@ mod tests {
 
         let resolved = resolve_project_key_material(
             &device(&configuration()),
-            "button",
+            &ProjectDeviceId::new("button").expect("literal is an identifier"),
             &net_ids(),
             &[],
             &TestSource::default(),
@@ -752,7 +757,7 @@ mod tests {
         let matching = keyring(keyring_device(), GROUP_KEY, Vec::new());
         let resolved = resolve_project_key_material(
             &device(&configuration()),
-            "button",
+            &ProjectDeviceId::new("button").expect("literal is an identifier"),
             &net_ids(),
             &[],
             &source,
@@ -766,14 +771,14 @@ mod tests {
         let conflicting = keyring(keyring_device(), [0xCC; 16], Vec::new());
         assert!(matches!(
             resolve_project_key_material(&device(&configuration()),
-                "button",
+                &ProjectDeviceId::new("button").expect("literal is an identifier"),
                 &net_ids(),
                 &[],
                 &source,
                 Some(&conflicting),
                 true,
             ),
-            Err(Error::DeviceConfiguration(message)) if message.contains("conflicting values for group key")
+            Err(Error::KeyringImport(detail)) if detail.to_string().contains("conflicting values for group key")
         ));
     }
 
@@ -791,7 +796,7 @@ mod tests {
         source.add(KeyScope::Device("button".into()), KeyKind::ToolKey, TOOL_KEY, KeyOrigin::Manual);
         let resolved = resolve_project_key_material(
             &device(&configuration()),
-            "button",
+            &ProjectDeviceId::new("button").expect("literal is an identifier"),
             &net_ids(),
             &[(sender, 1234)],
             &source,
@@ -809,7 +814,7 @@ mod tests {
         source.add(KeyScope::Device("button".into()), KeyKind::ToolKey, TOOL_KEY, KeyOrigin::Manual);
         assert!(matches!(
             resolve_project_key_material(&device(&configuration()),
-                "button",
+                &ProjectDeviceId::new("button").expect("literal is an identifier"),
                 &net_ids(),
                 &[],
                 &source,
@@ -826,7 +831,7 @@ mod tests {
         configuration.security.data_secure_enabled = false;
         let error = resolve_project_key_material(
             &device(&configuration),
-            "button",
+            &ProjectDeviceId::new("button").expect("literal is an identifier"),
             &net_ids(),
             &[],
             &project_source(),
@@ -848,7 +853,7 @@ mod tests {
             .insert(GroupAddress::from_three_level(1, 2, 3), NetSecurityPolicy::Automatic);
         let error = resolve_project_key_material(
             &device(&configuration),
-            "button",
+            &ProjectDeviceId::new("button").expect("literal is an identifier"),
             &net_ids(),
             &[],
             &project_source(),
@@ -869,7 +874,7 @@ mod tests {
             .insert(GroupAddress::from_three_level(1, 2, 3), NetSecurityPolicy::Automatic);
         let resolved = resolve_project_key_material(
             &device(&configuration),
-            "button",
+            &ProjectDeviceId::new("button").expect("literal is an identifier"),
             &net_ids(),
             &[],
             &TestSource::default(),

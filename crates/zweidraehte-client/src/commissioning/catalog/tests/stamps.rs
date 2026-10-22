@@ -1,11 +1,11 @@
 use super::*;
 use crate::commissioning::catalog::profile::ResolvedProfile;
 use crate::commissioning::catalog::rules::resolved_download_stamp_resources;
-use crate::commissioning::error::CompileError;
+use crate::commissioning::error::ProfileError;
 use crate::commissioning::procedure::StampDescriptor;
 use crate::commissioning::procedure::operands::StandardMemoryService;
 
-fn stamps(profile: &ResolvedProfile) -> Result<Vec<StampDescriptor>, CompileError> {
+fn stamps(profile: &ResolvedProfile) -> Result<Vec<StampDescriptor>, ProfileError> {
     resolved_download_stamp_resources(profile, StandardMemoryService::Classic)
 }
 
@@ -19,7 +19,7 @@ fn nonzero_download_stamp_requires_a_runtime_stamp_resource() {
     let profile = resolve_resource_selection(&xml).expect("profile selection");
     let error = stamps(&profile).expect_err("stamp support without a stamp resource must fail");
 
-    assert_eq!(error.kind, CompileErrorKind::InvalidInput);
+    assert_eq!(error.kind, ProfileErrorKind::Invalid);
     assert!(
         error.message.contains("MV-0012")
             && error.message.contains("remote access")
@@ -49,6 +49,6 @@ fn unknown_stamp_flavours_fail_before_profile_execution() {
         .flavour()
         .expect_err("unknown stamp codec must fail when consumed");
 
-    assert_eq!(error.kind, CompileErrorKind::Unsupported);
+    assert_eq!(error.kind, ProfileErrorKind::Unsupported);
     assert!(error.message.contains("Stamp_Future"));
 }

@@ -10,6 +10,7 @@ use zweidraehte_project::ProgrammingSection;
 use zweidraehte_proto::address::IndividualAddress;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CommissioningStage {
     DiscoveringTarget,
     IdentifyingProfile,
@@ -27,6 +28,7 @@ pub enum CommissioningStage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CommissioningEvent {
     Stage(CommissioningStage),
     TargetDiscovered {
@@ -57,12 +59,14 @@ pub enum CommissioningEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ProcedureReport {
     pub steps_completed: usize,
     pub mapped_errors: Vec<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AddressAssignment {
     pub serial_number: Option<[u8; 6]>,
     pub previous: IndividualAddress,

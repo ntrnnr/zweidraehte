@@ -29,6 +29,7 @@
 //! `cli` supplies the existing USB/keyring argument vocabulary without project
 //! storage. Bus operations use [`BusError`]/[`BusResult`]; project errors and
 //! results live under `project`, alongside its planning and execution APIs.
+//! Each module's "Errors" section lists the error types that cross it.
 //! [`BusTarget`] stores a built-in endpoint without depending on CLI parsing;
 //! the `usb` feature adds its USB choice.
 //!

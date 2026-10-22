@@ -2,6 +2,7 @@
 
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::error::DiagnosticResult as Result;
+use crate::commissioning::error::PreparationFailure;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::apdu::device::OpenMediumDomainAddress;
 
@@ -11,8 +12,14 @@ pub(in crate::commissioning) fn unique_target(
 ) -> Result<IndividualAddress> {
     match addresses.as_slice() {
         [address] => Ok(*address),
-        [] => Err(Diagnostic::preparation(format!("no device answered through {method}"))),
-        addresses => Err(Diagnostic::preparation(format!("{} devices answered through {method}", addresses.len()))),
+        [] => Err(Diagnostic::preparation(
+            PreparationFailure::TargetNotFound,
+            format!("no device answered through {method}"),
+        )),
+        addresses => Err(Diagnostic::preparation(
+            PreparationFailure::AmbiguousTarget,
+            format!("{} devices answered through {method}", addresses.len()),
+        )),
     }
 }
 
@@ -22,10 +29,14 @@ pub(in crate::commissioning) fn unique_domain_target(
 ) -> Result<(IndividualAddress, OpenMediumDomainAddress)> {
     match devices.as_slice() {
         [device] => Ok(*device),
-        [] => Err(Diagnostic::preparation(format!("no RF domain response answered through {method}"))),
-        devices => {
-            Err(Diagnostic::preparation(format!("{} RF domain responses answered through {method}", devices.len())))
-        }
+        [] => Err(Diagnostic::preparation(
+            PreparationFailure::TargetNotFound,
+            format!("no RF domain response answered through {method}"),
+        )),
+        devices => Err(Diagnostic::preparation(
+            PreparationFailure::AmbiguousTarget,
+            format!("{} RF domain responses answered through {method}", devices.len()),
+        )),
     }
 }
 

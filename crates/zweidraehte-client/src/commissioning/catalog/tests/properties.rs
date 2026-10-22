@@ -574,7 +574,7 @@ fn unselected_nested_property_ambiguity_does_not_prevent_other_operands() {
     );
     assert!(matches!(
         profile.property_element_size(&ObjectSelector::Index { index: 0 }, 87, false),
-        Err(error) if error.kind == CompileErrorKind::InvalidInput && error.message.contains("multiple definitions") && error.message.contains("PID 87")
+        Err(error) if error.kind == ProfileErrorKind::Invalid && error.message.contains("multiple definitions") && error.message.contains("PID 87")
     ));
 }
 

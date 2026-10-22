@@ -4,6 +4,7 @@ use crate::ManagementKeys;
 use crate::bus::access::PlaintextAccess;
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::error::DiagnosticResult as Result;
+use crate::commissioning::error::PreparationFailure;
 use crate::commissioning::runtime::commissioner::Commissioner;
 use crate::commissioning::runtime::credentials::{ManagementAccess, ManagementAccessOptions};
 use crate::commissioning::runtime::prepare::profile::AcquiredTarget;
@@ -69,7 +70,10 @@ impl<'a> Commissioner<'a> {
                 false,
             )
             .await
-            .map_err(|error| Diagnostic::from(error).preparation_context("acquiring management access"))?;
+            .map_err(|error| {
+                Diagnostic::from(error)
+                    .preparation_context(PreparationFailure::ManagementAccess, "acquiring management access")
+            })?;
         let access = match credential {
             crate::ManagementCredential::ToolKey => {
                 ManagementAccess::ToolKey((*material.tool_key().expect("selected Tool Key")).into())

@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use zweidraehte_client::project::{
     BatchSelection, Error as ClientError, KeyringExport, ManagementSources, MemoryReadOptions, PlannedProjectDevice,
-    ProgrammingPolicy, ProjectCommissioningSession, ProjectInputRequest, ProjectInputSources, ProjectOperation,
-    ProjectOperationInputs, ProjectProduct, ProjectProgramming, ProjectSetupRequirement, ProjectStatusCache,
-    ProjectStatusInputs, ProjectStatusRequest, ProjectSynchronization, build_project_keyring,
+    ProgrammingPolicy, ProjectCommissioningSession, ProjectInputRequest, ProjectOperation, ProjectOperationInputs,
+    ProjectProduct, ProjectProgramming, ProjectSetupRequirement, ProjectStatusCache, ProjectStatusInputs,
+    ProjectStatusRequest, ProjectSynchronization, build_project_keyring,
 };
 
 use anyhow::{Context, Result, bail};
@@ -877,7 +877,7 @@ fn run_add(
         )?;
     }
     let draft = ProjectDeviceDraft {
-        id: ProjectDeviceId(device.to_string()),
+        id: ProjectDeviceId::new(device).context("while attempting to name the new device")?,
         active: true,
         product: ProductReference::Package {
             package: ProjectPackageId::from_bytes(*leaf.selector.package.as_bytes()),
@@ -969,8 +969,9 @@ fn print_status(store: &ProjectStore, master_data: Option<&Path>, security: &Sec
         } else {
             format!("affected ({})", changed_programming_components(programming).join(", "))
         };
-        let inconsistent =
-            store.state().is_some_and(|state| state.inconsistent_devices.iter().any(|candidate| candidate == &id.0));
+        let inconsistent = store
+            .state()
+            .is_some_and(|state| state.inconsistent_devices.iter().any(|candidate| candidate == id.as_str()));
         let data_secure = match (supports_data_secure, desired.data_secure.is_enabled()) {
             (false, false) => "unsupported",
             (false, true) => "invalid: enabled but unsupported",
@@ -998,18 +999,11 @@ fn load_status_inputs(
     master_data: Option<&Path>,
     security: &SecurityArgs,
 ) -> Result<ProjectStatusInputs> {
+    let mut request = ProjectStatusRequest::new(store.project_path());
+    request.master_data = master_data;
+    request.keyring_path = security.keyring_path();
     ProjectStatusCache::default()
-        .load(
-            ProjectStatusRequest {
-                project_path: store.project_path(),
-                draft: None,
-                scope: None,
-                master_data,
-                keyring_path: security.keyring_path(),
-            },
-            || security.load_keyring().map_err(Into::into),
-            |_, _, _| {},
-        )
+        .load(request, || security.load_keyring().map_err(Into::into), |_, _, _| {})
         .context("load coherent project inputs")
 }
 
@@ -1087,11 +1081,11 @@ fn run_export_keyring(
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
         .unwrap_or("zweidraehte project");
-    let export = KeyringExport {
-        project_name: project_name.unwrap_or(default_name).to_owned(),
-        created_by: concat!("zweidraehte knx-loader ", env!("CARGO_PKG_VERSION")).to_owned(),
-        created: time::OffsetDateTime::now_utc(),
-    };
+    let export = KeyringExport::new(
+        project_name.unwrap_or(default_name),
+        concat!("zweidraehte knx-loader ", env!("CARGO_PKG_VERSION")),
+        time::OffsetDateTime::now_utc(),
+    );
     let keyring = build_project_keyring(store.authored(), state, keys, export)
         .context("while attempting to collect project keyring material")?;
     let device_count = keyring.devices.len();
@@ -1163,17 +1157,11 @@ async fn run_programming(
     let (selected, selection) = programming_selection(device, affected, all, operation)
         .context("while attempting to select the programming scope")?;
     let requested_intent = operation.requested_intent(force_full);
-    let inputs = ProjectOperationInputs::load(
-        store,
-        ProjectInputRequest {
-            selected: &selected,
-            selection,
-            intent: requested_intent,
-            sources: ProjectInputSources { master_data, keyring_path: security.keyring_path() },
-        },
-        || security.load_keyring().map_err(Into::into),
-    )
-    .context("while attempting to acquire project programming inputs")?;
+    let mut request = ProjectInputRequest::new(&selected, selection, requested_intent);
+    request.sources.master_data = master_data;
+    request.sources.keyring_path = security.keyring_path();
+    let inputs = ProjectOperationInputs::load(store, request, || security.load_keyring().map_err(Into::into))
+        .context("while attempting to acquire project programming inputs")?;
     let mut programming = inputs.into_programming().context("while attempting to plan the commissioning batch")?;
     ensure_single_programming_button_target(&programming, program_ia)
         .context("while attempting to validate programming-button selection")?;
@@ -1208,7 +1196,7 @@ async fn run_programming(
                 let compiled = compile_offline(planned, intent, device_mask)
                     .context("while attempting to compile the device offline")?;
                 print_compiled(planned, &compiled);
-                dump_blob_files(dump_blobs, &planned.id().0, &compiled)
+                dump_blob_files(dump_blobs, planned.id().as_str(), &compiled)
                     .context("while attempting to export compiled memory blobs")?;
             } else {
                 println!("{}: would commission {}", planned.id(), planned.device().individual_address());
@@ -1326,7 +1314,8 @@ fn programming_selection(
             bail!("--affected is project-wide; omit the device identifier");
         }
 
-        return Ok((vec![ProjectDeviceId(device)], BatchSelection::Selected));
+        let device = ProjectDeviceId::new(device).context("while attempting to parse the device identifier")?;
+        return Ok((vec![device], BatchSelection::Selected));
     }
     if all {
         return Ok((
@@ -1346,7 +1335,7 @@ fn ensure_single_programming_button_target(programming: &ProjectProgramming, pro
     }
 
     let plan = programming.plan();
-    let address_targets = plan.devices().iter().filter(|device| plan.impact().selected.contains(&device.id())).count();
+    let address_targets = plan.devices().iter().filter(|device| plan.impact().selected.contains(device.id())).count();
     if address_targets != 1 {
         bail!("physical programming mode requires exactly one selected device");
     }
@@ -1367,7 +1356,7 @@ fn configure_programming_button_target(
     let planned = plan
         .devices()
         .iter()
-        .find(|device| plan.impact().selected.contains(&device.id()))
+        .find(|device| plan.impact().selected.contains(device.id()))
         .context("programming-button target is not part of the plan")?;
     let id = planned.id().clone();
     let mut polling = ProgrammingModePolling::default();
@@ -1392,10 +1381,10 @@ fn is_management_access_preflight_error(error: &ClientError) -> bool {
         return false;
     };
 
-    let diagnostic = source.diagnostic();
-    diagnostic.kind() == zweidraehte_client::commissioning::DiagnosticKind::Preparation
-        && (diagnostic.message().contains("management access")
-            || diagnostic.message().contains("management credential"))
+    source.diagnostic().kind()
+        == zweidraehte_client::commissioning::DiagnosticKind::Preparation(
+            zweidraehte_client::commissioning::PreparationFailure::ManagementAccess,
+        )
 }
 
 fn cli_unload_mode(application: bool, all: bool) -> Result<UnloadMode> {
@@ -1430,11 +1419,12 @@ async fn run_read(
     })
     .await
     .context("while attempting to open the project operation")?;
-    let options = MemoryReadOptions {
-        sources: ManagementSources { keyring: keyring.as_ref(), master_data },
-        allow_plaintext: true,
-    };
-    let result = operation.read_device_memory(&ProjectDeviceId(device_id.into()), options).await;
+    let mut options = MemoryReadOptions::default();
+    options.sources.keyring = keyring.as_ref();
+    options.sources.master_data = master_data;
+    options.allow_plaintext = true;
+    let device = ProjectDeviceId::new(device_id).context("while attempting to parse the device identifier")?;
+    let result = operation.read_device_memory(&device, options).await;
 
     let report = match &result {
         Ok(report) => report,
@@ -1473,18 +1463,12 @@ async fn run_unload(
     device_id: &str,
     mode: UnloadMode,
 ) -> Result<()> {
-    let selected = [ProjectDeviceId(device_id.to_string())];
-    let inputs = ProjectOperationInputs::load(
-        store,
-        ProjectInputRequest {
-            selected: &selected,
-            selection: BatchSelection::Selected,
-            intent: CommissioningIntent::Unload(mode),
-            sources: ProjectInputSources { master_data, keyring_path: security.keyring_path() },
-        },
-        || security.load_keyring().map_err(Into::into),
-    )
-    .context("while attempting to acquire project unload inputs")?;
+    let selected = [ProjectDeviceId::new(device_id).context("while attempting to parse the device identifier")?];
+    let mut request = ProjectInputRequest::new(&selected, BatchSelection::Selected, CommissioningIntent::Unload(mode));
+    request.sources.master_data = master_data;
+    request.sources.keyring_path = security.keyring_path();
+    let inputs = ProjectOperationInputs::load(store, request, || security.load_keyring().map_err(Into::into))
+        .context("while attempting to acquire project unload inputs")?;
     let mut programming = inputs.into_programming().context("while attempting to plan the unload")?;
     let mut policy = ProgrammingPolicy::default();
     policy.differential = DifferentialPolicy::Disabled;
@@ -1500,6 +1484,7 @@ async fn run_unload(
     println!("unloaded {} from `{device_id}`", match mode {
         UnloadMode::Application => "application",
         UnloadMode::AllConfiguration => "all configuration",
+        _ => "the selected scope",
     });
 
     Ok(())
@@ -1528,7 +1513,10 @@ async fn run_sync(
     .context("while attempting to open the project operation")?;
     let mode =
         if recover { ProjectSynchronization::Recover { client_floor } } else { ProjectSynchronization::Synchronize };
-    let result = operation.synchronize(mode, ManagementSources { keyring: keyring.as_ref(), master_data }).await;
+    let mut sources = ManagementSources::default();
+    sources.keyring = keyring.as_ref();
+    sources.master_data = master_data;
+    let result = operation.synchronize(mode, sources).await;
     let report = match &result {
         Ok(report) => report,
         Err(failure) => &failure.report,
@@ -1665,6 +1653,7 @@ fn print_commissioning_progress(device: Option<&ProjectDeviceId>, event: Commiss
         }
         CommissioningEvent::Data { done, total } => println!("    {prefix}data {done}/{total}"),
         CommissioningEvent::ProgressText(message) => println!("    {prefix}{message}"),
+        other => println!("    {prefix}{other:?}"),
     }
 }
 
@@ -1683,6 +1672,7 @@ fn commissioning_stage_name(stage: CommissioningStage) -> &'static str {
         CommissioningStage::RestoringDeviceState => "restoring device state",
         CommissioningStage::Disconnecting => "disconnecting",
         CommissioningStage::Complete => "complete",
+        _ => "commissioning",
     }
 }
 

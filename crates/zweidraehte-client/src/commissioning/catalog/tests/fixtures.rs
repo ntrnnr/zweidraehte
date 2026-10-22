@@ -1,6 +1,6 @@
 //! Shared synthetic catalog fixtures; no downloaded or vendor contents.
 
-use super::super::CompileError;
+use super::super::ProfileError;
 use crate::commissioning::catalog::profile::ResolvedProfile;
 use crate::commissioning::catalog_testing::*;
 use std::path::PathBuf;
@@ -260,7 +260,7 @@ pub(super) fn resolve_location_cases() -> ResolvedProfile {
     .expect("location profile resolves")
 }
 
-pub(super) fn resolve_resource_selection(xml: &str) -> Result<ResolvedProfile, CompileError> {
+pub(super) fn resolve_resource_selection(xml: &str) -> Result<ResolvedProfile, ProfileError> {
     resolve_catalog_profile(&parse_master_data(xml).expect("syntax remains parseable"), None, &ProfileSelection {
         discovery: ProfileDiscovery { dd0: 0x0012, management_descriptor_01: None, management_style: None },
         variant_hint: VariantHint::Automatic,

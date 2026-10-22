@@ -8,7 +8,7 @@ mod property_view;
 mod resource_view;
 mod schema;
 
-use crate::commissioning::error::CompileError;
+use crate::commissioning::error::ProfileError;
 pub(crate) use property_view::{property_location, property_object_matches, property_resources};
 pub use resource_view::SelectedResource;
 pub(crate) use resource_view::{ResourceOrder, validate_access};
@@ -44,7 +44,7 @@ pub(crate) fn resolve_profile(
     master_data: &Arc<MasterData>,
     product: Option<&ProductData>,
     selection: &ProfileSelection,
-) -> Result<ResolvedProfile, CompileError> {
+) -> Result<ResolvedProfile, ProfileError> {
     // Raw documents may be newer or older than the compiler understands. An
     // unversioned document stays usable for offline inspection; live
     // preparation additionally requires the namespace.
@@ -81,7 +81,7 @@ pub(crate) fn resolve_profile(
         mask: mask_identity(mask),
         variant: profile_variant(variant_index, variant),
         management_model: mask.management_model.parse().map_err(|_| {
-            CompileError::unsupported(format!("unknown Master Data management model {:?}", mask.management_model))
+            ProfileError::unsupported(format!("unknown Master Data management model {:?}", mask.management_model))
         })?,
         management_style,
         disposition,
@@ -186,9 +186,9 @@ pub(super) fn select_variant<'a>(
     mask: &'a MaskVersion,
     product: Option<&ProductData>,
     hint: VariantHint,
-) -> Result<(usize, &'a HawkConfigurationData), CompileError> {
+) -> Result<(usize, &'a HawkConfigurationData), ProfileError> {
     if mask.hawk_configs.is_empty() {
-        return Err(CompileError::unsupported(format!("mask {} has no programming configuration", mask.id)));
+        return Err(ProfileError::unsupported(format!("mask {} has no programming configuration", mask.id)));
     }
 
     if let VariantHint::LegacyVersion(version) = hint {
@@ -200,7 +200,7 @@ pub(super) fn select_variant<'a>(
     }
 
     let Some(product) = product else {
-        return Err(CompileError::missing_evidence(format!(
+        return Err(ProfileError::missing_evidence(format!(
             "mask {} has multiple programming configurations; supply an explicit variant hint",
             mask.id
         )));
@@ -221,18 +221,18 @@ pub(super) fn select_variant<'a>(
     unique_variant(mask, 0)
 }
 
-fn unique_variant(mask: &MaskVersion, legacy_version: i32) -> Result<(usize, &HawkConfigurationData), CompileError> {
+fn unique_variant(mask: &MaskVersion, legacy_version: i32) -> Result<(usize, &HawkConfigurationData), ProfileError> {
     let mut variants = mask
         .hawk_configs
         .iter()
         .enumerate()
         .filter(|(_, variant)| variant.legacy_version.unwrap_or(0) == legacy_version);
     let result = variants.next().ok_or_else(|| {
-        CompileError::invalid(format!("mask {} has no configuration with LegacyVersion {legacy_version}", mask.id))
+        ProfileError::invalid(format!("mask {} has no configuration with LegacyVersion {legacy_version}", mask.id))
     })?;
 
     if variants.next().is_some() {
-        return Err(CompileError::invalid(format!(
+        return Err(ProfileError::invalid(format!(
             "mask {} has multiple configurations with LegacyVersion {legacy_version}",
             mask.id
         )));
@@ -242,9 +242,9 @@ fn unique_variant(mask: &MaskVersion, legacy_version: i32) -> Result<(usize, &Ha
 }
 /// Whether DD0 alone is insufficient and Device Object PID 72 must be
 /// read before selecting an exact mask profile.
-pub(crate) fn requires_management_descriptor_01(master_data: &MasterData, dd0: u16) -> Result<bool, CompileError> {
+pub(crate) fn requires_management_descriptor_01(master_data: &MasterData, dd0: u16) -> Result<bool, ProfileError> {
     let mut candidates = master_data.get_mask_versions_by_code(dd0);
-    candidates.next().ok_or_else(|| CompileError::unsupported(format!("Master Data has no mask for DD0 {dd0:04X}")))?;
+    candidates.next().ok_or_else(|| ProfileError::unsupported(format!("Master Data has no mask for DD0 {dd0:04X}")))?;
 
     Ok(candidates.next().is_some())
 }
@@ -253,15 +253,15 @@ pub(super) fn resolve_exact_mask<'a>(
     master_data: &'a MasterData,
     dd0: u16,
     management_descriptor_01: Option<&[u8; 10]>,
-) -> Result<&'a MaskVersion, CompileError> {
+) -> Result<&'a MaskVersion, ProfileError> {
     let candidates: Vec<_> = master_data.get_mask_versions_by_code(dd0).collect();
 
     match candidates.as_slice() {
-        [] => Err(CompileError::unsupported(format!("Master Data has no mask for DD0 {:04X}", dd0))),
+        [] => Err(ProfileError::unsupported(format!("Master Data has no mask for DD0 {:04X}", dd0))),
         [mask] => {
             if management_descriptor_01.is_some() && management_descriptor_01 != mask.management_descriptor_01.as_ref()
             {
-                return Err(CompileError::invalid(format!(
+                return Err(ProfileError::invalid(format!(
                     "DD0 {:04X} has no profile matching observed PID 72 {:?}",
                     dd0, management_descriptor_01
                 )));
@@ -269,7 +269,7 @@ pub(super) fn resolve_exact_mask<'a>(
 
             Ok(mask)
         }
-        _ if management_descriptor_01.is_none() => Err(CompileError::missing_evidence(format!(
+        _ if management_descriptor_01.is_none() => Err(ProfileError::missing_evidence(format!(
             "DD0 {:04X} is ambiguous; read Device Object PID 72 before selecting a profile",
             dd0
         ))),
@@ -278,14 +278,14 @@ pub(super) fn resolve_exact_mask<'a>(
                 .into_iter()
                 .filter(|mask| mask.management_descriptor_01.as_ref() == management_descriptor_01);
             let mask = matching.next().ok_or_else(|| {
-                CompileError::invalid(format!(
+                ProfileError::invalid(format!(
                     "DD0 {:04X} has no profile matching observed PID 72 {:?}",
                     dd0, management_descriptor_01
                 ))
             })?;
 
             if matching.next().is_some() {
-                return Err(CompileError::invalid(format!(
+                return Err(ProfileError::invalid(format!(
                     "DD0 {:04X} and PID 72 still identify multiple profiles",
                     dd0
                 )));
@@ -300,17 +300,17 @@ pub(super) fn verify_product_compatibility(
     master_data: &MasterData,
     device_mask: &MaskVersion,
     product: Option<&ProductData>,
-) -> Result<(), CompileError> {
+) -> Result<(), ProfileError> {
     let Some(product) = product else {
         return Ok(());
     };
 
     let product_mask = master_data.get_mask_version(product.programming_profile_id()).ok_or_else(|| {
-        CompileError::unsupported(format!("Master Data has no product mask ID {:?}", product.mask_version_id()))
+        ProfileError::unsupported(format!("Master Data has no product mask ID {:?}", product.mask_version_id()))
     })?;
 
     if !device_mask.is_downward_compatible_with(product_mask.mask_version_code) {
-        return Err(CompileError::invalid(format!(
+        return Err(ProfileError::invalid(format!(
             "product mask {} is not compatible with device mask {}",
             product_mask.id, device_mask.id
         )));
@@ -322,7 +322,7 @@ pub(super) fn verify_product_compatibility(
         && (device_mask.management_descriptor_01.is_some() || product_mask.management_descriptor_01.is_some())
         && device_mask.id != product_mask.id
     {
-        return Err(CompileError::invalid(format!(
+        return Err(ProfileError::invalid(format!(
             "product mask {} is not compatible with device mask {}",
             product_mask.id, device_mask.id
         )));
@@ -336,14 +336,14 @@ pub(super) fn resolve_management_style(
     variant: &HawkConfigurationData,
     product: Option<&ProductData>,
     discovered: Option<ResourceManagementStyle>,
-) -> Result<Option<ResourceManagementStyle>, CompileError> {
+) -> Result<Option<ResourceManagementStyle>, ProfileError> {
     let resources = variant.resources.as_ref().map(|resources| resources.resources.as_slice()).unwrap_or_default();
     let mut constants = BTreeSet::new();
 
     for resource in resources.iter().filter(|resource| resource.name == "ManagementStyle") {
         let Some(location) = resource.location.as_ref() else { continue };
         let AddressSpaceLocation::Constant { value } =
-            location.to_address_space().map_err(|error| CompileError::invalid(error.to_string()))?
+            location.to_address_space().map_err(|error| ProfileError::invalid(error.to_string()))?
         else {
             continue;
         };
@@ -352,7 +352,7 @@ pub(super) fn resolve_management_style(
             1 => ResourceManagementStyle::Simple,
             2 => ResourceManagementStyle::LoadStateMachine,
             value => {
-                return Err(CompileError::unsupported(format!(
+                return Err(ProfileError::unsupported(format!(
                     "management-style resource returned unsupported value {value}"
                 )));
             }
@@ -360,7 +360,7 @@ pub(super) fn resolve_management_style(
     }
 
     if constants.len() > 1 {
-        return Err(CompileError::invalid(format!("mask {} declares conflicting constant management styles", mask.id)));
+        return Err(ProfileError::invalid(format!("mask {} declares conflicting constant management styles", mask.id)));
     }
 
     if let Some(fixed) = constants.into_iter().next() {
@@ -368,7 +368,7 @@ pub(super) fn resolve_management_style(
             && let Some(observed) = discovered
             && observed != fixed
         {
-            return Err(CompileError::invalid(format!(
+            return Err(ProfileError::invalid(format!(
                 "device reports management style {observed:?}, but the exact profile fixes it to {fixed:?}"
             )));
         }
@@ -389,7 +389,7 @@ pub(super) fn resolve_management_style(
         }
 
         return discovered.map(Some).ok_or_else(|| {
-            CompileError::missing_evidence("the selected profile requires a live management-style probe")
+            ProfileError::missing_evidence("the selected profile requires a live management-style probe")
         });
     }
 
@@ -409,7 +409,7 @@ pub(super) fn resolve_management_style(
                         declared.insert(ResourceManagementStyle::LoadStateMachine);
                     }
                     XmlManagementStyle::Unknown(value) => {
-                        return Err(CompileError::unsupported(format!(
+                        return Err(ProfileError::unsupported(format!(
                             "unknown resource management-style token {value:?}"
                         )));
                     }
@@ -426,7 +426,7 @@ pub(super) fn resolve_management_style(
         // LSM here would make a newly published model executable with the
         // wrong services instead of producing a preflight diagnostic.
         1 => Ok(declared.into_iter().next()),
-        _ => Err(CompileError::missing_evidence("the selected profile requires a live management-style probe")),
+        _ => Err(ProfileError::missing_evidence("the selected profile requires a live management-style probe")),
     }
 }
 

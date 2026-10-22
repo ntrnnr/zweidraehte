@@ -28,7 +28,7 @@ fn requested_resource_unknown_access_cannot_disappear_during_selection() {
         .resource("Chosen")
         .expect_err("unknown access cannot disappear during selection");
 
-    assert_eq!(error.kind, CompileErrorKind::Unsupported);
+    assert_eq!(error.kind, ProfileErrorKind::Unsupported);
     assert!(error.message.contains("unknown resource access token \"future\""));
 }
 
@@ -44,7 +44,7 @@ fn only_consumed_resource_flavours_and_locations_are_interpreted() {
         .flavour()
         .expect_err("consumed unknown flavour must fail");
 
-    assert_eq!(error.kind, CompileErrorKind::Unsupported);
+    assert_eq!(error.kind, ProfileErrorKind::Unsupported);
     assert!(error.message.contains("Chosen") && error.message.contains("FutureTable"));
 
     let unknown_address_space = RESOURCE_SELECTION.replace("StandardMemory", "FutureMemory");
@@ -56,7 +56,7 @@ fn only_consumed_resource_flavours_and_locations_are_interpreted() {
         .read(StandardMemoryService::Classic)
         .expect_err("consumed unknown address space must fail");
 
-    assert_eq!(error.kind, CompileErrorKind::InvalidInput);
+    assert_eq!(error.kind, ProfileErrorKind::Invalid);
     assert!(error.message.contains("FutureMemory"));
 
     let unknown_procedure = RESOURCE_SELECTION.replace("ProcedureType=\"Load\"", "ProcedureType=\"Future\"");

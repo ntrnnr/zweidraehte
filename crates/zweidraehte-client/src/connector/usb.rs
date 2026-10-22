@@ -58,6 +58,7 @@ mod interface {
 
 /// How to pick the KNX USB interface to open.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub enum UsbSelector {
     /// First interface whose VID/PID is in the
     /// [`KNOWN_KNX_DEVICES`](zweidraehte_proto::usb_hid::KNOWN_KNX_DEVICES)

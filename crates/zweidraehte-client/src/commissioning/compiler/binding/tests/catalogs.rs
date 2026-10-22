@@ -49,7 +49,7 @@ fn unavailable_architectures_fail_closed() {
     assert!(compile(&catalog, pl_profile, &pl_product, TopologyConfiguration::default()).is_err());
     assert!(matches!(
         resolve_catalog_profile(&catalog, None, &ProfileSelection { discovery: ProfileDiscovery { dd0: 0x6800, management_descriptor_01: None, management_style: None }, variant_hint: VariantHint::Automatic }),
-        Err(error) if error.kind == CompileErrorKind::Unsupported && error.message.contains("no programming configuration")
+        Err(error) if error.kind == crate::commissioning::ProfileErrorKind::Unsupported && error.message.contains("no programming configuration")
     ));
 }
 

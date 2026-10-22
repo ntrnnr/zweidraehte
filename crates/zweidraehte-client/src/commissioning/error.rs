@@ -12,6 +12,7 @@ use super::procedure::{ControlPath, LoadControlCause};
 /// A Master Data token has no supported semantic interpretation.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("unsupported {category} token {token:?}")]
+#[non_exhaustive]
 pub struct UnknownProfileToken {
     pub category: &'static str,
     pub token: String,
@@ -32,6 +33,7 @@ pub enum AssociationTableEntrySizeError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ImageError {
     #[error("{0}")]
     InvalidState(String),
@@ -93,6 +95,7 @@ pub enum OverflowedTable {
 
 /// A compilation diagnostic retains the authored control that caused it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CompileError {
     pub kind: CompileErrorKind,
     pub path: Option<Box<ControlPath>>,
@@ -142,6 +145,68 @@ impl CompileError {
     }
 }
 
+/// What kind of profile problem a [`ProfileError`] reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ProfileErrorKind {
+    /// Master Data, or the observed device identity, contradicts itself.
+    Invalid,
+    /// Master Data uses a token, resource or model this library does not implement.
+    Unsupported,
+    /// Selecting the profile needs a device observation that was not supplied.
+    MissingEvidence,
+}
+
+/// Master Data cannot resolve, or cannot usefully describe, a device profile.
+///
+/// Profile resolution and resource lookups report this type rather than
+/// [`CompileError`]: they run before, and independently of, compilation. A
+/// compile that hits one converts it into the matching [`CompileErrorKind`].
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
+pub struct ProfileError {
+    pub(crate) kind: ProfileErrorKind,
+    pub(crate) message: String,
+}
+
+impl ProfileError {
+    pub(crate) fn invalid(message: impl Into<String>) -> Self {
+        Self { kind: ProfileErrorKind::Invalid, message: message.into() }
+    }
+
+    pub(crate) fn unsupported(message: impl Into<String>) -> Self {
+        Self { kind: ProfileErrorKind::Unsupported, message: message.into() }
+    }
+
+    pub(crate) fn missing_evidence(message: impl Into<String>) -> Self {
+        Self { kind: ProfileErrorKind::MissingEvidence, message: message.into() }
+    }
+
+    pub fn kind(&self) -> ProfileErrorKind {
+        self.kind
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Attribute a lookup made while lowering one authored control.
+    pub(crate) fn with_path(self, path: &ControlPath) -> CompileError {
+        CompileError::from(self).with_path(path)
+    }
+}
+
+impl From<ProfileError> for CompileError {
+    fn from(error: ProfileError) -> Self {
+        let kind = match error.kind {
+            ProfileErrorKind::Invalid => CompileErrorKind::InvalidInput,
+            ProfileErrorKind::Unsupported => CompileErrorKind::Unsupported,
+            ProfileErrorKind::MissingEvidence => CompileErrorKind::MissingEvidence,
+        };
+        Self { kind, path: None, message: error.message }
+    }
+}
+
 impl std::fmt::Display for CompileError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.message)?;
@@ -166,6 +231,7 @@ impl From<AssociationTableEntrySizeError> for CompileError {
     }
 }
 
+/// Exhaustive by design: the four states partition every execution outcome, and callers must handle each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MutationStatus {
     /// Failure occurred during read-only preparation.
@@ -226,6 +292,7 @@ pub enum CleanupOperation {
 /// transport cause from cleanup without replacing the load-control failure
 /// which initiated the exit path.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CleanupFailure {
     pub operation: CleanupOperation,
     pub error: Box<Diagnostic>,
@@ -251,7 +318,7 @@ impl std::fmt::Display for Diagnostic {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self.kind {
             DiagnosticKind::Compilation(_) => "program compilation failed",
-            DiagnosticKind::Preparation => "read-only preparation failed",
+            DiagnosticKind::Preparation(_) => "read-only preparation failed",
             DiagnosticKind::Management => "device-management operation failed",
         })?;
         if let Some(path) = &self.path {
@@ -325,8 +392,8 @@ impl Diagnostic {
         self
     }
 
-    pub(crate) fn preparation_context(mut self, context: impl std::fmt::Display) -> Self {
-        self.kind = DiagnosticKind::Preparation;
+    pub(crate) fn preparation_context(mut self, failure: PreparationFailure, context: impl std::fmt::Display) -> Self {
+        self.kind = DiagnosticKind::Preparation(failure);
         self.context(context)
     }
 
@@ -368,15 +435,62 @@ impl CleanupOperation {
 
 /// The stage responsible for a diagnostic, independent of execution effects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DiagnosticKind {
     Compilation(CompileErrorKind),
-    Preparation,
+    Preparation(PreparationFailure),
     Management,
+}
+
+/// Why read-only preparation refused a device, so frontends can react
+/// without matching message text.
+///
+/// Nothing has been written when preparation fails. A frontend can therefore
+/// offer a different target, credential or option and prepare again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PreparationFailure {
+    /// A caller option, credential pair or requested domain is unusable as given.
+    InvalidOptions,
+    /// The observer declined the prepared program.
+    Vetoed,
+    /// No configured credential, nor permitted plaintext access, opened a
+    /// management session at the target.
+    ManagementAccess,
+    /// No device answered the selected discovery method.
+    TargetNotFound,
+    /// Several devices answered, or two discovery methods selected different devices.
+    AmbiguousTarget,
+    /// The target or the desired individual address conflicts with the project.
+    AddressConflict,
+    /// The device, its security state or the bus changed after preparation.
+    TargetChanged,
+    /// The product profile declares a resource or feature that preparation cannot use.
+    Profile,
+    /// The target or interface cannot carry what the program requires, such as
+    /// an APDU length, an authorization level or a property layout.
+    Capability,
+    /// The operation needs a mode this library does not implement for the target.
+    Unsupported,
+    /// The recorded deployment baseline cannot be compared with the device.
+    DeploymentEvidence,
+    /// A bus request issued during preparation failed.
+    Communication,
+    /// The device answered with a malformed or unexpected value.
+    InvalidResponse,
 }
 
 impl From<CompileError> for Diagnostic {
     fn from(error: CompileError) -> Self {
         Self { kind: DiagnosticKind::Compilation(error.kind), path: error.path, ..Self::new(error.message) }
+    }
+}
+
+// Profile failures keep the classification they had while they were reported
+// as compile errors, so diagnostics and frontends see the same kinds.
+impl From<ProfileError> for Diagnostic {
+    fn from(error: ProfileError) -> Self {
+        CompileError::from(error).into()
     }
 }
 
@@ -412,8 +526,8 @@ impl Diagnostic {
         self.kind
     }
 
-    pub(crate) fn preparation(message: impl Into<String>) -> Self {
-        Self { kind: DiagnosticKind::Preparation, ..Self::new(message) }
+    pub(crate) fn preparation(failure: PreparationFailure, message: impl Into<String>) -> Self {
+        Self { kind: DiagnosticKind::Preparation(failure), ..Self::new(message) }
     }
 }
 
@@ -607,10 +721,10 @@ mod tests {
         let error = Diagnostic::from(crate::bus::BusError::Timeout)
             .at_control(path.clone())
             .with_cleanup_failure(CleanupOperation::Disconnect, Diagnostic::from(crate::bus::BusError::TransportClosed))
-            .preparation_context("reading DD0");
+            .preparation_context(super::PreparationFailure::Communication, "reading DD0");
         assert_eq!(error.transport(), Some(&super::TransportCause::Timeout));
         assert_eq!(error.path(), Some(&path));
-        assert_eq!(error.kind(), super::DiagnosticKind::Preparation);
+        assert_eq!(error.kind(), super::DiagnosticKind::Preparation(super::PreparationFailure::Communication));
         assert_eq!(error.cleanup_failures()[0].error.transport(), Some(&super::TransportCause::ConnectionClosed));
         assert!(error.message().starts_with("reading DD0: request timed out"));
     }
@@ -726,8 +840,9 @@ mod tests {
     fn failures_after_address_assignment_retain_the_learned_target() {
         let learned_target =
             LearnedTarget { address: IndividualAddress::new(1, 0, 10), serial_number: Some([1, 2, 3, 4, 5, 6]) };
-        let error =
-            crate::commissioning::CommissioningError::after_execution(Diagnostic::preparation("later phase failed"), {
+        let error = crate::commissioning::CommissioningError::after_execution(
+            Diagnostic::preparation(super::PreparationFailure::Communication, "later phase failed"),
+            {
                 let mut effects = crate::commissioning::ExecutionEffects::with_status(MutationStatus::PartiallyApplied);
                 effects.confirm_address(crate::commissioning::AddressAssignment {
                     previous: IndividualAddress::new(1, 0, 1),
@@ -736,7 +851,8 @@ mod tests {
                     changed: true,
                 });
                 effects
-            });
+            },
+        );
 
         assert_eq!(error.effects().mutation_status(), MutationStatus::PartiallyApplied);
         assert_eq!(error.effects().learned_target(), Some(learned_target));

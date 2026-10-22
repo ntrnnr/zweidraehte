@@ -1,6 +1,6 @@
 //! Select one authored resource, then bind only the operand the caller uses.
 
-use super::CompileError;
+use super::ProfileError;
 use crate::commissioning::catalog::profile::{
     AssociationTableEntrySize, ObjectSelector, Occurrence, ReadAccess, ResolvedProfile, ResourceAccessRights,
     ResourceFlavour, ResourceId, ResourceManagementStyle, WriteAccess,
@@ -21,6 +21,7 @@ use zweidraehte_ets_files::schema::master_data::{
 /// Reading and imaging are separate: an image does not prove an online service
 /// exists, and an unused online declaration cannot invalidate an image operand.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct SelectedResource<'a> {
     pub id: ResourceId,
     pub source: &'a Resource,
@@ -43,7 +44,7 @@ impl ResolvedProfile {
         &self,
         order: ResourceOrder,
         relevant: impl Fn(&Resource) -> bool,
-    ) -> Result<Vec<SelectedResource<'_>>, CompileError> {
+    ) -> Result<Vec<SelectedResource<'_>>, ProfileError> {
         let mut seen = BTreeSet::new();
         let mut selected = Vec::new();
         for source in self.source().resources.iter().flat_map(|resources| &resources.resources) {
@@ -63,7 +64,7 @@ impl ResolvedProfile {
 }
 
 impl ResolvedProfile {
-    pub(crate) fn selected_resource<'a>(&'a self, name: &str) -> Result<Option<SelectedResource<'a>>, CompileError> {
+    pub(crate) fn selected_resource<'a>(&'a self, name: &str) -> Result<Option<SelectedResource<'a>>, ProfileError> {
         let variant = self.source();
         let mut candidates = Vec::new();
         for (index, resource) in variant.resources.iter().flat_map(|resources| &resources.resources).enumerate() {
@@ -87,7 +88,7 @@ impl ResolvedProfile {
             (None, _) if candidates.is_empty() => return Ok(None),
             (Some((index, source)), None) => (*index, *source),
             _ => {
-                return Err(CompileError::invalid(format!(
+                return Err(ProfileError::invalid(format!(
                     "resource {name:?} has ambiguous realizations after access/style selection: {:?}",
                     candidates
                         .iter()
@@ -102,11 +103,11 @@ impl ResolvedProfile {
 }
 
 impl SelectedResource<'_> {
-    pub fn property_location(&self) -> Result<Option<(ObjectSelector, u16, u32)>, CompileError> {
+    pub fn property_location(&self) -> Result<Option<(ObjectSelector, u16, u32)>, ProfileError> {
         self.source.location.as_ref().map(super::property_location).transpose().map(Option::flatten)
     }
 
-    pub fn object_selector(&self) -> Result<Option<ObjectSelector>, CompileError> {
+    pub fn object_selector(&self) -> Result<Option<ObjectSelector>, ProfileError> {
         if let Some((object, _, _)) = self.property_location()? {
             return Ok(Some(object));
         }
@@ -134,10 +135,10 @@ impl SelectedResource<'_> {
     pub fn optional(&self) -> bool {
         self.source.optional.unwrap_or(false)
     }
-    pub fn access_rights(&self) -> Result<ResourceAccessRights, CompileError> {
+    pub fn access_rights(&self) -> Result<ResourceAccessRights, ProfileError> {
         resolve_access_rights(self.source.access_rights.as_ref())
     }
-    pub fn flavour(&self) -> Result<Option<ResourceFlavour>, CompileError> {
+    pub fn flavour(&self) -> Result<Option<ResourceFlavour>, ProfileError> {
         let flavour = self
             .source
             .resource_type
@@ -145,7 +146,7 @@ impl SelectedResource<'_> {
             .and_then(|kind| kind.flavour.as_deref())
             .map(|flavour| {
                 flavour.parse().map_err(|_| {
-                    CompileError::unsupported(format!("resource {:?} has unknown flavour {flavour:?}", self.name()))
+                    ProfileError::unsupported(format!("resource {:?} has unknown flavour {flavour:?}", self.name()))
                 })
             })
             .transpose()?;
@@ -160,7 +161,7 @@ impl SelectedResource<'_> {
         })
     }
 
-    pub fn image_location(&self) -> Result<Option<ImageLocation>, CompileError> {
+    pub fn image_location(&self) -> Result<Option<ImageLocation>, ProfileError> {
         self.source
             .image_location
             .as_ref()
@@ -169,7 +170,7 @@ impl SelectedResource<'_> {
             .transpose()
     }
 
-    fn bind_image(&self, location: &Location) -> Result<ImageLocation, CompileError> {
+    fn bind_image(&self, location: &Location) -> Result<ImageLocation, ProfileError> {
         let location = location.to_address_space().map_err(|error| self.invalid(error.to_string()))?;
         Ok(match location {
             AddressSpaceLocation::StandardMemory { start_address } => ImageLocation::standard_memory(start_address),
@@ -211,7 +212,7 @@ impl SelectedResource<'_> {
         })
     }
 
-    pub fn read(&self, service: StandardMemoryService) -> Result<ServiceRead, CompileError> {
+    pub fn read(&self, service: StandardMemoryService) -> Result<ServiceRead, ProfileError> {
         let location = self
             .source
             .location
@@ -295,7 +296,7 @@ impl SelectedResource<'_> {
         Ok(read)
     }
 
-    fn pointer(&self, name: &str) -> Result<SelectedResource<'_>, CompileError> {
+    fn pointer(&self, name: &str) -> Result<SelectedResource<'_>, ProfileError> {
         self.profile
             .resource(name)?
             .ok_or_else(|| self.invalid(format!("pointer refers to unavailable resource {name:?}")))
@@ -306,7 +307,7 @@ impl SelectedResource<'_> {
         object: &ObjectSelector,
         property_id: u16,
         offset: u32,
-    ) -> Result<OperationTarget, CompileError> {
+    ) -> Result<OperationTarget, ProfileError> {
         let start_element = if offset == 0 {
             1
         } else {
@@ -327,7 +328,7 @@ impl SelectedResource<'_> {
         property_id: u16,
         offset: u32,
         service: StandardMemoryService,
-    ) -> Result<OperationTarget, CompileError> {
+    ) -> Result<OperationTarget, ProfileError> {
         let width = self
             .profile
             .property_element_size(&object, property_id, false)?
@@ -347,14 +348,14 @@ impl SelectedResource<'_> {
         })
     }
 
-    fn invalid(&self, reason: impl Into<String>) -> CompileError {
-        CompileError::invalid(format!("resource {}: {}", self.name(), reason.into()))
+    fn invalid(&self, reason: impl Into<String>) -> ProfileError {
+        ProfileError::invalid(format!("resource {}: {}", self.name(), reason.into()))
     }
 }
 
-pub(crate) fn indexed_object(index: u16, occurrence: Option<u16>) -> Result<ObjectSelector, CompileError> {
+pub(crate) fn indexed_object(index: u16, occurrence: Option<u16>) -> Result<ObjectSelector, ProfileError> {
     if let Some(occurrence) = occurrence {
-        return Err(CompileError::invalid(format!("indexed property unexpectedly declares occurrence {occurrence}")));
+        return Err(ProfileError::invalid(format!("indexed property unexpectedly declares occurrence {occurrence}")));
     }
     Ok(ObjectSelector::Index { index })
 }
@@ -372,7 +373,7 @@ impl ResolvedProfile {
         offset: u32,
         length: u32,
         service: StandardMemoryService,
-    ) -> Result<OperationTarget, CompileError> {
+    ) -> Result<OperationTarget, ProfileError> {
         let relevant = |location: &Location| match object {
             ObjectSelector::Index { index } => {
                 location.interface_object_ref == Some(*index)
@@ -397,7 +398,7 @@ impl ResolvedProfile {
         })?;
         let mut properties = BTreeSet::new();
         let mut pointer = None;
-        let invalid = |reason: &str| CompileError::invalid(format!("resource {object:?}: {reason}"));
+        let invalid = |reason: &str| ProfileError::invalid(format!("resource {object:?}: {reason}"));
         for resource in resources {
             for location in
                 resource.source.location.iter().chain(resource.source.image_location.iter()).filter(|location| {
@@ -461,7 +462,7 @@ impl ResolvedProfile {
     }
 }
 
-pub(crate) fn validate_access(access: Option<&ResourceAccessSet>) -> Result<(), CompileError> {
+pub(crate) fn validate_access(access: Option<&ResourceAccessSet>) -> Result<(), ProfileError> {
     let Some(access) = access else {
         return Ok(());
     };
@@ -473,17 +474,17 @@ pub(crate) fn validate_access(access: Option<&ResourceAccessSet>) -> Result<(), 
             ResourceAccess::Local1 => "local1",
             ResourceAccess::Local2 => "local2",
             ResourceAccess::Unknown(value) => {
-                return Err(CompileError::unsupported(format!("unknown resource access token {value:?}")));
+                return Err(ProfileError::unsupported(format!("unknown resource access token {value:?}")));
             }
         };
 
         if !unique.insert(path) {
-            return Err(CompileError::invalid(format!("resource access path {path:?} is declared more than once")));
+            return Err(ProfileError::invalid(format!("resource access path {path:?} is declared more than once")));
         }
     }
 
     if unique.is_empty() {
-        return Err(CompileError::invalid("resource access set is explicitly empty"));
+        return Err(ProfileError::invalid("resource access set is explicitly empty"));
     }
 
     Ok(())
@@ -492,13 +493,13 @@ pub(crate) fn validate_access(access: Option<&ResourceAccessSet>) -> Result<(), 
 pub(super) fn resolve_resource_style(
     resource: &Resource,
     selected: Option<ResourceManagementStyle>,
-) -> Result<Option<ResourceManagementStyle>, CompileError> {
+) -> Result<Option<ResourceManagementStyle>, ProfileError> {
     let Some(styles) = &resource.management_style else {
         return Ok(None);
     };
 
     if let Some(unknown) = styles.unknown().next() {
-        return Err(CompileError::unsupported(format!("unknown resource management-style token {unknown:?}")));
+        return Err(ProfileError::unsupported(format!("unknown resource management-style token {unknown:?}")));
     }
 
     let mut unique = BTreeSet::new();
@@ -510,14 +511,14 @@ pub(super) fn resolve_resource_style(
         };
 
         if !unique.insert(style) {
-            return Err(CompileError::invalid(format!(
+            return Err(ProfileError::invalid(format!(
                 "resource management style {style:?} is declared more than once"
             )));
         }
     }
 
     if unique.is_empty() {
-        return Err(CompileError::invalid("resource management-style set is explicitly empty"));
+        return Err(ProfileError::invalid("resource management-style set is explicitly empty"));
     }
 
     if let Some(selected) = selected {
@@ -532,7 +533,7 @@ pub(super) fn resolve_resource_style(
     })
 }
 
-pub(super) fn resolve_access_rights(access: Option<&AccessRights>) -> Result<ResourceAccessRights, CompileError> {
+pub(super) fn resolve_access_rights(access: Option<&AccessRights>) -> Result<ResourceAccessRights, ProfileError> {
     let Some(access) = access else {
         return Ok(ResourceAccessRights { read: ReadAccess::None, write: WriteAccess::None });
     };
@@ -541,13 +542,13 @@ pub(super) fn resolve_access_rights(access: Option<&AccessRights>) -> Result<Res
         "None" => ReadAccess::None,
         "Configuration" => ReadAccess::Configuration,
         "Runtime" => ReadAccess::Runtime,
-        value => return Err(CompileError::unsupported(format!("unknown resource read-access token {value:?}"))),
+        value => return Err(ProfileError::unsupported(format!("unknown resource read-access token {value:?}"))),
     };
     let write = match access.write.as_str() {
         "None" => WriteAccess::None,
         "Configuration" => WriteAccess::Configuration,
         "Manufacturer" => WriteAccess::Manufacturer,
-        value => return Err(CompileError::unsupported(format!("unknown resource write-access token {value:?}"))),
+        value => return Err(ProfileError::unsupported(format!("unknown resource write-access token {value:?}"))),
     };
 
     Ok(ResourceAccessRights { read, write })

@@ -24,13 +24,22 @@ use super::persistence::{
 use super::{
     PlannedProjectDevice, ProgrammingBatchPlan, ProgrammingPolicy, ProjectBatchFailureStage, accept_zero_siat_sequence,
 };
+use crate::configuration::ErrorDetail;
 /// Per-device policy which cannot be inferred from project topology alone.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct ProjectDeviceCommissioningOptions {
     pub intent: CommissioningIntent,
     pub target: TargetSelection,
     pub allow_plaintext: bool,
     pub differential_policy: DifferentialPolicy,
+}
+
+impl ProjectDeviceCommissioningOptions {
+    /// Secure-only access without a differential download.
+    pub fn new(intent: CommissioningIntent, target: TargetSelection) -> Self {
+        Self { intent, target, allow_plaintext: false, differential_policy: DifferentialPolicy::Disabled }
+    }
 }
 
 /// One device's commissioning prepared against the live bus, retained with
@@ -82,12 +91,14 @@ impl<Observer: CommissioningObserver<ProjectDeviceId> + ?Sized> CommissioningObs
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ProjectDeviceCommissioningReport {
     pub id: ProjectDeviceId,
     pub report: ExecutionReport,
 }
 
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct ProjectBatchReport {
     pub devices: Vec<ProjectDeviceCommissioningReport>,
     /// Completed devices and failed targets with confirmed or uncertain physical effects.
@@ -106,6 +117,7 @@ pub struct ProjectCommissioningSession {
 pub(super) type LockedProjectStore = Mutex<ProjectWriter>;
 
 /// Loaded credentials and the bus store sharing this session's exclusion.
+#[non_exhaustive]
 pub struct PreparedProjectSecurity {
     pub store: SecurityStore,
     pub keyring: Option<Keyring>,
@@ -234,7 +246,7 @@ impl ProgrammingBatchPlan {
             if !device.device.key_material().needs_tool_key_generation() {
                 continue;
             }
-            let key = keys.generate_tool_key(&device.id.0)?;
+            let key = keys.generate_tool_key(device.id.as_str())?;
             super::keys::install_generated_tool_key(device.device.key_material_mut(), &device.id, key);
             generated += 1;
         }
@@ -289,10 +301,10 @@ impl ProgrammingBatchPlan {
                     .find(|device| device.device.individual_address() == sender.address)
                     .map(|device| device.device.key_material().clone())
                     .ok_or_else(|| {
-                        Error::DeviceConfiguration(format!(
+                        Error::InvalidProject(ErrorDetail::new(format!(
                             "managed SIAT sender {} has neither an affected device nor probe credentials",
                             sender.address
-                        ))
+                        )))
                     })?,
             };
 
@@ -389,7 +401,7 @@ impl ProjectCommissioningSession {
         for original in &initial.devices {
             ensure_not_cancelled(observer).map_err(|source| {
                 project_batch_error(
-                    original.id.0.clone(),
+                    original.id.clone(),
                     ProjectBatchFailureStage::Preparation,
                     Vec::new(),
                     source,
@@ -398,7 +410,7 @@ impl ProjectCommissioningSession {
             })?;
             self.replan_queued_device(original, &inputs, initial.policy).map_err(|source| {
                 project_batch_error(
-                    original.id.0.clone(),
+                    original.id.clone(),
                     ProjectBatchFailureStage::Preparation,
                     Vec::new(),
                     source,
@@ -426,7 +438,7 @@ impl ProjectCommissioningSession {
                 Ok(None) => continue,
                 Err(source) => {
                     return Err(project_batch_error(
-                        id.0,
+                        id.clone(),
                         ProjectBatchFailureStage::Preparation,
                         reports,
                         source,
@@ -444,7 +456,7 @@ impl ProjectCommissioningSession {
                 }
                 Err(source) => {
                     return Err(project_batch_error(
-                        id.0,
+                        id.clone(),
                         ProjectBatchFailureStage::Commissioning,
                         reports,
                         source,
@@ -501,7 +513,7 @@ impl ProjectCommissioningSession {
                     reports.push(ProjectDeviceCommissioningReport { id, report });
                     if let Err(failure) = persistence {
                         return Err(project_batch_error(
-                            planned.id.0,
+                            planned.id.clone(),
                             ProjectBatchFailureStage::SuccessPersistence,
                             reports,
                             failure.source,
@@ -513,7 +525,7 @@ impl ProjectCommissioningSession {
                     let invalidated = source.effects().affected_sections().clone();
                     let state_errors = record_programming_failure(&self.store, &planned, invalidated, &source);
                     return Err(project_batch_error(
-                        id.0,
+                        id.clone(),
                         ProjectBatchFailureStage::Commissioning,
                         reports,
                         Error::Commissioning(source),
@@ -552,7 +564,7 @@ mod queue_tests {
         std::fs::write(&path, fixture.project.source()).expect("authored fixture");
         let mut store = ProjectStore::open(path).expect("project opens");
         store = store.initialize().expect("state initializes");
-        let receiver = ProjectDeviceId("receiver".into());
+        let receiver = ProjectDeviceId::new("receiver").expect("literal is an identifier");
         let mut plan = ProjectPlanner::new(store.authored(), &fixture.products)
             .with_state(store.state().expect("initialized state"))
             .with_keyring(&fixture.keyring)
@@ -571,7 +583,7 @@ mod queue_tests {
                 store
                     .keys()
                     .expect("keys")
-                    .read(&KeyId { scope: KeyScope::Device(receiver.0.clone()), kind: KeyKind::ToolKey }, None)
+                    .read(&KeyId { scope: KeyScope::Device(receiver.to_string()), kind: KeyKind::ToolKey }, None)
             })
             .expect("inspect saved key")
             .expect("read saved key")
@@ -596,7 +608,7 @@ mod queue_tests {
         std::fs::write(&path, fixture.project.source()).expect("authored fixture");
         let mut store = ProjectStore::open(path).expect("project opens");
         store = store.initialize().expect("state initializes");
-        let receiver = ProjectDeviceId("receiver".into());
+        let receiver = ProjectDeviceId::new("receiver").expect("literal is an identifier");
         let initial = ProjectPlanner::new(store.authored(), &fixture.products)
             .with_state(store.state().expect("initialized state"))
             .with_keyring(&fixture.keyring)
@@ -638,14 +650,14 @@ mod queue_tests {
 }
 
 fn project_batch_error(
-    device: String,
+    device: ProjectDeviceId,
     stage: ProjectBatchFailureStage,
     physical_reports: Vec<ProjectDeviceCommissioningReport>,
     source: Error,
     state_errors: Vec<Error>,
 ) -> Error {
     let mut failure = ProjectBatchFailure {
-        device: Some(ProjectDeviceId(device)),
+        device: Some(device),
         stage,
         report: ProjectBatchReport::from_devices(physical_reports),
         source: Some(Box::new(source)),
@@ -691,6 +703,7 @@ fn raise_siat_rows(
 
 /// Completed physical work retained when a later batch stage fails.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ProjectBatchFailure {
     /// Absent for project-wide setup/finalization failures.
     pub device: Option<ProjectDeviceId>,

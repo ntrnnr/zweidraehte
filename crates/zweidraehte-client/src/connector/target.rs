@@ -11,6 +11,7 @@ use crate::{BusResult, KnxBus, SecurityStore};
 /// KNX/IP is always available; the USB variant requires the `usb` feature.
 /// Custom connectors go through [`KnxBusBuilder::attach`](crate::KnxBusBuilder::attach).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum BusTarget {
     /// A KNX/IP tunneling interface.
     Ip(SocketAddrV4),

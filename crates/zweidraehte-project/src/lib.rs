@@ -36,7 +36,7 @@ pub use keys::{
 };
 pub use model::{
     CouplerRole, CouplerRoutingPolicy, DataSecureMode, Diagnostic, DiagnosticLevel, DomainAddress, ExternalSender,
-    IpAssignment, IpDeviceConfiguration, IpLineConfiguration, IpSecurityIntent, IpServiceSecurity,
+    InvalidDeviceId, IpAssignment, IpDeviceConfiguration, IpLineConfiguration, IpSecurityIntent, IpServiceSecurity,
     IpTunnellingUserBinding, LineTopology, Medium, MembershipRole, Net, NetId, NetSecurityPolicy, ObjectFlagOverrides,
     ObjectMembership, ObjectPriority, ParamValue, ParameterAssignment, ProductReference, ProjectDevice,
     ProjectDeviceId, ProjectInstallationId, ProjectObjectConfiguration, ProjectPackageId, ProjectPackageIdError,

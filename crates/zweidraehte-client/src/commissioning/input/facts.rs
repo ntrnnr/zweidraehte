@@ -10,15 +10,23 @@ use crate::configuration::MaterializedDevice;
 ///
 /// The credential identifies an access choice, never its secret bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ObservedTarget {
     pub previous_address: IndividualAddress,
     pub serial_number: Option<[u8; 6]>,
     pub credential: ManagementCredential,
 }
 
+impl ObservedTarget {
+    pub fn new(previous_address: IndividualAddress, credential: ManagementCredential) -> Self {
+        Self { previous_address, serial_number: None, credential }
+    }
+}
+
 /// Evidence available to pure compilation. Unknown facts remain explicit so
 /// image previews can precede discovery. Lowering requires a selected target.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ProgrammingFacts {
     pub target: Option<ObservedTarget>,
     pub data_security: ObservedDataSecurity,

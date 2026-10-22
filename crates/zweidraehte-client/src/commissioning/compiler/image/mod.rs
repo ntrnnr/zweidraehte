@@ -258,6 +258,7 @@ impl ProgramCompiler<'_> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CompiledTableKind {
     GroupAddress,
     Association,
@@ -265,6 +266,7 @@ pub enum CompiledTableKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CompiledTableSpan {
     pub kind: CompiledTableKind,
     pub location: ImageLocation,
@@ -433,7 +435,7 @@ pub(super) fn seed_segments(
             Err(_) if !demand.is_complete() => {
                 continue;
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         };
         if !demand.includes(&location, segment.size) {
             continue;
@@ -858,7 +860,7 @@ fn apply_identity_resources(
         let location = match rules::resource(&resource) {
             Ok(location) => location,
             Err(_) if !demand.is_complete() => continue,
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         };
         if !demand.includes(&location, resource.length().max(value.len() as u32)) {
             continue;

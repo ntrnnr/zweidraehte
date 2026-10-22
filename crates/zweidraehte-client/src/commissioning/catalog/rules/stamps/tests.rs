@@ -4,10 +4,10 @@ use super::*;
 use crate::commissioning::catalog::profile::ProfileDisposition;
 use crate::commissioning::catalog::profile::testing::{append_xml, edit_profile, fixture_profile};
 use crate::commissioning::catalog_testing::*;
-use crate::commissioning::error::CompileErrorKind;
+use crate::commissioning::error::ProfileErrorKind;
 use std::num::NonZeroU16;
 
-fn output(profile: &ResolvedProfile) -> Result<DownloadStampOutput, CompileError> {
+fn output(profile: &ResolvedProfile) -> Result<DownloadStampOutput, ProfileError> {
     let candidates = resolved_download_stamp_resources(profile, StandardMemoryService::Classic)?;
     super::resolved_download_stamp_output(profile, candidates)
 }
@@ -138,7 +138,7 @@ fn system7_selects_final_image_properties_like_system_b() {
         xml.replace(r#"Name="DownloadStamp" Value="1""#, r#"Name="DownloadStamp" Value="2""#)
     });
     let error = output(&profile).expect_err("unknown flavours stay unsupported on every family");
-    assert_eq!(error.kind, CompileErrorKind::Unsupported);
+    assert_eq!(error.kind, ProfileErrorKind::Unsupported);
 }
 
 #[test]
@@ -192,7 +192,7 @@ fn procedure_owned_download_stamp_rejects_conflicting_selectors() {
     let error =
         super::procedure_download_stamp(&profile).expect_err("different procedure stamp selectors are ambiguous");
 
-    assert_eq!(error.kind, CompileErrorKind::InvalidInput);
+    assert_eq!(error.kind, ProfileErrorKind::Invalid);
     assert!(
         error.message.contains("multiple procedure-owned download-stamp targets")
             && error.message.contains("Zero")

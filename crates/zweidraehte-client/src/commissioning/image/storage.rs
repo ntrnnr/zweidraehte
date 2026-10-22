@@ -13,6 +13,8 @@ use zweidraehte_project::ProgrammingSection;
 pub use zweidraehte_project::ImageSpace;
 
 /// Start of one image range.
+///
+/// Exhaustive by design: an address-space coordinate whose fields are its identity.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ImageLocation {
     pub space: ImageSpace,
@@ -47,6 +49,8 @@ pub struct ImageSegment {
 /// `length` spans the complete capacity, including unowned holes. `seed`
 /// contains only the bytes supplied by the product; reserved capacity is not
 /// confused with known zero bytes. Generated regions have no source identity.
+///
+/// Exhaustive by design: a region is its source, seed and extent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeImageRegion {
     pub source_id: Option<String>,

@@ -39,7 +39,7 @@ fn management_resolution_ignores_invalid_application_edits_and_missing_group_key
     let fixture = secure_fixture();
     let (directory, session, _, _) = recovery_fixture();
     let mut project = fixture.project.clone();
-    let id = ProjectDeviceId("receiver".into());
+    let id = ProjectDeviceId::new("receiver").expect("literal is an identifier");
     let device = project.devices.get_mut(&id).expect("receiver");
     device.parameters.push(ParameterAssignment {
         id: "not-a-product-parameter".into(),

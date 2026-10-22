@@ -64,7 +64,7 @@ impl ExecutionSession<'_> {
             Some(serial) => self.bus.device_sequence_floor(serial).await?,
             None => 1,
         };
-        let selected = reported.max(stored).max(crate::security::knx_sequence_timestamp_floor()).max(1);
+        let selected = reported.max(stored).max(crate::security::keyring::knx_sequence_timestamp_floor()).max(1);
         if selected > 0xFFFF_FFFF_FFFF {
             return Err(Diagnostic::new("PID 59 exceeds the KNX 48-bit range"));
         }

@@ -38,6 +38,7 @@ pub struct NetworkManagement<'bus> {
 
 /// Verified result of serial-number individual-address assignment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SerialAddressAssignment {
     pub previous: IndividualAddress,
     pub current: IndividualAddress,
@@ -47,6 +48,7 @@ pub struct SerialAddressAssignment {
 /// One device selected by physical programming mode, including the serial
 /// number returned by the system-network-parameter procedure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ProgrammingModeDevice {
     pub address: IndividualAddress,
     pub serial_number: [u8; 6],
@@ -54,6 +56,7 @@ pub struct ProgrammingModeDevice {
 
 /// Which devices a network-management request selects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AddressTarget {
     /// Every device whose physical programming mode is active, by ordinary
     /// broadcast (03/05/02 §2.2, §2.3).
@@ -74,6 +77,7 @@ pub enum AddressTarget {
 ///
 /// [`BusError::Unsupported`]: crate::BusError::Unsupported
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Protection {
     Plain,
     /// KNX Data Secure, under the security entry at `current` whose key a
