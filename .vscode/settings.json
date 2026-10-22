@@ -4,5 +4,6 @@
         "firmware/Cargo.toml"
     ],
     "editor.formatOnSave": true,
-    "rust-analyzer.cargo.features": "all"
+    "rust-analyzer.cargo.features": "all",
+    "npm.autoDetect": "off"
 }
