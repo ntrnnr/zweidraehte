@@ -3,11 +3,11 @@ use super::*;
 #[test]
 fn native_object_count_preserves_owned_seed_and_uses_effective_roster_for_selective_groups() {
     let (catalog, profile, product, mut configuration) = plain_fixture();
-    configuration.com_objects.retain(|object| object.number == 0);
+    configuration.encoded_mut().com_objects.retain(|object| object.number == 0);
     for active in [true, false] {
         if !active {
-            configuration.com_objects.clear();
-            configuration.links.clear();
+            configuration.encoded_mut().com_objects.clear();
+            configuration.object_memberships_mut().clear();
         }
         let full = compile_full_image(&catalog, &profile, &product, &configuration).unwrap();
         let partial =
@@ -23,7 +23,7 @@ fn native_object_count_preserves_owned_seed_and_uses_effective_roster_for_select
 #[test]
 fn selected_parameter_ownership_preserves_current_object_count_for_group_formatter() {
     let (_, profile, product, mut configuration) = plain_fixture();
-    configuration.com_objects.retain(|object| object.number == 0);
+    configuration.encoded_mut().com_objects.retain(|object| object.number == 0);
     let code_segment = product.segments()[0].id.clone();
     let product = product.with_fixture_parameters(vec![ParameterLocation {
         id: "count".to_owned(),
@@ -35,7 +35,7 @@ fn selected_parameter_ownership_preserves_current_object_count_for_group_formatt
         seeds_default: false,
         byte_ordered: true,
     }]);
-    configuration.parameters = vec![ParameterValue { id: "count".to_owned(), value: vec![2] }];
+    configuration.encoded_mut().parameters = vec![EncodedParameter { id: "count".to_owned(), value: vec![2] }];
     let compiled = compile_partial_image(
         &profile,
         &product,
@@ -62,7 +62,7 @@ fn selective_producers_preserve_parameter_and_table_values_in_shared_storage() {
         seeds_default: false,
         byte_ordered: true,
     }]);
-    configuration.parameters = vec![ParameterValue { id: "packed-pointer".to_owned(), value: vec![5] }];
+    configuration.encoded_mut().parameters = vec![EncodedParameter { id: "packed-pointer".to_owned(), value: vec![5] }];
     let parameters = ProgramSections::PARAMETERS;
     let groups = ProgramSections::GROUP_COMMUNICATION;
     for (sections, value, count) in [
@@ -96,7 +96,7 @@ fn selective_parameters_do_not_require_unselected_table_codecs_or_fixups() {
         seeds_default: false,
         byte_ordered: true,
     }]);
-    configuration.parameters = vec![ParameterValue { id: "selected".to_owned(), value: vec![0x7e] }];
+    configuration.encoded_mut().parameters = vec![EncodedParameter { id: "selected".to_owned(), value: vec![0x7e] }];
     let profile = table_profile_with_flavours("AddressTable_Future", "AssociationTable_Bcu1");
     let compiled = compile_partial_image(&profile, &product, &configuration, ProgramSections::PARAMETERS)
         .expect("unselected producers have no dependency on their codec or fixup");

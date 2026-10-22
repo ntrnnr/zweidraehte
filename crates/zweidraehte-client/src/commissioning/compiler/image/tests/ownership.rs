@@ -31,8 +31,8 @@ fn null_binary_restriction_owns_seeded_memory_without_patching_bits() {
             "BigEndian",
             r#"<TypeRestriction Base="BinaryValue" SizeInBit="8"/>"#,
         );
-        let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
-        configuration.parameters = vec![ParameterValue { id: "raw".to_owned(), value: vec![] }];
+        let mut configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
+        configuration.encoded_mut().parameters = vec![EncodedParameter { id: "raw".to_owned(), value: vec![] }];
         let mut image = SparseDeviceImage::new();
         let mut regions = seed_segments(&product, ImageDemand::Complete, &mut image).expect("memory allocation");
         for region in regions.values_mut() {
@@ -60,8 +60,8 @@ fn null_binary_restriction_retains_prior_property_bytes_and_count() {
         "BigEndian",
         r#"<TypeRestriction Base="BinaryValue" SizeInBit="8"/>"#,
     );
-    let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
-    configuration.parameters = vec![ParameterValue { id: "raw".to_owned(), value: vec![] }];
+    let mut configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
+    configuration.encoded_mut().parameters = vec![EncodedParameter { id: "raw".to_owned(), value: vec![] }];
     let mut image = SparseDeviceImage::new();
     image.apply(&ImageSegment::owned(at.clone(), vec![0xa5, 0x5a]).expect("prior property value"));
     image.apply(&ImageSegment::owned(count.clone(), vec![0, 3]).expect("prior property count"));
@@ -98,8 +98,9 @@ fn raw_property_count_defaults_to_bytes_independently_of_global_wire_pdt() {
             "BigEndian",
             parameter_type,
         );
-        let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
-        configuration.parameters = vec![ParameterValue { id: "raw".to_owned(), value: vec![0, 0, 0, 0x20, 0, 3] }];
+        let mut configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
+        configuration.encoded_mut().parameters =
+            vec![EncodedParameter { id: "raw".to_owned(), value: vec![0, 0, 0, 0x20, 0, 3] }];
         let mut image = SparseDeviceImage::new();
         image.apply_section(
             ProgrammingSection::Configuration,
@@ -131,8 +132,9 @@ fn raw_property_count_uses_declared_object_type_as_pdt_instead_of_prop_type() {
         "BigEndian",
         6,
     );
-    let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
-    configuration.parameters = vec![ParameterValue { id: "raw".to_owned(), value: vec![1, 2, 3, 4, 5] }];
+    let mut configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
+    configuration.encoded_mut().parameters =
+        vec![EncodedParameter { id: "raw".to_owned(), value: vec![1, 2, 3, 4, 5] }];
     let mut image = SparseDeviceImage::new();
     apply_property_parameters(&profile, &product, &configuration, &mut image, ImageDemand::Complete)
         .expect("declared raw property");
@@ -146,7 +148,7 @@ fn raw_property_count_uses_declared_object_type_as_pdt_instead_of_prop_type() {
         "BigEndian",
         12,
     );
-    configuration.parameters[0].value = vec![0x11; 11];
+    configuration.encoded_mut().parameters[0].value = vec![0x11; 11];
     let mut image = SparseDeviceImage::new();
     apply_property_parameters(&profile, &product, &configuration, &mut image, ImageDemand::Complete)
         .expect("indexed declaration keeps native default object type zero");
@@ -171,8 +173,8 @@ fn raw_memory_parameters_own_their_length_header_and_payload_only() {
             8,
         );
         assert_eq!(product.raw_data_parameter_max_size("raw"), Some(8));
-        let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
-        configuration.parameters = vec![ParameterValue { id: "raw".to_owned(), value: payload }];
+        let mut configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
+        configuration.encoded_mut().parameters = vec![EncodedParameter { id: "raw".to_owned(), value: payload }];
         let mut image = SparseDeviceImage::new();
         let regions = seed_segments(&product, ImageDemand::Complete, &mut image).expect("raw memory allocation");
         apply_parameters(&product, &configuration, &regions, &mut image, ImageDemand::Complete)
@@ -207,8 +209,9 @@ fn raw_property_parameters_keep_capacity_unowned_and_count_elements_separately()
                 byte_order,
                 5,
             );
-            let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
-            configuration.parameters = vec![ParameterValue { id: "raw".to_owned(), value: payload.clone() }];
+            let mut configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
+            configuration.encoded_mut().parameters =
+                vec![EncodedParameter { id: "raw".to_owned(), value: payload.clone() }];
             let mut image = SparseDeviceImage::new();
             apply_property_parameters(&profile, &product, &configuration, &mut image, ImageDemand::Complete)
                 .expect("raw property parameter");
@@ -278,8 +281,9 @@ fn raw_property_demand_selects_empty_and_nonempty_values_by_data_capacity_or_cou
     let count = ImageLocation { space: ImageSpace::PropertyCount { object, property_id: 71 }, offset: 0 };
 
     for payload in [vec![], vec![0x11, 0x22]] {
-        let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
-        configuration.parameters = vec![ParameterValue { id: "raw".to_owned(), value: payload.clone() }];
+        let mut configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
+        configuration.encoded_mut().parameters =
+            vec![EncodedParameter { id: "raw".to_owned(), value: payload.clone() }];
         // The data demand lies beyond the payload, inside its declared
         // capacity. A count-only demand must select the same producer.
         for required in [
@@ -310,7 +314,7 @@ fn raw_property_demand_selects_empty_and_nonempty_values_by_data_capacity_or_cou
 
 #[test]
 fn evaluated_parameter_overlays_preserve_union_property_legacy_and_module_order() {
-    use crate::configuration::{DeviceIdentity, InstallationConfiguration, ResolvedDevice, ResolvedKeyMaterial};
+    use crate::configuration::{InstallationConfiguration, MaterializedDevice, ResolvedKeyMaterial};
     use zweidraehte_ets_files::runtime::{
         Device,
         configuration::{ProductConfiguration, apply_configuration},
@@ -366,19 +370,12 @@ fn evaluated_parameter_overlays_preserve_union_property_legacy_and_module_order(
         let mut device = Device::from_product(Arc::new(selected), None, None);
         let settings = ProductConfiguration::default();
         apply_configuration(&mut device, &settings).expect("overlay configuration");
-        let configuration = InstallationConfiguration {
-            identity: DeviceIdentity { desired_address: IndividualAddress::new(1, 1, 1), serial_number: None },
-            data_secure_enabled: false,
-            object_memberships: Vec::new(),
-            net_security: Default::default(),
-            topology: Default::default(),
-            max_apdu: None,
-        };
+        let configuration = InstallationConfiguration::new(IndividualAddress::new(1, 1, 1));
         let evaluated = device.evaluate(&settings.objects).expect("checked overlays");
         assert_eq!(evaluated.modules().len(), 1);
         assert_eq!(evaluated.modules()[0].instance_id, "first");
         let modules = evaluated.modules().as_ptr();
-        let resolved = ResolvedDevice::from_evaluated(evaluated, configuration);
+        let resolved = MaterializedDevice::from_evaluated(evaluated, configuration);
         if duplicate == Some(10) {
             assert!(resolved.expect_err("conflicting visible refs").to_string().contains("conflicting values"));
             continue;
@@ -387,29 +384,22 @@ fn evaluated_parameter_overlays_preserve_union_property_legacy_and_module_order(
         // The compiler receives the allocation that geometry was resolved from,
         // without a second editor traversal or cloning the evaluated roster.
         assert_eq!(resolved.modules().as_ptr(), modules);
-        let materialized = resolved.into_materialized(ResolvedKeyMaterial::new(None)).expect("materialized input");
+        let materialized = resolved.into_keyed(ResolvedKeyMaterial::default());
         assert_eq!(materialized.modules().as_ptr(), modules);
         let selector = materialized
-            .configuration()
-            .procedure_parameters
+            .procedure_parameters()
             .get("first::level-ref")
             .expect("load procedure retains its concrete module selector");
         assert!(selector.active);
         assert_eq!(selector.value, crate::configuration::ProcedureParameterValue::Signed(13));
         let mut image = SparseDeviceImage::new();
         let regions = seed_segments(materialized.product(), ImageDemand::Complete, &mut image).expect("seeded memory");
-        apply_parameters(
-            materialized.product(),
-            materialized.configuration(),
-            &regions,
-            &mut image,
-            ImageDemand::Complete,
-        )
-        .expect("memory overlays");
+        apply_parameters(materialized.product(), &materialized, &regions, &mut image, ImageDemand::Complete)
+            .expect("memory overlays");
         apply_property_parameters(
             &table_profile(),
             materialized.product(),
-            materialized.configuration(),
+            &materialized,
             &mut image,
             ImageDemand::Complete,
         )
@@ -456,7 +446,7 @@ fn packed_parameter_transfer_preserves_seed_bits_and_owns_only_touched_bytes() {
                 seeds_default: false,
                 byte_ordered: true,
             }]);
-        configuration.parameters = vec![ParameterValue { id: "packed".to_owned(), value }];
+        configuration.encoded_mut().parameters = vec![EncodedParameter { id: "packed".to_owned(), value }];
         let compiled = compile_partial_image(&profile, &product, &configuration, ProgramSections::PARAMETERS).unwrap();
         let bytes = compiled.image.range(&ImageLocation::standard_memory(0x100), expected.len() as u32).unwrap();
         assert_eq!(bytes.data(), expected);
@@ -491,8 +481,8 @@ fn packed_property_parameters_preserve_prior_overlay_and_own_complete_touched_by
             byte_ordered: true,
         },
     ]);
-    configuration.parameters =
-        vec![ParameterValue { id: "seed".to_owned(), value: vec![0xaa, 0xcc, 0xdd] }, ParameterValue {
+    configuration.encoded_mut().parameters =
+        vec![EncodedParameter { id: "seed".to_owned(), value: vec![0xaa, 0xcc, 0xdd] }, EncodedParameter {
             id: "packed".to_owned(),
             value: vec![0x0a, 0xbc],
         }];
@@ -512,7 +502,7 @@ fn packed_property_parameters_preserve_prior_overlay_and_own_complete_touched_by
     // Materialization places an active union member after its inactive
     // sibling. Reversing that precedence must reverse the winning write,
     // even though the product's declaration order stays the same.
-    configuration.parameters.reverse();
+    configuration.encoded_mut().parameters.reverse();
     let mut image = SparseDeviceImage::new();
     apply_property_parameters(&profile, &product, &configuration, &mut image, ImageDemand::Complete)
         .expect("property overlays");
@@ -540,10 +530,11 @@ fn property_parameter_buffers_represent_gaps_without_owning_them() {
             })
             .collect(),
     );
-    configuration.parameters = vec![ParameterValue { id: "delay".to_owned(), value: vec![5] }, ParameterValue {
-        id: "threshold".to_owned(),
-        value: vec![9],
-    }];
+    configuration.encoded_mut().parameters =
+        vec![EncodedParameter { id: "delay".to_owned(), value: vec![5] }, EncodedParameter {
+            id: "threshold".to_owned(),
+            value: vec![9],
+        }];
     let mut image = SparseDeviceImage::new();
     apply_property_parameters(&profile, &product, &configuration, &mut image, ImageDemand::Complete)
         .expect("property parameters");
@@ -576,7 +567,7 @@ fn bit_parameter_patch_claims_only_its_bits() {
         seeds_default: true,
         byte_ordered: true,
     };
-    let value = ParameterValue { id: "P-1".to_owned(), value: vec![0b0000_0010] };
+    let value = EncodedParameter { id: "P-1".to_owned(), value: vec![0b0000_0010] };
 
     let (data, mask) =
         encode_parameter(&value, location.size_bits, location.bit_offset, true, &ParameterByteOrder::BigEndian)
@@ -600,7 +591,7 @@ fn parameter_values_do_not_change_application_program_ownership() {
         byte_ordered: true,
     };
     let compile = |raw| {
-        let value = ParameterValue { id: "P-1".to_owned(), value: vec![raw] };
+        let value = EncodedParameter { id: "P-1".to_owned(), value: vec![raw] };
         let (data, mask) =
             encode_parameter(&value, location.size_bits, location.bit_offset, true, &ParameterByteOrder::BigEndian)
                 .expect("parameter encodes");
@@ -634,7 +625,7 @@ fn parameter_values_do_not_change_application_program_ownership() {
 fn expert_image_input_rejects_oversized_packed_parameter_with_short_value() {
     let (catalog, profile, product, mut configuration) = plain_fixture();
     let parameter_id = "P-oversized-packed-field";
-    configuration.parameters = vec![ParameterValue { id: parameter_id.to_owned(), value: vec![1] }];
+    configuration.encoded_mut().parameters = vec![EncodedParameter { id: parameter_id.to_owned(), value: vec![1] }];
 
     // Expert inputs can bypass product-value lowering. Validate the field
     // declaration as well as the supplied bytes before the bit encoder
@@ -717,11 +708,11 @@ fn little_endian_products_reorder_only_numeric_parameters() {
     // A little-endian product reverses numbers, restrictions, floats and
     // times. Text, IP addresses, colours and raw data keep their byte
     // sequence: "ABC" stays "ABC" and 192.168.1.1 stays C0 A8 01 01.
-    let text = ParameterValue { id: "P-1".to_owned(), value: b"ABC".to_vec() };
-    let address = ParameterValue { id: "P-2".to_owned(), value: vec![0xc0, 0xa8, 0x01, 0x01] };
-    let number = ParameterValue { id: "P-3".to_owned(), value: vec![0x01, 0x02] };
+    let text = EncodedParameter { id: "P-1".to_owned(), value: b"ABC".to_vec() };
+    let address = EncodedParameter { id: "P-2".to_owned(), value: vec![0xc0, 0xa8, 0x01, 0x01] };
+    let number = EncodedParameter { id: "P-3".to_owned(), value: vec![0x01, 0x02] };
 
-    let encoded = |value: &ParameterValue, ordered| {
+    let encoded = |value: &EncodedParameter, ordered| {
         encode_parameter(value, value.value.len() as u16 * 8, 0, ordered, &ParameterByteOrder::LittleEndian)
             .expect("parameter encodes")
             .0

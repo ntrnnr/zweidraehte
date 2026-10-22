@@ -11,7 +11,7 @@ use zweidraehte_client::commissioning::{DesiredDataSecurity, ManagementCredentia
 use zweidraehte_client::commissioning::{ObservedTarget, ProgrammingFacts};
 use zweidraehte_client::commissioning::{ProfileSelection, ResourceManagementStyle};
 use zweidraehte_client::configuration::ResolvedKeyMaterial;
-use zweidraehte_client::configuration::{LoweredDeviceConfiguration, MaterializedDevice};
+use zweidraehte_client::configuration::{EncodedConfiguration, InstallationConfiguration, MaterializedDevice};
 use zweidraehte_ets_files::MasterData;
 use zweidraehte_ets_files::product::ProductData;
 
@@ -55,6 +55,14 @@ fn resolve(input: &ProgrammingInput, selection: &ProfileSelection) -> ResolvedPr
     input.device().resolve_profile(selection).expect("fixture profile resolves")
 }
 
+/// Assemble the fixture device at 1.1.23 through the public expert path.
+fn device(product: ProductData, encoded: EncodedConfiguration) -> MaterializedDevice {
+    let installation = InstallationConfiguration { max_apdu: Some(15), ..InstallationConfiguration::new(ADDRESS) };
+    MaterializedDevice::from_parts(product, installation, encoded).into_keyed(ResolvedKeyMaterial::default())
+}
+
+const ADDRESS: IndividualAddress = IndividualAddress::new(1, 1, 23);
+
 fn fixture() -> (Arc<MasterData>, ProfileSelection, MaterializedDevice, CompileOptions) {
     fixture_catalog(MASTER_DATA)
 }
@@ -63,16 +71,12 @@ fn fixture_catalog(xml: &str) -> (Arc<MasterData>, ProfileSelection, Materialize
     let catalog = parse_master_data(xml).expect("synthetic catalog parses");
     let product = ProductData::from_mtxml_str(PRODUCT).expect("synthetic product parses");
     let selection = ProfileSelection::discovered(0x0012).with_management_style(ResourceManagementStyle::Simple);
-    let address = IndividualAddress::new(1, 1, 23);
-    let configuration = LoweredDeviceConfiguration::new(address, Some(15));
-    let device = MaterializedDevice::new(
+    let device = device(
         product.bind_master_data(Arc::clone(&catalog)).expect("fixture document binds"),
-        configuration,
-        Vec::new(),
-        ResolvedKeyMaterial::new(None),
+        EncodedConfiguration::default(),
     );
     let options = CompileOptions {
-        target: TargetSelection::ExistingAddress(address),
+        target: TargetSelection::ExistingAddress(ADDRESS),
         automatic_sections: None,
         progress_messages_by_reference: BTreeMap::new(),
         progress_messages_by_id: BTreeMap::new(),
@@ -84,11 +88,10 @@ fn fixture_catalog(xml: &str) -> (Arc<MasterData>, ProfileSelection, Materialize
 fn management_credentials_do_not_change_authored_control_guards() {
     for credential in [ManagementCredential::Plaintext, ManagementCredential::ToolKey] {
         let (_catalog, selection, device, options) = fixture();
-        let facts = ProgrammingFacts::new(ObservedTarget {
-            credential,
-            ..plain_facts().target.expect("fixture has target evidence")
-        })
-        .with_data_security(ObservedDataSecurity::Disabled);
+        let facts = ProgrammingFacts {
+            target: Some(ObservedTarget { credential, ..plain_facts().target.expect("fixture has target evidence") }),
+            data_security: ObservedDataSecurity::Disabled,
+        };
         let input = ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options)
             .data_security(DesiredDataSecurity::Disabled)
             .facts(facts);
@@ -168,17 +171,12 @@ fn selected_candidate_resolves_choices_merges_and_scope_before_image() {
             })],
         }]);
     let selection = ProfileSelection::discovered(0x0012).with_management_style(ResourceManagementStyle::Simple);
-    let mut configuration = device.configuration().clone();
-    configuration.procedure_parameters.insert("DownloadPath".to_owned(), ProcedureParameter {
+    let mut encoded = device.encoded().clone();
+    encoded.procedure_parameters.insert("DownloadPath".to_owned(), ProcedureParameter {
         active: true,
         value: ProcedureParameterValue::Unsigned(9),
     });
-    let device = MaterializedDevice::new(
-        product.bind_master_data(Arc::clone(&catalog)).expect("fixture document binds"),
-        configuration,
-        Vec::new(),
-        ResolvedKeyMaterial::new(None),
-    );
+    let device = self::device(product.bind_master_data(Arc::clone(&catalog)).expect("fixture document binds"), encoded);
     let input =
         ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options).facts(plain_facts());
 
@@ -205,17 +203,12 @@ fn unload_probe_uses_selected_branch_and_declared_placement() {
     let catalog = parse_master_data(&source).expect("unload catalog parses");
     let product = ProductData::from_mtxml_str(PRODUCT).expect("fixture product");
     let selection = ProfileSelection::discovered(0x0012).with_management_style(ResourceManagementStyle::Simple);
-    let mut configuration = device.configuration().clone();
-    configuration.procedure_parameters.insert("DownloadPath".to_owned(), ProcedureParameter {
+    let mut encoded = device.encoded().clone();
+    encoded.procedure_parameters.insert("DownloadPath".to_owned(), ProcedureParameter {
         active: true,
         value: ProcedureParameterValue::Unsigned(9),
     });
-    let device = MaterializedDevice::new(
-        product.bind_master_data(Arc::clone(&catalog)).expect("fixture document binds"),
-        configuration,
-        Vec::new(),
-        ResolvedKeyMaterial::new(None),
-    );
+    let device = self::device(product.bind_master_data(Arc::clone(&catalog)).expect("fixture document binds"), encoded);
     let input = ProgrammingInput::new(device, CommissioningIntent::Unload(UnloadMode::Application), options)
         .facts(plain_facts());
 
@@ -282,11 +275,9 @@ fn disabled_security_requires_observation_only_when_group_scope_is_selected() {
 
     let (catalog, selection, device, options) = automatic_fixture();
     let product = device.product().clone().with_fixture_data_secure(true);
-    let device = MaterializedDevice::new(
+    let device = self::device(
         product.bind_master_data(Arc::clone(&catalog)).expect("fixture document binds"),
-        device.configuration().clone(),
-        Vec::new(),
-        ResolvedKeyMaterial::new(None),
+        device.encoded().clone(),
     );
 
     for mode in [ObservedDataSecurity::Unknown, ObservedDataSecurity::Enabled, ObservedDataSecurity::Disabled] {
@@ -295,7 +286,7 @@ fn disabled_security_requires_observation_only_when_group_scope_is_selected() {
             options.automatic_sections = Some(sections);
             let input =
                 ProgrammingInput::new(device.clone(), CommissioningIntent::Download(DownloadMode::Automatic), options)
-                    .facts(plain_facts().with_data_security(mode));
+                    .facts(ProgrammingFacts { data_security: mode, ..plain_facts() });
 
             input.preview(&resolve(&input, &selection)).expect("disabled desired security has no image writes");
 
@@ -368,8 +359,7 @@ fn one_compiler_uses_each_products_exact_document_even_with_the_same_schema() {
 fn loose_input_requires_an_associated_document_before_resolution() {
     let (_, selection, device, options) = fixture();
     let product = ProductData::from_mtxml_str(PRODUCT).expect("loose product parses");
-    let device =
-        MaterializedDevice::new(product, device.configuration().clone(), Vec::new(), ResolvedKeyMaterial::new(None));
+    let device = self::device(product, device.encoded().clone());
     let input = ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options);
 
     let error = input.device().resolve_profile(&selection).expect_err("resolution cannot choose another source");

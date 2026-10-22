@@ -36,12 +36,12 @@ struct ProfilePlanGolden {
 fn offline_application_profile_selection_survives_compiler_resolution() {
     use crate::commissioning::test_support::architecture::programming_input;
     use crate::commissioning::{CommissioningIntent, CompileOptions, TargetSelection};
-    use crate::configuration::LoweredDeviceConfiguration;
+    use crate::configuration::MaterializedDevice;
 
     let catalog = catalog(23);
     let application = product("MV-0300", "DefaultProcedure", false, false);
     let address = IndividualAddress::new(1, 1, 10);
-    let configuration = LoweredDeviceConfiguration::new(address, Some(15));
+    let configuration = MaterializedDevice::fixture(address, Some(15));
     let input = programming_input(
         &catalog,
         &application,

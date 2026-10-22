@@ -7,7 +7,7 @@ use crate::commissioning::catalog::profile::{ResolvedProfile, ResourceFlavour};
 use crate::commissioning::catalog::rules;
 use crate::commissioning::error::{CompileError, OverflowedTable};
 use crate::commissioning::image::{ImageLocation, ImageSegment, ImageSpace, NativeImageRegion, SparseDeviceImage};
-use crate::configuration::LoweredDeviceConfiguration;
+use crate::configuration::MaterializedDevice;
 use std::collections::BTreeMap;
 use zweidraehte_ets_files::product::ProductData;
 use zweidraehte_project::ProgrammingSection;
@@ -58,24 +58,24 @@ impl<'a> CommunicationTables<'a> {
     pub fn prepare(
         profile: &'a ResolvedProfile,
         product: &'a ProductData,
-        configuration: &'a LoweredDeviceConfiguration,
+        device: &'a MaterializedDevice,
         buffers: &'a BTreeMap<String, NativeImageRegion>,
         image: &mut SparseDeviceImage,
         demand: ImageDemand<'a>,
     ) -> Result<Self, CompileError> {
-        Self::prepare_for_program(profile, product, configuration, buffers, image, demand, None)
+        Self::prepare_for_program(profile, product, device, buffers, image, demand, None)
     }
 
     pub fn prepare_for_program(
         profile: &'a ResolvedProfile,
         product: &'a ProductData,
-        configuration: &'a LoweredDeviceConfiguration,
+        device: &'a MaterializedDevice,
         buffers: &'a BTreeMap<String, NativeImageRegion>,
         image: &mut SparseDeviceImage,
         demand: ImageDemand<'a>,
         program: Option<&crate::commissioning::procedure::NormalizedProcedure>,
     ) -> Result<Self, CompileError> {
-        let input = TableInput::new(product, configuration);
+        let input = TableInput::new(product, device);
         let placement = TablePlacement::prepare(profile, &input, buffers, image, demand, program)?;
         Ok(Self { profile, input, buffers, demand, placement })
     }
@@ -171,7 +171,7 @@ impl<'a> CommunicationTables<'a> {
                 && region.is_none()
                 && table.segment.is_none()
                 && self.input.product.com_object_numbers().is_empty()
-                && self.input.configuration.com_objects.is_empty()
+                && self.input.device.com_objects().is_empty()
                 && self.input.groups.is_empty()
                 && matches!(&location.space, ImageSpace::Pointer { .. })
                 && location.offset == 0
@@ -209,8 +209,8 @@ impl<'a> CommunicationTables<'a> {
                 if property_array && flavour == ResourceFlavour::GroupObjectTableSystem300 {
                     let length = self
                         .input
-                        .configuration
-                        .com_objects
+                        .device
+                        .com_objects()
                         .iter()
                         .map(|object| usize::from(object.number))
                         .max()

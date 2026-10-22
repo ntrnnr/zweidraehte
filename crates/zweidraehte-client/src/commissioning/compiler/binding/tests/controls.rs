@@ -261,12 +261,16 @@ fn system_b_load_preserves_authored_disconnect_without_duplicate_cleanup() {
 #[test]
 fn procedure_choices_use_only_explicit_post_evaluation_state() {
     let mut configuration = configuration();
-    configuration.parameters.push(crate::configuration::ParameterValue { id: "P-base".to_string(), value: vec![1] });
     configuration
+        .encoded_mut()
+        .parameters
+        .push(crate::configuration::EncodedParameter { id: "P-base".to_string(), value: vec![1] });
+    configuration
+        .encoded_mut()
         .procedure_parameters
         .insert("P-ref".to_string(), ProcedureParameter { active: true, value: ProcedureParameterValue::Signed(1) });
 
-    let values = configuration.procedure_parameters.clone();
+    let values = configuration.procedure_parameters().clone();
 
     assert_eq!(
         values.get("P-ref"),

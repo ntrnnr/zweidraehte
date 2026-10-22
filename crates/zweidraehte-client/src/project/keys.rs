@@ -11,8 +11,8 @@ use zweidraehte_project::IpServiceSecurity;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 
 use crate::configuration::{
-    DeviceConfiguration, DeviceIdentity, GroupObjectProtection, GroupObjectSecurity, NetSecurityPolicy,
-    ResolvedIpSecureConfiguration, ResolvedKeyMaterial, SecurityConfig,
+    GroupObjectProtection, GroupObjectSecurity, MaterializedDevice, NetSecurityPolicy, ResolvedIpSecureConfiguration,
+    ResolvedKeyMaterial, SecurityConfig, Unkeyed,
 };
 use crate::project::error::{Error, Result};
 
@@ -26,10 +26,10 @@ use zweidraehte_util::secret::SecretBytes;
 /// Application downloads require resolved security matching the project intent.
 /// Offline previews and management-only operations may omit application tables.
 pub(super) fn validate_application_security(
-    configuration: &DeviceConfiguration,
+    device: &MaterializedDevice<Unkeyed>,
     security: Option<&SecurityConfig>,
 ) -> Result<()> {
-    match (configuration.data_secure_enabled, security.is_some()) {
+    match (device.security_intent().data_secure_enabled, security.is_some()) {
         (true, false) => Err(Error::DeviceConfiguration(
             "Data Secure is enabled but no application-security configuration was supplied".to_string(),
         )),
@@ -44,7 +44,7 @@ pub(super) fn validate_application_security(
 /// net identifiers select group-key records; group addresses remain the
 /// protocol-facing keys in the compiled configuration.
 pub fn resolve_project_key_material(
-    configuration: &DeviceConfiguration,
+    device: &MaterializedDevice<Unkeyed>,
     device_id: &str,
     net_ids: &BTreeMap<GroupAddress, String>,
     project_siat: &[(IndividualAddress, u64)],
@@ -52,7 +52,9 @@ pub fn resolve_project_key_material(
     keyring: Option<&Keyring>,
     data_secure_enabled: bool,
 ) -> Result<ResolvedKeyMaterial> {
-    let (material, keyring_device) = resolve_management_keys(configuration.identity, device_id, source, keyring)?;
+    let intent = device.security_intent();
+    let (material, keyring_device) =
+        resolve_management_keys(intent.serial_number, device.individual_address(), device_id, source, keyring)?;
     if data_secure_enabled && material.serial_number().is_none() {
         return Err(ProjectSetupRequirement::DeviceSerial { device: ProjectDeviceId(device_id.into()) }.into());
     }
@@ -60,7 +62,7 @@ pub fn resolve_project_key_material(
 
     let mut resolved_groups = BTreeMap::new();
     let mut group_keys = Vec::new();
-    for (&address, &policy) in &configuration.net_security {
+    for (&address, &policy) in &intent.net_security {
         let net_id = net_ids.get(&address).ok_or_else(|| {
             Error::DeviceConfiguration(format!("group address {address} has no logical project net identifier"))
         })?;
@@ -106,7 +108,7 @@ pub fn resolve_project_key_material(
         resolved_groups.insert(address, protection);
     }
 
-    let group_objects = resolve_group_objects(configuration, &resolved_groups)?;
+    let group_objects = resolve_group_objects(device, &resolved_groups)?;
     if !data_secure_enabled && group_objects.iter().any(|entry| entry.protection != GroupObjectProtection::Plain) {
         let net_id = resolved_groups
             .iter()
@@ -117,33 +119,36 @@ pub fn resolve_project_key_material(
             "device `{device_id}` has Data Secure disabled but automatic policy secures net `{net_id}`"
         )));
     }
-    let siat = merge_project_siat(configuration, project_siat, keyring, keyring_device, &resolved_groups);
+    let siat = merge_project_siat(device, project_siat, keyring, keyring_device, &resolved_groups);
     let application_security = data_secure_enabled.then_some(SecurityConfig::new(group_keys, siat, group_objects));
     let ip_secure =
-        resolve_ip_secure_configuration(configuration, device_id, source, keyring, keyring_device, &mut provenance)?;
+        resolve_ip_secure_configuration(device, device_id, source, keyring, keyring_device, &mut provenance)?;
     let ip_secure_management =
-        configuration.topology.ip.as_ref().is_some_and(|configuration| configuration.security.is_some());
+        device.topology().ip.as_ref().is_some_and(|configuration| configuration.security.is_some());
     if (data_secure_enabled || ip_secure_management) && material.tool_key().is_none() && material.fdsk().is_none() {
         return Err(ProjectSetupRequirement::ManagementCredential { device: ProjectDeviceId(device_id.into()) }.into());
     }
 
-    let material = material
-        .with_application_security(application_security)
-        .with_ip_secure(ip_secure)
-        .with_secured_groups(resolved_groups)
-        .with_provenance(provenance);
+    let mut material = material.with_secured_groups(resolved_groups).with_provenance(provenance);
+    if let Some(security) = application_security {
+        material = material.with_application_security(security);
+    }
+    if let Some(security) = ip_secure {
+        material = material.with_ip_secure(security);
+    }
     Ok(material)
 }
 
 /// Resolve only management identity and credentials. Desired tables and IP
 /// security configuration cannot gate access needed to inspect or recover them.
 pub(super) fn resolve_management_keys<'a>(
-    identity: DeviceIdentity,
+    serial: Option<[u8; 6]>,
+    address: IndividualAddress,
     device_id: &str,
     source: &dyn KeyMaterialSource,
     keyring: Option<&'a Keyring>,
 ) -> Result<(ResolvedKeyMaterial, Option<&'a KeyringDevice>)> {
-    let mut serial = identity.serial_number;
+    let mut serial = serial;
     let project_device_scope = KeyScope::Device(device_id.to_string());
     let fdsk_id = KeyId { scope: project_device_scope.clone(), kind: KeyKind::Fdsk };
     let tool_id = KeyId { scope: project_device_scope, kind: KeyKind::ToolKey };
@@ -153,14 +158,14 @@ pub(super) fn resolve_management_keys<'a>(
     if let Some(record) = &fdsk_record {
         merge_serial(&mut serial, record.embedded_serial, "FDSK label")?;
     }
-    let keyring_device = select_keyring_device(keyring, serial, identity.desired_address, DeviceMatchPolicy::Resolve)?
-        .map(|(_, device)| device);
+    let keyring_device =
+        select_keyring_device(keyring, serial, address, DeviceMatchPolicy::Resolve)?.map(|(_, device)| device);
     if let Some(device) = keyring_device {
         merge_serial(&mut serial, device.serial, "ETS keyring")?;
     }
     let mut fdsk = take_project_secret(fdsk_record, &mut provenance)?;
     let mut tool_key = take_project_secret(tool_record, &mut provenance)?;
-    let imported_scope = imported_device_scope(serial, identity.desired_address);
+    let imported_scope = imported_device_scope(serial, address);
     merge_imported_secret(
         &mut fdsk,
         keyring_device.and_then(KeyringDevice::fdsk).map(|key| SecretBytes::new(key.as_slice())),
@@ -177,19 +182,23 @@ pub(super) fn resolve_management_keys<'a>(
     )?;
 
     let generate = tool_key.is_none() && fdsk.is_some();
-    let material = ResolvedKeyMaterial::new(serial).with_management_secrets(fdsk, tool_key).with_provenance(provenance);
+    let mut material =
+        ResolvedKeyMaterial::default().with_management_secrets(fdsk, tool_key).with_provenance(provenance);
+    if let Some(serial) = serial {
+        material = material.with_serial_number(serial);
+    }
     Ok((if generate { material.requiring_tool_key_generation() } else { material }, keyring_device))
 }
 
 fn resolve_ip_secure_configuration(
-    configuration: &DeviceConfiguration,
+    device: &MaterializedDevice<Unkeyed>,
     device_id: &str,
     source: &dyn KeyMaterialSource,
     keyring: Option<&Keyring>,
     keyring_device: Option<&KeyringDevice>,
     provenance: &mut Vec<KeyMetadata>,
 ) -> Result<Option<ResolvedIpSecureConfiguration>> {
-    let Some(ip) = configuration.topology.ip.as_ref() else { return Ok(None) };
+    let Some(ip) = device.topology().ip.as_ref() else { return Ok(None) };
     let Some(intent) = ip.security.as_ref() else { return Ok(None) };
 
     validate_imported_backbone(keyring, ip.routing_multicast_address, intent.multicast_latency_tolerance_ms)?;
@@ -218,7 +227,7 @@ fn resolve_ip_secure_configuration(
     let mut device_authentication_code =
         if user_security { take_project_secret(source.read(&dac_id, None)?, provenance)? } else { None };
     let imported_dac = if user_security {
-        imported_authentication_code(keyring, keyring_device, configuration.identity.desired_address)?
+        imported_authentication_code(keyring, keyring_device, device.individual_address())?
     } else {
         None
     };
@@ -244,8 +253,7 @@ fn resolve_ip_secure_configuration(
             };
             let mut value = take_project_secret(source.read(&id, None)?, provenance)?;
             let description = format!("IP Secure password hash for user {user_id}");
-            let imported =
-                imported_password_hash(keyring, keyring_device, configuration.identity.desired_address, user_id)?;
+            let imported = imported_password_hash(keyring, keyring_device, device.individual_address(), user_id)?;
             merge_imported_secret(&mut value, imported, id, provenance, &description)?;
             let value = value.ok_or_else(|| {
                 Error::from(ProjectSetupRequirement::IpPasswordHash {
@@ -283,7 +291,7 @@ fn merge_imported_secret(
 }
 
 fn merge_project_siat(
-    configuration: &DeviceConfiguration,
+    device: &MaterializedDevice<Unkeyed>,
     project_siat: &[(IndividualAddress, u64)],
     keyring: Option<&Keyring>,
     keyring_device: Option<&KeyringDevice>,
@@ -312,7 +320,7 @@ fn merge_project_siat(
             }
         }
     }
-    rows.remove(&configuration.identity.desired_address);
+    rows.remove(&device.individual_address());
     if let Some(device) = keyring_device {
         rows.remove(&device.individual_address);
     }
@@ -343,11 +351,11 @@ fn secret_metadata(id: KeyId, value: &SecretBytes, origin: KeyOrigin, encoding: 
 }
 
 fn resolve_group_objects(
-    configuration: &DeviceConfiguration,
+    device: &MaterializedDevice<Unkeyed>,
     groups: &BTreeMap<GroupAddress, GroupObjectProtection>,
 ) -> Result<Vec<GroupObjectSecurity>> {
     let mut objects = BTreeMap::new();
-    for membership in &configuration.object_memberships {
+    for membership in device.object_memberships() {
         let protection = *groups.get(&membership.group_address).unwrap_or(&GroupObjectProtection::Plain);
         match objects.insert(membership.com_object, protection) {
             Some(previous) if previous != protection => {
@@ -365,7 +373,9 @@ fn resolve_group_objects(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::configuration::{DeviceIdentity, ObjectMembership, ParameterValue, ToolManagedIpConfiguration};
+    use crate::configuration::{
+        InstallationConfiguration, ObjectMembership, SecurityIntent, ToolManagedIpConfiguration,
+    };
     use std::num::NonZeroU8;
     use zweidraehte_ets_files::keyring::{derive_ip_device_authentication_code, derive_ip_user_password_hash};
     use zweidraehte_project::{IpAssignment, IpSecurityIntent, IpTunnellingUserBinding, ProjectInstallationId};
@@ -379,12 +389,12 @@ mod tests {
     fn data_secure_enablement_and_tables_must_agree() {
         let mut configuration = configuration();
         let security = SecurityConfig::default();
-        assert!(validate_application_security(&configuration, None).is_err());
-        assert!(validate_application_security(&configuration, Some(&security)).is_ok());
+        assert!(validate_application_security(&device(&configuration), None).is_err());
+        assert!(validate_application_security(&device(&configuration), Some(&security)).is_ok());
 
-        configuration.data_secure_enabled = false;
-        assert!(validate_application_security(&configuration, Some(&security)).is_err());
-        assert!(validate_application_security(&configuration, None).is_ok());
+        configuration.security.data_secure_enabled = false;
+        assert!(validate_application_security(&device(&configuration), Some(&security)).is_err());
+        assert!(validate_application_security(&device(&configuration), None).is_ok());
     }
 
     #[derive(Default)]
@@ -418,25 +428,23 @@ mod tests {
         }
     }
 
-    fn configuration() -> DeviceConfiguration {
+    fn configuration() -> InstallationConfiguration {
         let ga = GroupAddress::from_three_level(1, 2, 3);
-        DeviceConfiguration {
-            identity: DeviceIdentity {
-                desired_address: IndividualAddress::new(1, 1, 42),
+        InstallationConfiguration {
+            object_memberships: vec![ObjectMembership::primary(ga, 0)],
+            security: SecurityIntent {
                 serial_number: Some([0, 0xFA, 0, 0, 0, 1]),
+                data_secure_enabled: true,
+                net_security: BTreeMap::from([(ga, NetSecurityPolicy::AuthenticationConfidentiality)]),
             },
-            data_secure_enabled: true,
-            parameters: Vec::<ParameterValue>::new(),
-            object_memberships: vec![ObjectMembership {
-                group_address: ga,
-                com_object: 0,
-                role: crate::configuration::MembershipRole::Primary,
-            }],
-            objects: Vec::new(),
-            net_security: BTreeMap::from([(ga, NetSecurityPolicy::AuthenticationConfidentiality)]),
-            topology: Default::default(),
-            max_apdu: None,
+            ..InstallationConfiguration::new(IndividualAddress::new(1, 1, 42))
         }
+    }
+
+    /// Key resolution reads an evaluated device; these tests vary only its
+    /// installation choices.
+    fn device(installation: &InstallationConfiguration) -> MaterializedDevice<Unkeyed> {
+        MaterializedDevice::from_parts(Default::default(), installation.clone(), Default::default())
     }
 
     fn project_source() -> TestSource {
@@ -453,7 +461,7 @@ mod tests {
     #[test]
     fn project_security_resolves_to_typed_tables() {
         let resolved = resolve_project_key_material(
-            &configuration(),
+            &device(&configuration()),
             "button",
             &net_ids(),
             &[(IndividualAddress::new(1, 1, 10), 44)],
@@ -473,11 +481,18 @@ mod tests {
     #[test]
     fn plain_policy_ignores_a_retained_group_key() {
         let mut configuration = configuration();
-        configuration.net_security.values_mut().for_each(|policy| *policy = NetSecurityPolicy::Plain);
+        configuration.security.net_security.values_mut().for_each(|policy| *policy = NetSecurityPolicy::Plain);
 
-        let resolved =
-            resolve_project_key_material(&configuration, "button", &net_ids(), &[], &project_source(), None, true)
-                .expect("plain policy resolves without using the group key");
+        let resolved = resolve_project_key_material(
+            &device(&configuration),
+            "button",
+            &net_ids(),
+            &[],
+            &project_source(),
+            None,
+            true,
+        )
+        .expect("plain policy resolves without using the group key");
 
         assert_eq!(resolved.secured_groups()[&GroupAddress::from_three_level(1, 2, 3)], GroupObjectProtection::Plain,);
         assert_eq!(resolved.application_security().expect("Data Secure remains enabled").group_keys().len(), 0);
@@ -520,8 +535,9 @@ mod tests {
             KeyOrigin::Manual,
         );
 
-        let resolved = resolve_project_key_material(&configuration, "button", &net_ids(), &[], &source, None, true)
-            .expect("IP Secure material resolves");
+        let resolved =
+            resolve_project_key_material(&device(&configuration), "button", &net_ids(), &[], &source, None, true)
+                .expect("IP Secure material resolves");
         let ip = resolved.ip_secure().expect("private IP Secure material exists");
 
         assert_eq!(ip.backbone_key.as_ref().expect("backbone key").key16().expect("key width"), [0x31; 16]);
@@ -552,7 +568,7 @@ mod tests {
             zweidraehte_ets_files::keyring::KeyringInterfaceType::Tunneling,
             IndividualAddress::new(1, 1, 43),
         )
-        .with_host(Some(configuration.identity.desired_address))
+        .with_host(Some(configuration.individual_address))
         .with_user_id(Some(1))
         .with_authentication(Some("router auth".into()))
         .with_password(Some("router password".into()));
@@ -580,8 +596,15 @@ mod tests {
                 zweidraehte_ets_files::keyring::KeyringBackbone::new(None, None).with_key(Some([0x31; 16])),
             ))
             .with_interfaces(vec![candidate, foreign]);
-            let merged =
-                resolve_project_key_material(&configuration, "button", &net_ids(), &[], &source, Some(&keys), true);
+            let merged = resolve_project_key_material(
+                &device(&configuration),
+                "button",
+                &net_ids(),
+                &[],
+                &source,
+                Some(&keys),
+                true,
+            );
             if conflict == 1 || conflict == 2 {
                 let error = merged.expect_err("selected imported credentials disagree").to_string();
                 assert!(error.contains("conflicting ETS keyring values"));
@@ -600,7 +623,7 @@ mod tests {
     #[test]
     fn ip_secure_service_changes_require_secure_management_credentials() {
         let mut configuration = configuration();
-        configuration.net_security.values_mut().for_each(|policy| *policy = NetSecurityPolicy::Plain);
+        configuration.security.net_security.values_mut().for_each(|policy| *policy = NetSecurityPolicy::Plain);
         configuration.topology.ip = Some(ToolManagedIpConfiguration {
             project_installation_id: ProjectInstallationId::new(42, 1).expect("valid project ID"),
             assignment: IpAssignment::AutomaticDhcp,
@@ -620,7 +643,7 @@ mod tests {
         });
 
         let error = resolve_project_key_material(
-            &configuration,
+            &device(&configuration),
             "router",
             &net_ids(),
             &[],
@@ -641,10 +664,10 @@ mod tests {
             com_object: 0,
             role: crate::configuration::MembershipRole::Additional,
         });
-        configuration.net_security.insert(second, NetSecurityPolicy::Plain);
+        configuration.security.net_security.insert(second, NetSecurityPolicy::Plain);
         assert!(
             resolve_project_key_material(
-                &configuration,
+                &device(&configuration),
                 "button",
                 &BTreeMap::from(
                     [(GroupAddress::from_three_level(1, 2, 3), "switch".into()), (second, "plain".into()),]
@@ -657,9 +680,12 @@ mod tests {
             .is_err()
         );
 
-        configuration.net_security.insert(GroupAddress::from_three_level(1, 2, 3), NetSecurityPolicy::Automatic);
+        configuration
+            .security
+            .net_security
+            .insert(GroupAddress::from_three_level(1, 2, 3), NetSecurityPolicy::Automatic);
         let error = resolve_project_key_material(
-            &configuration,
+            &device(&configuration),
             "button",
             &BTreeMap::from([(GroupAddress::from_three_level(1, 2, 3), "switch".into()), (second, "plain".into())]),
             &[],
@@ -701,11 +727,11 @@ mod tests {
         sender_device.serial = Some([0, 0xFA, 0, 0, 0, 2]);
         sender_device.sequence_number = 1234;
 
-        let mut keys = keyring(keyring_device(), GROUP_KEY, vec![sender, configuration().identity.desired_address]);
+        let mut keys = keyring(keyring_device(), GROUP_KEY, vec![sender, configuration().individual_address]);
         keys.devices.push(sender_device);
 
         let resolved = resolve_project_key_material(
-            &configuration(),
+            &device(&configuration()),
             "button",
             &net_ids(),
             &[],
@@ -724,16 +750,22 @@ mod tests {
         let mut source = project_source();
         source.add(KeyScope::Device("button".into()), KeyKind::ToolKey, TOOL_KEY, KeyOrigin::Manual);
         let matching = keyring(keyring_device(), GROUP_KEY, Vec::new());
-        let resolved =
-            resolve_project_key_material(&configuration(), "button", &net_ids(), &[], &source, Some(&matching), true)
-                .expect("equal sources merge");
+        let resolved = resolve_project_key_material(
+            &device(&configuration()),
+            "button",
+            &net_ids(),
+            &[],
+            &source,
+            Some(&matching),
+            true,
+        )
+        .expect("equal sources merge");
         let origins: BTreeSet<_> = resolved.provenance().iter().map(|metadata| metadata.origin).collect();
         assert_eq!(origins, BTreeSet::from([KeyOrigin::Manual, KeyOrigin::Imported, KeyOrigin::DeviceLabel]));
 
         let conflicting = keyring(keyring_device(), [0xCC; 16], Vec::new());
         assert!(matches!(
-            resolve_project_key_material(
-                &configuration(),
+            resolve_project_key_material(&device(&configuration()),
                 "button",
                 &net_ids(),
                 &[],
@@ -758,7 +790,7 @@ mod tests {
         let mut source = project_source();
         source.add(KeyScope::Device("button".into()), KeyKind::ToolKey, TOOL_KEY, KeyOrigin::Manual);
         let resolved = resolve_project_key_material(
-            &configuration(),
+            &device(&configuration()),
             "button",
             &net_ids(),
             &[(sender, 1234)],
@@ -776,8 +808,7 @@ mod tests {
         let mut source = TestSource::default();
         source.add(KeyScope::Device("button".into()), KeyKind::ToolKey, TOOL_KEY, KeyOrigin::Manual);
         assert!(matches!(
-            resolve_project_key_material(
-                &configuration(),
+            resolve_project_key_material(&device(&configuration()),
                 "button",
                 &net_ids(),
                 &[],
@@ -792,10 +823,17 @@ mod tests {
     #[test]
     fn disabled_device_rejects_an_explicit_secure_net() {
         let mut configuration = configuration();
-        configuration.data_secure_enabled = false;
-        let error =
-            resolve_project_key_material(&configuration, "button", &net_ids(), &[], &project_source(), None, false)
-                .expect_err("disabled application rejects secure membership");
+        configuration.security.data_secure_enabled = false;
+        let error = resolve_project_key_material(
+            &device(&configuration),
+            "button",
+            &net_ids(),
+            &[],
+            &project_source(),
+            None,
+            false,
+        )
+        .expect_err("disabled application rejects secure membership");
         assert!(error.to_string().contains("Data Secure disabled"));
         assert!(error.to_string().contains("net `switch`"));
     }
@@ -803,21 +841,34 @@ mod tests {
     #[test]
     fn disabled_device_rejects_automatic_net_when_a_key_makes_it_secure() {
         let mut configuration = configuration();
-        configuration.data_secure_enabled = false;
-        configuration.net_security.insert(GroupAddress::from_three_level(1, 2, 3), NetSecurityPolicy::Automatic);
-        let error =
-            resolve_project_key_material(&configuration, "button", &net_ids(), &[], &project_source(), None, false)
-                .expect_err("automatic key protection rejects disabled application");
+        configuration.security.data_secure_enabled = false;
+        configuration
+            .security
+            .net_security
+            .insert(GroupAddress::from_three_level(1, 2, 3), NetSecurityPolicy::Automatic);
+        let error = resolve_project_key_material(
+            &device(&configuration),
+            "button",
+            &net_ids(),
+            &[],
+            &project_source(),
+            None,
+            false,
+        )
+        .expect_err("automatic key protection rejects disabled application");
         assert!(error.to_string().contains("automatic policy secures net `switch`"));
     }
 
     #[test]
     fn disabled_device_accepts_automatic_net_without_a_key() {
         let mut configuration = configuration();
-        configuration.data_secure_enabled = false;
-        configuration.net_security.insert(GroupAddress::from_three_level(1, 2, 3), NetSecurityPolicy::Automatic);
+        configuration.security.data_secure_enabled = false;
+        configuration
+            .security
+            .net_security
+            .insert(GroupAddress::from_three_level(1, 2, 3), NetSecurityPolicy::Automatic);
         let resolved = resolve_project_key_material(
-            &configuration,
+            &device(&configuration),
             "button",
             &net_ids(),
             &[],

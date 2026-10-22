@@ -472,7 +472,10 @@ fn partial_compilation_keeps_parameter_bytes_and_allocation_without_owning_appli
     // The segment covers both identity resources, so a full image owns them.
     let (catalog, product) = memory_identity_fixture(10, None);
     let mut configuration = configuration();
-    configuration.parameters.push(crate::configuration::ParameterValue { id: "p".to_owned(), value: vec![5] });
+    configuration
+        .encoded_mut()
+        .parameters
+        .push(crate::configuration::EncodedParameter { id: "p".to_owned(), value: vec![5] });
     let parameters = ProgramSections::PARAMETERS;
     let groups = ProgramSections::GROUP_COMMUNICATION;
     let configuration_section = ProgramSections::CONFIGURATION;

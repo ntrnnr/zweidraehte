@@ -14,7 +14,7 @@ use crate::commissioning::procedure::{
     ErrorAction, ErrorHandler, LoadControlCause, OperationData, OperationExtent, OperationTarget, ProcedureOperation,
     WriteIntent,
 };
-use crate::configuration::{GroupObjectProtection, GroupObjectSecurity, LoweredDeviceConfiguration};
+use crate::configuration::{GroupObjectProtection, GroupObjectSecurity, MaterializedDevice};
 use std::collections::BTreeSet;
 use zweidraehte_ets_files::product::{ComObjectDef, ProductData};
 use zweidraehte_project::ProgrammingSection;
@@ -39,7 +39,7 @@ impl ProgramCompiler<'_> {
 
         let profile = &self.profile;
         let product = input.device.product();
-        let configuration = input.device.configuration();
+        let device = &input.device;
         let enabled = input.desired_data_security == DesiredDataSecurity::Enabled;
         if !enabled && input.device.key_material().application_security().is_some() {
             return Err(CompileError::invalid("Data Secure intent contradicts the supplied security configuration"));
@@ -64,9 +64,9 @@ impl ProgramCompiler<'_> {
             validate_product_capabilities(product, security.group_keys().len(), security.siat().len())?;
             let first_group_object = first_group_object_number(profile)?;
             let go_flags =
-                encode_group_object_security(security.group_objects(), &configuration.com_objects, first_group_object)?;
+                encode_group_object_security(security.group_objects(), device.com_objects(), first_group_object)?;
             let siat = encode_siat(security.siat())?;
-            let group_keys = encode_group_keys(configuration, security.group_keys())?;
+            let group_keys = encode_group_keys(device, security.group_keys())?;
             // Encoding orders rows by address-table position. Name the same
             // identities now so split writes never infer keys from bytes.
             let mut addresses: Vec<_> = security.group_keys().map(|(address, _)| address).collect();
@@ -78,10 +78,10 @@ impl ProgramCompiler<'_> {
         } else {
             // Products without group objects have no flags range and need
             // no Group Object Table realization merely to disable security.
-            let go_flags = if configuration.com_objects.is_empty() {
+            let go_flags = if device.com_objects().is_empty() {
                 Vec::new()
             } else {
-                encode_group_object_security(&[], &configuration.com_objects, first_group_object_number(profile)?)?
+                encode_group_object_security(&[], device.com_objects(), first_group_object_number(profile)?)?
             };
             (Vec::new(), SecretBytes::from(Vec::new()), Vec::new(), go_flags)
         };
@@ -186,10 +186,10 @@ pub(super) fn validate_product_capabilities(
 }
 
 pub(super) fn encode_group_keys<'a>(
-    configuration: &LoweredDeviceConfiguration,
+    device: &MaterializedDevice,
     keys: impl ExactSizeIterator<Item = (GroupAddress, &'a [u8; 16])>,
 ) -> Result<SecretBytes, CompileError> {
-    let mut group_addresses: Vec<_> = configuration.links.iter().map(|link| link.group_address).collect();
+    let mut group_addresses: Vec<_> = device.object_memberships().iter().map(|link| link.group_address).collect();
     group_addresses.sort_unstable();
     group_addresses.dedup();
 

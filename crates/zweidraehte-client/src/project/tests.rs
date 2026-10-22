@@ -36,7 +36,7 @@ fn corroborating_key_sources_produce_one_proof_but_conflicting_versions_fail() {
         state: KeyState::Active,
         fingerprint: [9; 32],
     };
-    let material = |values| ResolvedKeyMaterial::new(None).with_provenance(values);
+    let material = |values| ResolvedKeyMaterial::default().with_provenance(values);
     let mut one = ProgrammingManifest::default();
     add_credential_commitments(&mut one, &material(vec![metadata.clone()])).expect("one credential");
     let mut imported = metadata.clone();
@@ -73,7 +73,7 @@ fn migrated_unknown_image_still_blocks_deployed_group_key_changes() {
     assert!(migrated.manifest.sections.is_empty());
     let mut state = MutableProjectState::new("state".into());
     state.deployments.insert("receiver".into(), migrated);
-    let material = |metadata| ResolvedKeyMaterial::new(None).with_provenance(vec![metadata]);
+    let material = |metadata| ResolvedKeyMaterial::default().with_provenance(vec![metadata]);
     let nets = BTreeMap::from([(GroupAddress::from_three_level(1, 0, 1), "floor:room".into())]);
     assert!(reject_deployed_group_key_change(Some(&state), &material(metadata.clone()), &nets).is_ok());
     metadata.fingerprint = [10; 32];
@@ -308,13 +308,13 @@ fn status_preview_and_batch_share_evaluation_and_secure_peer_scope() {
     assert_eq!(view.manifests[&id], planned.desired_manifest);
     assert_eq!(view.statuses[&id], planned.status);
     assert_eq!(view.requirements.get(&id).cloned().unwrap_or_default(), planned.image_requirements);
-    let configuration = planned.device.configuration();
-    assert_eq!(configuration.parameters[0].value, [7]);
-    assert_eq!(configuration.procedure_parameters["mode-choice"], ProcedureParameter {
+    let device = &planned.device;
+    assert_eq!(device.parameters()[0].value, [7]);
+    assert_eq!(device.procedure_parameters()["mode-choice"], ProcedureParameter {
         active: true,
         value: ProcedureParameterValue::Signed(3)
     });
-    assert_eq!(configuration.configured_max_apdu, None);
+    assert_eq!(device.max_apdu(), None);
     let keys = planned.device.key_material();
     assert_eq!(keys.tool_key(), Some(&[0x22; 16]));
     assert_eq!(keys.fdsk(), Some(&[0x11; 16]));

@@ -10,9 +10,7 @@ use crate::commissioning::input::facts::{ObservedTarget, ProgrammingFacts};
 use crate::commissioning::input::security::ObservedDataSecurity;
 use crate::commissioning::input::{CommissioningIntent, DownloadMode, ProgrammingInput, TargetSelection};
 use crate::configuration::ResolvedKeyMaterial;
-use crate::configuration::{
-    LoweredDeviceConfiguration, MaterializedDevice, ToolManagedIpConfiguration, TopologyConfiguration,
-};
+use crate::configuration::{MaterializedDevice, ToolManagedIpConfiguration, TopologyConfiguration};
 use master_data::architecture_master_data;
 use std::collections::BTreeMap;
 use zweidraehte_ets_files::product::ProductData;
@@ -52,9 +50,9 @@ pub(in crate::commissioning) fn compile_at(
     mode: DownloadMode,
     address: IndividualAddress,
 ) -> Result<CompiledProgram, CompileError> {
-    let configuration = LoweredDeviceConfiguration::new(address, Some(15)).with_topology(topology);
+    let configuration = MaterializedDevice::fixture(address, Some(15)).with_topology(topology);
     let options = CompileOptions {
-        target: if matches!(configuration.topology.domain_address, Some(DomainAddress::Rf(_))) {
+        target: if matches!(configuration.topology().domain_address, Some(DomainAddress::Rf(_))) {
             TargetSelection::SerialNumber([0, 0xfa, 0, 0, 0, 10])
         } else {
             TargetSelection::ExistingAddress(address)
@@ -83,29 +81,29 @@ pub(in crate::commissioning) fn resolve_profile(
 pub(in crate::commissioning) fn programming_input(
     catalog: &std::sync::Arc<MasterData>,
     product: &ProductData,
-    configuration: &LoweredDeviceConfiguration,
+    configuration: &MaterializedDevice,
     intent: CommissioningIntent,
     options: CompileOptions,
 ) -> ProgrammingInput {
-    let keys = ResolvedKeyMaterial::new(None);
+    let keys = ResolvedKeyMaterial::default();
     let network_observations = ObservedTarget {
-        previous_address: configuration.individual_address,
+        previous_address: configuration.individual_address(),
         // This synthetic device has a known serial number. RF domain writes
         // use it explicitly instead of manufacturing identity during lowering.
         serial_number: Some([0, 0xfa, 0, 0, 0, 10]),
         credential: ManagementCredential::Plaintext,
     };
     ProgrammingInput::new(
-        MaterializedDevice::new(
-            product.clone().bind_master_data(std::sync::Arc::clone(catalog)).expect("fixture document binds"),
-            configuration.clone(),
-            Vec::new(),
-            keys,
-        ),
+        configuration
+            .clone()
+            .with_product(
+                product.clone().bind_master_data(std::sync::Arc::clone(catalog)).expect("fixture document binds"),
+            )
+            .with_key_material(keys),
         intent,
         options,
     )
-    .facts(ProgrammingFacts::new(network_observations).with_data_security(ObservedDataSecurity::Disabled))
+    .facts(ProgrammingFacts { target: Some(network_observations), data_security: ObservedDataSecurity::Disabled })
 }
 
 pub(in crate::commissioning) fn rf_topology() -> TopologyConfiguration {

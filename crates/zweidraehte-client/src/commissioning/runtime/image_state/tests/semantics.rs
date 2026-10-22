@@ -744,8 +744,8 @@ async fn discovery_reads_identity_before_authorization_and_failed_serial_reads_d
     use crate::commissioning::runtime::commissioner::Commissioner;
     use crate::commissioning::runtime::credentials::ManagementAccessOptions;
     use crate::commissioning::runtime::prepare::profile::AcquiredTarget;
+    use crate::configuration::MaterializedDevice;
     use crate::configuration::ResolvedKeyMaterial;
-    use crate::configuration::{LoweredDeviceConfiguration, MaterializedDevice};
     use zweidraehte_ets_files::product::ProductData;
 
     for succeeds in [false, true] {
@@ -757,12 +757,9 @@ async fn discovery_reads_identity_before_authorization_and_failed_serial_reads_d
           <ResourceType Length="6"/></Resource>"#,
         );
         let input = ProgrammingInput::new(
-            MaterializedDevice::new(
-                ProductData::default().with_fixture_mask_version_id("MV-0012"),
-                LoweredDeviceConfiguration::new(address(), Some(15)),
-                Vec::new(),
-                ResolvedKeyMaterial::new(None),
-            ),
+            MaterializedDevice::fixture(address(), Some(15))
+                .with_product(ProductData::default().with_fixture_mask_version_id("MV-0012"))
+                .with_key_material(ResolvedKeyMaterial::default()),
             CommissioningIntent::AssignAddress,
             CompileOptions {
                 target: TargetSelection::ExistingAddress(address()),
@@ -3035,8 +3032,8 @@ async fn address_write_status_survives_failed_verification_and_cleanup_tries_bot
     use crate::commissioning::input::CompileOptions;
     use crate::commissioning::input::facts::{ObservedTarget, ProgrammingFacts};
     use crate::commissioning::input::{CommissioningIntent, ProgrammingInput, TargetSelection};
+    use crate::configuration::MaterializedDevice;
     use crate::configuration::ResolvedKeyMaterial;
-    use crate::configuration::{LoweredDeviceConfiguration, MaterializedDevice};
     use zweidraehte_ets_files::product::ProductData;
 
     let desired = IndividualAddress::new(1, 1, 11);
@@ -3051,12 +3048,9 @@ async fn address_write_status_survives_failed_verification_and_cleanup_tries_bot
     })
     .expect("addressing profile");
     let mut input = ProgrammingInput::new(
-        MaterializedDevice::new(
-            ProductData::default().with_fixture_mask_version_id("MV-0012"),
-            LoweredDeviceConfiguration::new(desired, Some(15)),
-            Vec::new(),
-            ResolvedKeyMaterial::new(None),
-        ),
+        MaterializedDevice::fixture(desired, Some(15))
+            .with_product(ProductData::default().with_fixture_mask_version_id("MV-0012"))
+            .with_key_material(ResolvedKeyMaterial::default()),
         CommissioningIntent::AssignAddress,
         CompileOptions {
             target: TargetSelection::KnownPreviousAddress(address()),
@@ -3136,8 +3130,10 @@ async fn discovery_tries_tool_key_then_fdsk_then_permitted_plaintext() {
                 KnxBus::scripted(ConnectorInfo { assigned_address: IndividualAddress::new(1, 1, 1), max_apdu: 64 });
             let commissioner = Commissioner::new(&bus);
             let serial = [1, 2, 3, 4, 5, 6];
-            let material =
-                ResolvedKeyMaterial::new(Some(serial)).with_tool_key(Some([0xA7; 16])).with_fdsk(Some([0xF0; 16]));
+            let material = ResolvedKeyMaterial::default()
+                .with_serial_number(serial)
+                .with_tool_key([0xA7; 16])
+                .with_fdsk([0xF0; 16]);
             let policy = ManagementAccessOptions::new().allow_plaintext(allow_plaintext);
             let expected = accepted.filter(|index| *index < 2 || allow_plaintext);
             let client = async {

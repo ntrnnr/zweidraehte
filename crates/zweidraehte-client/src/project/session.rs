@@ -285,7 +285,7 @@ impl ProgrammingBatchPlan {
                 Some(key_material) => key_material.clone(),
                 None => planned_devices
                     .iter()
-                    .find(|device| device.device.configuration().individual_address == sender.address)
+                    .find(|device| device.device.individual_address() == sender.address)
                     .map(|device| device.device.key_material().clone())
                     .ok_or_else(|| {
                         Error::DeviceConfiguration(format!(

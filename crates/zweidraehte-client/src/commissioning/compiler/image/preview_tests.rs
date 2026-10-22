@@ -7,8 +7,8 @@ use crate::commissioning::image::{ImageLocation, ImageSegment, NativeImageRegion
 use crate::commissioning::input::{CommissioningIntent, ProgrammingInput, TargetSelection};
 use crate::commissioning::test_support::architecture::{catalog, product};
 use crate::commissioning::{CompileOptions, DownloadMode};
+use crate::configuration::MaterializedDevice;
 use crate::configuration::ResolvedKeyMaterial;
-use crate::configuration::{LoweredDeviceConfiguration, MaterializedDevice};
 use std::collections::BTreeMap;
 use zweidraehte_ets_files::product::ProductData;
 use zweidraehte_ets_files::product::Segment;
@@ -79,7 +79,7 @@ fn exact_frontend_previews_cover_classic_programming_families() {
 
     for (name, mask, load_style, relative) in cases {
         let product = product(mask, load_style, relative, false);
-        let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15))
+        let configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15))
             .with_com_objects(product.com_objects().to_vec());
         let preview = configuration_preview(&catalog, &product, &configuration)
             .unwrap_or_else(|error| panic!("{name} exact preview must compile: {error}"));
@@ -109,7 +109,7 @@ fn pending_full_preview_does_not_invent_table_width_or_block_address_only_previe
     );
     let catalog = parse_master_data(&xml).expect("pending capability fixture parses");
     let product = product("MV-07B0", "DefaultProcedure", true, false);
-    let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15))
+    let configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15))
         .with_com_objects(product.com_objects().to_vec());
     let pending = configuration_preview(&catalog, &product, &configuration).expect("unobserved width is pending");
     assert!(!pending.is_complete());
@@ -118,9 +118,9 @@ fn pending_full_preview_does_not_invent_table_width_or_block_address_only_previe
         crate::commissioning::ImageRequirement::AssociationTableEntrySize { .. }
     ]));
 
-    let device = MaterializedDevice::new(product, configuration, Vec::new(), ResolvedKeyMaterial::new(None))
-        .bind_master_data(std::sync::Arc::clone(&catalog))
-        .expect("fixture catalogue binds");
+    let device = configuration
+        .with_product(product.bind_master_data(std::sync::Arc::clone(&catalog)).expect("fixture catalogue binds"))
+        .with_key_material(ResolvedKeyMaterial::default());
     let input = ProgrammingInput::new(device, CommissioningIntent::AssignAddress, CompileOptions {
         target: TargetSelection::ExistingAddress(IndividualAddress::new(1, 1, 1)),
         automatic_sections: None,
@@ -161,7 +161,7 @@ fn frontend_preview_preserves_product_segment_boundaries_and_capacity() {
             mask: None,
         },
     ]);
-    let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15))
+    let configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15))
         .with_com_objects(product.com_objects().to_vec());
 
     let preview = configuration_preview(&catalog, &product, &configuration).expect("preview compiles");
@@ -180,12 +180,14 @@ fn frontend_preview_preserves_product_segment_boundaries_and_capacity() {
 fn configuration_preview(
     catalog: &std::sync::Arc<MasterData>,
     product: &ProductData,
-    configuration: &LoweredDeviceConfiguration,
+    configuration: &MaterializedDevice,
 ) -> Result<crate::commissioning::ProgramImage, CompileError> {
-    let device =
-        MaterializedDevice::new(product.clone(), configuration.clone(), Vec::new(), ResolvedKeyMaterial::new(None))
-            .bind_master_data(std::sync::Arc::clone(catalog))
-            .expect("exact fixture catalogue binds");
+    let device = configuration
+        .clone()
+        .with_product(
+            product.clone().bind_master_data(std::sync::Arc::clone(catalog)).expect("exact fixture catalogue binds"),
+        )
+        .with_key_material(ResolvedKeyMaterial::default());
     let selection = ProfileSelection {
         discovery: ProfileDiscovery {
             dd0: product.mask_version().expect("fixture mask").as_u16(),
@@ -195,7 +197,7 @@ fn configuration_preview(
         variant_hint: VariantHint::Automatic,
     };
     let input = ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Automatic), CompileOptions {
-        target: TargetSelection::ExistingAddress(configuration.individual_address),
+        target: TargetSelection::ExistingAddress(configuration.individual_address()),
         automatic_sections: None,
         progress_messages_by_reference: BTreeMap::new(),
         progress_messages_by_id: BTreeMap::new(),

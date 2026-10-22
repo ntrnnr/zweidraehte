@@ -14,50 +14,11 @@ use zweidraehte_ets_files::schema::{LoadControl, ParameterTypeDef};
 use zweidraehte_proto::com_object::{ComObjectFlagFields, ComObjectType};
 use zweidraehte_proto::dpt::KnxFloat16;
 
-use super::device::{DeviceConfiguration, MaterializedModule, ProcedureParameter, ProcedureParameterValue};
-use super::device::{InstallationConfiguration, ParameterValue};
-use super::materialized::MaterializedDevice;
+use super::device::{EncodedConfiguration, EncodedParameter, InstallationConfiguration};
+use super::device::{ProcedureParameter, ProcedureParameterValue};
+use super::materialized::{MaterializedDevice, Unkeyed};
 use super::{ConfigurationError as Error, ConfigurationResult as Result};
-use crate::configuration::ResolvedKeyMaterial;
-use zweidraehte_ets_files::product::{ComObjectDef, ProductData};
-
-/// The commissioning-ready rendering of one configured device.
-#[derive(Debug, Clone)]
-pub struct ResolvedDevice {
-    /// Product data with allocator-backed module locations resolved for this
-    /// concrete device configuration.
-    product: ProductData,
-    /// Target-independent desired state. New commissioning callers use
-    /// this field and resolve key material before lowering it.
-    configuration: DeviceConfiguration,
-    procedure_parameters: std::collections::BTreeMap<String, ProcedureParameter>,
-    /// Exact active module instances and resolved allocator arguments which
-    /// produced the derived locations in `product`.
-    modules: Vec<MaterializedModule>,
-}
-
-impl ResolvedDevice {
-    pub fn product(&self) -> &ProductData {
-        &self.product
-    }
-
-    pub fn configuration(&self) -> &DeviceConfiguration {
-        &self.configuration
-    }
-
-    pub fn modules(&self) -> &[MaterializedModule] {
-        &self.modules
-    }
-
-    /// Transfer the evaluated instance into the compiler without retaining a
-    /// second configuration. Preview callers may supply unresolved keys;
-    /// live preparation validates the requested security transition.
-    pub fn into_materialized(self, key_material: ResolvedKeyMaterial) -> Result<MaterializedDevice> {
-        let configuration =
-            self.configuration.into_product_structure()?.with_procedure_parameters(self.procedure_parameters);
-        Ok(MaterializedDevice::new(self.product, configuration, self.modules, key_material))
-    }
-}
+use zweidraehte_ets_files::product::ComObjectDef;
 
 /// Render a configured device into the commissioning compiler's inputs.
 ///
@@ -72,12 +33,9 @@ impl ResolvedDevice {
 /// unlike a seeded memory segment, its load-control data block has no other
 /// source. This mirrors ETS even when segment `Data` omits defaults or a
 /// `ParameterRef` value differs from the base parameter value.
-impl ResolvedDevice {
-    pub fn from_evaluated(
-        evaluated: EvaluatedProduct<'_>,
-        installation: InstallationConfiguration,
-    ) -> Result<ResolvedDevice> {
-        let mut configuration = DeviceConfiguration::from(installation);
+impl MaterializedDevice<Unkeyed> {
+    pub fn from_evaluated(evaluated: EvaluatedProduct<'_>, installation: InstallationConfiguration) -> Result<Self> {
+        let mut parameters: Vec<EncodedParameter> = Vec::new();
 
         // Product-owned and merged load procedures may branch on a ParameterRef
         // rather than on its base storage parameter. Retain those exact effective
@@ -117,15 +75,14 @@ impl ResolvedDevice {
                     continue;
                 }
                 let value = winners.get(&id).expect("every reference overlay has a winner").clone();
-                configuration.parameters.push(ParameterValue { id: id.into_owned(), value });
+                parameters.push(EncodedParameter { id: id.into_owned(), value });
                 continue;
             }
-            if derived && let Some(existing) = configuration.parameters.iter_mut().find(|parameter| parameter.id == id)
-            {
+            if derived && let Some(existing) = parameters.iter_mut().find(|parameter| parameter.id == id) {
                 existing.value = value;
                 continue;
             }
-            configuration.parameters.push(ParameterValue { id: id.into_owned(), value });
+            parameters.push(EncodedParameter { id: id.into_owned(), value });
         }
 
         let com_objects = evaluated
@@ -156,9 +113,8 @@ impl ResolvedDevice {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        configuration.objects = com_objects;
-        let (product, modules) = evaluated.into_parts();
-        Ok(ResolvedDevice { product, configuration, procedure_parameters, modules })
+        let encoded = EncodedConfiguration { parameters, com_objects, procedure_parameters };
+        Ok(Self::from_parts(evaluated.into_product(), installation, encoded))
     }
 }
 
@@ -383,7 +339,7 @@ fn encode_value(
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use zweidraehte_ets_files::product::{MaterializedModuleArgument, SelectedProduct};
+    use zweidraehte_ets_files::product::SelectedProduct;
     use zweidraehte_ets_files::runtime::Device;
     use zweidraehte_ets_files::runtime::configuration::ProductConfiguration;
 
@@ -417,33 +373,22 @@ mod tests {
         let settings = ProductConfiguration::default();
         zweidraehte_ets_files::runtime::configuration::apply_configuration(&mut device, &settings)
             .expect("default configuration applies");
-        let configuration = InstallationConfiguration {
-            identity: crate::configuration::DeviceIdentity {
-                desired_address: zweidraehte_proto::address::IndividualAddress::new(1, 1, 1),
-                serial_number: None,
-            },
-            data_secure_enabled: false,
-            object_memberships: Vec::new(),
-            net_security: std::collections::BTreeMap::new(),
-            topology: Default::default(),
-            max_apdu: None,
-        };
+        let configuration = InstallationConfiguration::new(zweidraehte_proto::address::IndividualAddress::new(1, 1, 1));
 
-        let resolved = ResolvedDevice::from_evaluated(
+        let resolved = MaterializedDevice::from_evaluated(
             device.evaluate(&settings.objects).expect("checked configuration"),
             configuration,
         )
         .expect("configuration resolves");
 
         assert_eq!(
-            resolved.procedure_parameters.get("M-00FA_A-0306-02-0000_P-1_R-1"),
+            resolved.procedure_parameters().get("M-00FA_A-0306-02-0000_P-1_R-1"),
             Some(&ProcedureParameter { active: true, value: ProcedureParameterValue::Signed(1) })
         );
-        let selectors = resolved.procedure_parameters.clone();
-        let materialized =
-            resolved.into_materialized(ResolvedKeyMaterial::new(None)).expect("evaluated device transfers");
-        assert_eq!(materialized.configuration().procedure_parameters, selectors);
-        assert_eq!(materialized.configuration().configured_max_apdu, None);
+        let selectors = resolved.procedure_parameters().clone();
+        let materialized = resolved.into_keyed(crate::configuration::ResolvedKeyMaterial::default());
+        assert_eq!(materialized.procedure_parameters(), &selectors);
+        assert_eq!(materialized.max_apdu(), None);
     }
 
     #[test]
@@ -463,27 +408,17 @@ mod tests {
         let settings = ProductConfiguration::default();
         zweidraehte_ets_files::runtime::configuration::apply_configuration(&mut device, &settings)
             .expect("default configuration applies");
-        let configuration = InstallationConfiguration {
-            identity: crate::configuration::DeviceIdentity {
-                desired_address: zweidraehte_proto::address::IndividualAddress::new(1, 1, 1),
-                serial_number: None,
-            },
-            data_secure_enabled: false,
-            object_memberships: Vec::new(),
-            net_security: std::collections::BTreeMap::new(),
-            topology: Default::default(),
-            max_apdu: None,
-        };
+        let configuration = InstallationConfiguration::new(zweidraehte_proto::address::IndividualAddress::new(1, 1, 1));
 
-        let resolved = ResolvedDevice::from_evaluated(
+        let resolved = MaterializedDevice::from_evaluated(
             device.evaluate(&settings.objects).expect("checked configuration"),
             configuration,
         )
         .expect("configuration resolves");
-        assert_eq!(resolved.configuration.parameters.len(), 1);
-        assert_eq!(resolved.configuration.parameters[0].value, [7]);
-        let materialized = resolved.into_materialized(ResolvedKeyMaterial::new(None)).expect("defaults transfer");
-        assert_eq!(materialized.configuration().parameters[0].value, [7]);
+        assert_eq!(resolved.parameters().len(), 1);
+        assert_eq!(resolved.parameters()[0].value, [7]);
+        let materialized = resolved.into_keyed(crate::configuration::ResolvedKeyMaterial::default());
+        assert_eq!(materialized.parameters()[0].value, [7]);
     }
 
     #[test]
@@ -503,24 +438,14 @@ mod tests {
         let settings = ProductConfiguration::default();
         zweidraehte_ets_files::runtime::configuration::apply_configuration(&mut device, &settings)
             .expect("default configuration applies");
-        let configuration = InstallationConfiguration {
-            identity: crate::configuration::DeviceIdentity {
-                desired_address: zweidraehte_proto::address::IndividualAddress::new(1, 1, 1),
-                serial_number: None,
-            },
-            data_secure_enabled: false,
-            object_memberships: Vec::new(),
-            net_security: std::collections::BTreeMap::new(),
-            topology: Default::default(),
-            max_apdu: None,
-        };
+        let configuration = InstallationConfiguration::new(zweidraehte_proto::address::IndividualAddress::new(1, 1, 1));
 
-        let resolved = ResolvedDevice::from_evaluated(
+        let resolved = MaterializedDevice::from_evaluated(
             device.evaluate(&settings.objects).expect("checked configuration"),
             configuration,
         )
         .expect("a picture needs no encoding");
-        assert!(resolved.configuration.parameters.is_empty());
+        assert!(resolved.parameters().is_empty());
     }
 
     #[test]
@@ -548,23 +473,15 @@ mod tests {
                 evaluated.procedure_selector("first").expect("first").value,
                 evaluated.procedure_selector("second").expect("second").value
             );
-            let installation = InstallationConfiguration {
-                identity: crate::configuration::DeviceIdentity {
-                    desired_address: zweidraehte_proto::address::IndividualAddress::new(1, 1, 1),
-                    serial_number: None,
-                },
-                data_secure_enabled: false,
-                object_memberships: Vec::new(),
-                net_security: Default::default(),
-                topology: Default::default(),
-                max_apdu: None,
-            };
+            let installation =
+                InstallationConfiguration::new(zweidraehte_proto::address::IndividualAddress::new(1, 1, 1));
 
-            let resolved = ResolvedDevice::from_evaluated(evaluated, installation);
+            let resolved = MaterializedDevice::from_evaluated(evaluated, installation);
             if conflicts {
                 assert!(resolved.expect_err("different bytes conflict").to_string().contains("conflicting values"));
             } else {
-                let parameters = resolved.expect("equal bytes agree").configuration.parameters;
+                let resolved = resolved.expect("equal bytes agree");
+                let parameters = resolved.parameters();
                 assert_eq!(parameters.len(), 2, "one seed and one deduplicated reference");
                 assert_eq!(parameters[1].value, 1.0_f32.to_be_bytes());
             }
@@ -573,7 +490,7 @@ mod tests {
 
     /// Resolve the stored byte of `P-1` for authored references and a dynamic
     /// tree in which a `P-2` selector (default 0) may reveal some of them.
-    fn stored_mode(references: &str, dynamic: &str) -> Result<Vec<ParameterValue>> {
+    fn stored_mode(references: &str, dynamic: &str) -> Result<Vec<EncodedParameter>> {
         const PREFIX: &str = "M-00FA_A-0306-02-0000";
         let xml = zweidraehte_ets_files::product::fixtures::SYSTEM7_MTXML
             .replace(
@@ -603,24 +520,10 @@ mod tests {
         let knx = zweidraehte_ets_files::runtime::parser::parse_application_program(&xml).expect("fixture parses");
         let selected = SelectedProduct::from_document(knx, None, None).expect("product selection");
         let device = Device::from_product(Arc::new(selected), None, None);
-        let installation = InstallationConfiguration {
-            identity: crate::configuration::DeviceIdentity {
-                desired_address: zweidraehte_proto::address::IndividualAddress::new(1, 1, 1),
-                serial_number: None,
-            },
-            data_secure_enabled: false,
-            object_memberships: Vec::new(),
-            net_security: Default::default(),
-            topology: Default::default(),
-            max_apdu: None,
-        };
-        let resolved = ResolvedDevice::from_evaluated(device.evaluate(&[]).expect("default evaluation"), installation)?;
-        Ok(resolved
-            .configuration
-            .parameters
-            .into_iter()
-            .filter(|parameter| parameter.id == format!("{PREFIX}_P-1"))
-            .collect())
+        let installation = InstallationConfiguration::new(zweidraehte_proto::address::IndividualAddress::new(1, 1, 1));
+        let resolved =
+            MaterializedDevice::from_evaluated(device.evaluate(&[]).expect("default evaluation"), installation)?;
+        Ok(resolved.parameters().iter().filter(|parameter| parameter.id == format!("{PREFIX}_P-1")).cloned().collect())
     }
 
     #[test]
@@ -689,59 +592,6 @@ mod tests {
     }
 
     #[test]
-    fn consuming_conversion_preserves_geometry_keys_order_and_apdu_ceiling() {
-        use crate::configuration::{DeviceIdentity, MembershipRole, ObjectMembership};
-        use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
-
-        let primary = GroupAddress::from_three_level(1, 0, 1);
-        let additional = GroupAddress::from_three_level(1, 0, 2);
-        let module = MaterializedModule {
-            instance_id: "channel-4".into(),
-            definition_id: "channel".into(),
-            arguments: std::collections::BTreeMap::from([(
-                "memory-base".into(),
-                MaterializedModuleArgument::Numeric(17216),
-            )]),
-        };
-        for max_apdu in [None, Some(15), Some(55)] {
-            let configuration = DeviceConfiguration {
-                identity: DeviceIdentity {
-                    desired_address: IndividualAddress::new(1, 1, 10),
-                    serial_number: Some([0, 0xFA, 0, 0, 0, 1]),
-                },
-                data_secure_enabled: false,
-                parameters: vec![ParameterValue { id: "channel-4::delay".into(), value: vec![7] }],
-                object_memberships: vec![
-                    ObjectMembership { group_address: additional, com_object: 4, role: MembershipRole::Additional },
-                    ObjectMembership { group_address: primary, com_object: 4, role: MembershipRole::Primary },
-                ],
-                objects: Vec::new(),
-                net_security: Default::default(),
-                topology: Default::default(),
-                max_apdu,
-            };
-            let resolved = ResolvedDevice {
-                product: ProductData::default(),
-                configuration,
-                modules: vec![module.clone()],
-                procedure_parameters: Default::default(),
-            };
-            let materialized = resolved
-                .into_materialized(
-                    ResolvedKeyMaterial::new(Some([0, 0xFA, 0, 0, 0, 1])).with_tool_key(Some([0x22; 16])),
-                )
-                .expect("evaluated device transfers");
-            assert_eq!(materialized.modules(), &[module.clone()]);
-            assert_eq!(materialized.configuration().parameters[0].value, [7]);
-            assert_eq!(materialized.configuration().configured_max_apdu, max_apdu);
-            assert_eq!(materialized.configuration().links.iter().map(|link| link.group_address).collect::<Vec<_>>(), [
-                primary, additional
-            ]);
-            assert_eq!(materialized.key_material().tool_key(), Some(&[0x22; 16]));
-        }
-    }
-
-    #[test]
     fn stored_calculation_results_reach_the_download_and_defaults_run_no_script() {
         let xml = zweidraehte_ets_files::product::fixtures::SYSTEM7_MTXML
             .replace(
@@ -796,27 +646,17 @@ mod tests {
                 };
                 zweidraehte_ets_files::runtime::configuration::apply_configuration(&mut device, &settings)
                     .expect("stored configuration applies");
-                let configuration = InstallationConfiguration {
-                    identity: crate::configuration::DeviceIdentity {
-                        desired_address: zweidraehte_proto::address::IndividualAddress::new(1, 1, 1),
-                        serial_number: None,
-                    },
-                    data_secure_enabled: false,
-                    object_memberships: Vec::new(),
-                    net_security: std::collections::BTreeMap::new(),
-                    topology: Default::default(),
-                    max_apdu: None,
-                };
+                let configuration =
+                    InstallationConfiguration::new(zweidraehte_proto::address::IndividualAddress::new(1, 1, 1));
 
-                let resolved = ResolvedDevice::from_evaluated(
+                let resolved = MaterializedDevice::from_evaluated(
                     device.evaluate(&settings.objects).expect("checked configuration"),
                     configuration,
                 )
                 .expect("configuration resolves");
                 assert_eq!(
                     resolved
-                        .configuration
-                        .parameters
+                        .parameters()
                         .iter()
                         .find(|parameter| parameter.id == "M-00FA_A-0306-02-0000_P-2")
                         .expect("the target's storage is present")
@@ -954,38 +794,21 @@ mod tests {
         let knx = zweidraehte_ets_files::runtime::parser::parse_application_program(&xml).expect("IP fixture parses");
         let selected = SelectedProduct::from_document(knx, None, None).expect("IP product selection");
         let device = Device::from_product(Arc::new(selected), None, None);
-        let resolved = ResolvedDevice::from_evaluated(
+        let resolved = MaterializedDevice::from_evaluated(
             device.evaluate(&[]).expect("checked IP values"),
-            InstallationConfiguration {
-                identity: crate::configuration::DeviceIdentity {
-                    desired_address: zweidraehte_proto::address::IndividualAddress::new(1, 1, 1),
-                    serial_number: None,
-                },
-                data_secure_enabled: false,
-                object_memberships: Vec::new(),
-                net_security: Default::default(),
-                topology: Default::default(),
-                max_apdu: None,
-            },
+            InstallationConfiguration::new(zweidraehte_proto::address::IndividualAddress::new(1, 1, 1)),
         )
         .expect("IP configuration resolves");
 
         let addresses: Vec<_> = resolved
-            .configuration
-            .parameters
+            .parameters()
             .iter()
             .filter(|parameter| parameter.id == "M-00FA_A-0306-02-0000_P-1")
             .map(|parameter| parameter.value.as_slice())
             .collect();
         assert_eq!(addresses, [vec![192, 168, 1, 135], vec![10, 20, 30, 40]]);
         assert_eq!(
-            resolved
-                .configuration
-                .parameters
-                .iter()
-                .find(|parameter| parameter.id == "adjacent")
-                .expect("adjacent default")
-                .value,
+            resolved.parameters().iter().find(|parameter| parameter.id == "adjacent").expect("adjacent default").value,
             [85]
         );
     }

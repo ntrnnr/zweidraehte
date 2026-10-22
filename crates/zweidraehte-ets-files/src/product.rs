@@ -1051,6 +1051,10 @@ pub struct ProductData {
     /// Binary restrictions distinguish native null from a zero-filled payload.
     binary_restriction_parameters: BTreeSet<String>,
     resolved_module_parameter_ids: BTreeSet<String>,
+    /// The active module roster [`Self::resolve_module_geometry`] resolved,
+    /// sorted by instance ID. Module load procedures instantiate from this
+    /// same list, so geometry and procedures cannot come from two rosters.
+    resolved_modules: Vec<MaterializedModule>,
     /// Parameters written through `LdCtrlWriteProp` rather than into a
     /// memory segment. Their values form a property-local data block.
     property_parameters: Vec<PropertyParameterLocation>,
@@ -1598,11 +1602,11 @@ impl ProductData {
         resolved.parameters.retain(|parameter| !self.resolved_module_parameter_ids.contains(&parameter.id));
         resolved.property_parameters.retain(|parameter| !self.resolved_module_parameter_ids.contains(&parameter.id));
         resolved.resolved_module_parameter_ids.clear();
-        let mut modules = modules.iter().collect::<Vec<_>>();
+        let mut modules = modules.to_vec();
         modules.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
         let mut instances = BTreeSet::new();
 
-        for module in modules {
+        for module in &modules {
             if !instances.insert(&module.instance_id) {
                 return Err(ProductError::DuplicateModuleInstance(module.instance_id.clone()));
             }
@@ -1634,7 +1638,15 @@ impl ProductData {
             resolved.property_parameters.extend(property_parameters);
         }
 
+        resolved.resolved_modules = modules;
         Ok(resolved)
+    }
+
+    /// Active module instances whose geometry [`Self::resolve_module_geometry`]
+    /// resolved, sorted by instance ID. Empty for a product without modules or
+    /// before geometry resolution.
+    pub fn modules(&self) -> &[MaterializedModule] {
+        &self.resolved_modules
     }
 
     fn from_program_with_provenance(
@@ -1743,6 +1755,7 @@ impl ProductData {
             raw_data_parameter_max_sizes: extract_raw_data_parameter_max_sizes(program),
             binary_restriction_parameters: extract_binary_restriction_parameters(program),
             resolved_module_parameter_ids: BTreeSet::new(),
+            resolved_modules: Vec::new(),
             address_table_segment,
             address_table_offset: program.static_section.address_table.as_ref().and_then(|t| t.offset).unwrap_or(0),
             address_table_max_entries: program.static_section.address_table.as_ref().map(|t| t.max_entries),

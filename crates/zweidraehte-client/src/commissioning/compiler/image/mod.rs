@@ -106,7 +106,6 @@ impl ProgramCompiler<'_> {
         let device = &input.device;
         let profile = &self.profile;
         let product = device.product();
-        let configuration = device.configuration();
         let sections = self.feature_sections;
         let unloading = matches!(input.intent, CommissioningIntent::Unload(_));
         let empty =
@@ -148,16 +147,8 @@ impl ProgramCompiler<'_> {
                 _ => None,
             };
             Some(
-                CommunicationTables::prepare_for_program(
-                    profile,
-                    product,
-                    configuration,
-                    &buffers,
-                    image,
-                    demand,
-                    program,
-                )?
-                .with_parameter_loading(producer_sections.contains(ProgramSections::PARAMETERS)),
+                CommunicationTables::prepare_for_program(profile, product, device, &buffers, image, demand, program)?
+                    .with_parameter_loading(producer_sections.contains(ProgramSections::PARAMETERS)),
             )
         } else {
             None
@@ -170,8 +161,8 @@ impl ProgramCompiler<'_> {
         // Unselected producers must not overwrite selected values or ownership,
         // even when two sections share the same product storage.
         if producer_sections.contains(ProgramSections::PARAMETERS) {
-            apply_parameters(product, configuration, &buffers, image, demand)?;
-            apply_property_parameters(profile, product, configuration, image, demand)?;
+            apply_parameters(product, device, &buffers, image, demand)?;
+            apply_property_parameters(profile, product, device, image, demand)?;
         }
         let (table_spans, relocations) = match tables {
             Some(tables) => (tables.write(image)?, tables.relocations()),

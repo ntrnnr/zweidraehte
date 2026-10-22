@@ -7,14 +7,12 @@ mod product;
 mod security;
 
 pub use device::{
-    DeviceConfiguration, DeviceIdentity, GroupFilterConfiguration, InstallationConfiguration,
-    LoweredDeviceConfiguration, MaterializedModule, MaterializedModuleArgument, MembershipRole, NetSecurityPolicy,
-    ObjectMembership, ProcedureParameter, ProcedureParameterValue, ToolManagedIpConfiguration, TopologyConfiguration,
+    EncodedConfiguration, EncodedParameter, GroupFilterConfiguration, InstallationConfiguration, MaterializedModule,
+    MaterializedModuleArgument, MembershipRole, NetSecurityPolicy, ObjectMembership, ProcedureParameter,
+    ProcedureParameterValue, SecurityIntent, ToolManagedIpConfiguration, TopologyConfiguration,
 };
-pub use device::{GroupLink, ParameterValue};
 pub use error::{ConfigurationError, ConfigurationResult};
-pub use materialized::MaterializedDevice;
-pub use product::ResolvedDevice;
+pub use materialized::{KeyState, Keyed, MaterializedDevice, Unkeyed};
 pub use security::{
     GroupObjectProtection, GroupObjectSecurity, ResolvedIpSecureConfiguration, ResolvedKeyMaterial, SecurityConfig,
 };

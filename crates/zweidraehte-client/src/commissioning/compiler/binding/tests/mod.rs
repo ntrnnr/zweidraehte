@@ -36,9 +36,7 @@ use crate::commissioning::{
     CommissioningIntent, DownloadMode, ImageLocation, ProgramSections, SparseDeviceImage, TargetSelection, UnloadMode,
 };
 use crate::configuration::ResolvedKeyMaterial;
-use crate::configuration::{
-    LoweredDeviceConfiguration, MaterializedDevice, ProcedureParameter, ProcedureParameterValue,
-};
+use crate::configuration::{MaterializedDevice, ProcedureParameter, ProcedureParameterValue};
 
 mod fixtures;
 use fixtures::*;

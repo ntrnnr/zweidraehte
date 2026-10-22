@@ -15,7 +15,7 @@ use crate::commissioning::input::ProgramSections;
 use crate::commissioning::procedure::{
     OperationData, OperationExtent, OperationTarget, ProcedureOperation, WriteIntent, WritePolicy,
 };
-use crate::configuration::{LoweredDeviceConfiguration, ToolManagedIpConfiguration};
+use crate::configuration::{MaterializedDevice, ToolManagedIpConfiguration};
 use std::collections::BTreeSet;
 use zweidraehte_ets_files::product::ProductData;
 use zweidraehte_project::{IpAssignment, ProgrammingSection};
@@ -32,18 +32,18 @@ impl ProgramCompiler<'_> {
         }
         let profile = &self.profile;
         let product = input.device.product();
-        let configuration = input.device.configuration();
+        let device = &input.device;
         // Resolution already checks product ownership, exact family, and medium.
         if profile.tool_managed_ip.is_none() {
             return Ok(());
         }
 
-        let intent = configuration
-            .topology
+        let intent = device
+            .topology()
             .ip
             .as_ref()
             .ok_or(CompileError::invalid("Tool-mode classic IP download has no IP configuration"))?;
-        validate_basic_intent(product, configuration, intent)?;
+        validate_basic_intent(product, device, intent)?;
 
         // Live device identity belongs to the working image, so later image
         // transfers can consume it without changing desired project state.
@@ -125,7 +125,7 @@ impl ProgramCompiler<'_> {
 
 pub(super) fn validate_basic_intent(
     product: &ProductData,
-    configuration: &LoweredDeviceConfiguration,
+    device: &MaterializedDevice,
     intent: &ToolManagedIpConfiguration,
 ) -> Result<(), CompileError> {
     let capacity = product.programming_options().additional_addresses_count().value;
@@ -136,7 +136,7 @@ pub(super) fn validate_basic_intent(
         )));
     }
 
-    let primary = configuration.individual_address;
+    let primary = device.individual_address();
     let mut unique = BTreeSet::new();
     for address in &intent.additional_individual_addresses {
         if address.subnet() != primary.subnet() {

@@ -27,7 +27,7 @@ impl Commissioner<'_> {
         async {
             let PreparationOptions { access, variant_hint, differential_policy, deployment } = options;
             let product = input.device.product();
-            let configuration = input.device.configuration();
+            let device = &input.device;
             let desired_data_security = input.desired_data_security;
             let observes_group_security =
                 desired_data_security != DesiredDataSecurity::Preserve && input.intent.updates_group_communication();
@@ -39,13 +39,13 @@ impl Commissioner<'_> {
             let master_data = std::sync::Arc::clone(bound_master_data(product)?);
             validate_for_live_commissioning(&master_data)?;
             validate_differential_inputs(input.intent, differential_policy, deployment.is_some())?;
-            validate_options(&self.options, configuration.configured_max_apdu)?;
+            validate_options(&self.options, device.max_apdu())?;
             validate_credential_inputs(input.device.key_material())?;
             cancellation.check()?;
 
             event(CommissioningEvent::Stage(CommissioningStage::DiscoveringTarget));
-            let open_medium = configuration.topology.domain_address.is_some()
-                && requested_topology_network_configuration(input.intent);
+            let open_medium =
+                device.topology().domain_address.is_some() && requested_topology_network_configuration(input.intent);
             let mut target = self.acquire_target(&input.options.target, open_medium, cancellation).await?;
             let mut session = self.select_management_session(target, input.device.key_material(), &access).await?;
 
@@ -71,18 +71,20 @@ impl Commissioner<'_> {
             let credential = session.selected_credential();
             cancellation.check()?;
             event(CommissioningEvent::Stage(CommissioningStage::CompilingPlan));
-            input.facts = ProgrammingFacts::new(ObservedTarget {
-                previous_address: target.address,
-                serial_number: target.serial_number,
-                credential,
-            })
-            .with_data_security(data_security);
+            input.facts = ProgrammingFacts {
+                target: Some(ObservedTarget {
+                    previous_address: target.address,
+                    serial_number: target.serial_number,
+                    credential,
+                }),
+                data_security,
+            };
             // Discovery resolves this exact product against the validated catalog
             // and adds observed geometry. Reuse that selection, then apply the same
             // policy and module checks as offline compilation.
             let plan = ProgramCompiler::from_profile(&input, profile)?.compile()?;
 
-            let configuration = input.device.configuration();
+            let device = &input.device;
             let secure_management = plan.management_secure();
 
             let management_style = self.validate_installed_realization(&plan, target, &mut session).await?;
@@ -105,7 +107,7 @@ impl Commissioner<'_> {
                 &plan,
                 self.bus.max_apdu(),
                 target_max_apdu,
-                configuration.configured_max_apdu,
+                device.max_apdu(),
                 secure_management,
                 matches!(input.options.target, TargetSelection::SerialNumber(_)) && secure_management,
             )?;

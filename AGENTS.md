@@ -1094,8 +1094,9 @@ Key modules:
   Untranslated instances share the selected product's lazy immutable program
   and lookup tables; values, visibility, bindings and expanded modules stay local.
   Translations derive private presentation from the original document.
-  `EvaluatedProduct` retains the active module roster used for geometry; client
-  lowering transfers it through `into_parts()` instead of collecting it again.
+  `EvaluatedProduct`'s resolved product retains the active module roster used
+  for geometry (`ProductData::modules()`); client lowering takes it with
+  `into_product()` instead of collecting it again.
   Its `parameter_overlays()` supplies ordered programming inputs, separate from
   authored settings; `procedure_selector(id)` resolves exact values and activity.
   Keep editor traversal/default selection here and byte encoding/conflict checks
@@ -1104,7 +1105,7 @@ Key modules:
   `ManufacturerContent`: decoded segments, parameter/property locations,
   communication objects, fixups, security capacities, application identity,
   and load procedures. Installation-specific effective objects stay with the
-  client's `LoweredDeviceConfiguration`; never mutate product facts
+  client's `MaterializedDevice`; never mutate product facts
 - `archive/` - `RawArchive` retains every path and payload, while
   `KnxprodArchive` / `KnxprojArchive` parse known entries on demand. Unknown
   entries survive edits byte-for-byte; a dirty signed directory must be
@@ -1173,8 +1174,9 @@ Structure (concrete owners with a private bus driver):
   Its optional USB variant and dispatch arm stay together in `connector/target.rs`.
 - `security/` - KNX Data Secure channels, runtime keyring matching, and sequence
   stores; generic `.knxkeys` parsing/export lives in `zweidraehte-ets-files`
-- `configuration/` - evaluates a product as `ResolvedDevice`, consumed into
-  `MaterializedDevice`; owns resolved security values, including
+- `configuration/` - evaluates a product as `MaterializedDevice<Unkeyed>`
+  (authored `SecurityIntent`), keyed into `MaterializedDevice<Keyed>`; owns
+  resolved security values, including
   `ResolvedKeyMaterial` as the only owner of application security and
   `ResolvedIpSecureConfiguration`. Project key resolution stays under `project/`.
 - `commissioning/compiler/` - private `ProgramCompiler` owns selection,

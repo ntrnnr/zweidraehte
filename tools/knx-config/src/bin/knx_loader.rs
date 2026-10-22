@@ -1212,7 +1212,7 @@ async fn run_programming(
                 dump_blob_files(dump_blobs, &planned.id().0, &compiled)
                     .context("while attempting to export compiled memory blobs")?;
             } else {
-                println!("{}: would commission {}", planned.id(), planned.device().configuration().individual_address);
+                println!("{}: would commission {}", planned.id(), planned.device().individual_address());
             }
 
             if planned.needs_tool_key_generation() {
@@ -1548,15 +1548,17 @@ fn compile_offline(
     } else {
         ManagementCredential::Plaintext
     };
-    let facts = ProgrammingFacts::new(ObservedTarget {
-        previous_address: planned.device().configuration().individual_address,
-        serial_number: planned.serial_number(),
-        credential,
-    })
-    .with_data_security(planned.observed_data_security());
+    let facts = ProgrammingFacts {
+        target: Some(ObservedTarget {
+            previous_address: planned.device().individual_address(),
+            serial_number: planned.serial_number(),
+            credential,
+        }),
+        data_security: planned.observed_data_security(),
+    };
 
     let options = CompileOptions {
-        target: TargetSelection::ExistingAddress(planned.device().configuration().individual_address),
+        target: TargetSelection::ExistingAddress(planned.device().individual_address()),
         automatic_sections,
         progress_messages_by_reference: BTreeMap::new(),
         progress_messages_by_id: BTreeMap::new(),
@@ -1600,11 +1602,11 @@ fn print_compiled(planned: &PlannedProjectDevice, compiled: &zweidraehte_client:
         "{}: {}, profile {}, procedure {procedure}, sections {:?}, {} parameters, {} associations, {steps} steps, \
          {transfer_bytes} transfer bytes",
         planned.id(),
-        planned.device().configuration().individual_address,
+        planned.device().individual_address(),
         compiled.profile().mask(),
         compiled.program_sections(),
-        planned.device().configuration().parameters.len(),
-        planned.device().configuration().links.len(),
+        planned.device().parameters().len(),
+        planned.device().object_memberships().len(),
     );
     if stamp_reads > 0 {
         println!("  captures {stamp_reads} download stamps before restart");

@@ -365,7 +365,7 @@ pub(super) fn record_programming_failure(
     source: &crate::commissioning::CommissioningError,
 ) -> Vec<Error> {
     let address = source.effects().address_assignment().filter(|assignment| {
-        assignment.current == planned.device.configuration().individual_address
+        assignment.current == planned.device.individual_address()
             && !source.effects().cleared_sections().contains(&ProgrammingSection::Address)
     });
     if address.is_some() {

@@ -12,14 +12,7 @@ use zweidraehte_project::{
 };
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 
-use super::ConfigurationResult as Result;
 use zweidraehte_ets_files::product::ComObjectDef;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DeviceIdentity {
-    pub desired_address: IndividualAddress,
-    pub serial_number: Option<[u8; 6]>,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MembershipRole {
@@ -27,11 +20,30 @@ pub enum MembershipRole {
     Additional,
 }
 
+/// One group address linked to one group object.
+///
+/// A device's memberships list every primary link before any additional one.
+/// [`super::MaterializedDevice`] establishes that order on construction; the
+/// association table encodes links in exactly this order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObjectMembership {
     pub group_address: GroupAddress,
+    /// The group object number (ASAP) as the product database numbers it.
+    /// The selected association-table codec checks its wire width.
     pub com_object: u16,
     pub role: MembershipRole,
+}
+
+impl ObjectMembership {
+    /// The link that defines the object's sending group address.
+    pub fn primary(group_address: GroupAddress, com_object: u16) -> Self {
+        Self { group_address, com_object, role: MembershipRole::Primary }
+    }
+
+    /// A further group address the object listens to.
+    pub fn additional(group_address: GroupAddress, com_object: u16) -> Self {
+        Self { group_address, com_object, role: MembershipRole::Additional }
+    }
 }
 
 /// Installation intent for one group address. `Automatic` is resolved
@@ -47,7 +59,7 @@ pub enum NetSecurityPolicy {
 
 /// Effective typed value consumed by a product load-procedure `choose`.
 ///
-/// These values remain distinct from [`ParameterValue`], which is already
+/// These values remain distinct from [`EncodedParameter`], which is already
 /// encoded for its target storage. A procedure branches on the semantic value
 /// of the referenced ETS control, including a ref-specific default, rather
 /// than on the bytes eventually patched into a base parameter.
@@ -114,161 +126,78 @@ pub struct TopologyConfiguration {
     pub ip: Option<ToolManagedIpConfiguration>,
 }
 
-/// Download-relevant desired state, before a mask backend lays it out.
-#[derive(Debug, Clone)]
-pub struct DeviceConfiguration {
-    pub identity: DeviceIdentity,
+/// Authored security choices, before key sources are consulted.
+///
+/// Resolving key material consumes this intent: a
+/// [`super::MaterializedDevice<super::Keyed>`] holds the resolved
+/// [`super::ResolvedKeyMaterial`] instead, so the two cannot disagree.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SecurityIntent {
+    /// Serial number that binds the device's FDSK and serial-number addressing.
+    pub serial_number: Option<[u8; 6]>,
     /// Project-selected application-security state. Product capability is
     /// checked separately before lowering or touching the bus.
     pub data_secure_enabled: bool,
-    pub parameters: Vec<ParameterValue>,
-    pub object_memberships: Vec<ObjectMembership>,
-    pub objects: Vec<ComObjectDef>,
     pub net_security: BTreeMap<GroupAddress, NetSecurityPolicy>,
-    pub topology: TopologyConfiguration,
-    /// Optional upper bound on the detected PID-56 wire capability. This can
-    /// reduce chunks for a problematic target but cannot enable long frames.
-    pub max_apdu: Option<u16>,
 }
 
 /// Installation choices supplied alongside checked product evaluation.
+///
 /// Encoded parameters and effective objects come exclusively from that
-/// evaluation; callers cannot inject a second product image through this input.
-#[derive(Debug, Clone)]
+/// evaluation ([`EncodedConfiguration`]); callers cannot inject a second
+/// product image through this input.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstallationConfiguration {
-    pub identity: DeviceIdentity,
-    pub data_secure_enabled: bool,
+    pub individual_address: IndividualAddress,
+    /// Group links in any order; primary links are encoded first.
     pub object_memberships: Vec<ObjectMembership>,
-    pub net_security: BTreeMap<GroupAddress, NetSecurityPolicy>,
     pub topology: TopologyConfiguration,
+    /// Optional project-authored ceiling applied after live interface and
+    /// target capability discovery. It can reduce chunks for a problematic
+    /// target but cannot enable long frames. `None` leaves capability
+    /// negotiation authoritative instead of silently forcing standard frames.
     pub max_apdu: Option<u16>,
+    pub security: SecurityIntent,
 }
 
-impl From<InstallationConfiguration> for DeviceConfiguration {
-    fn from(installation: InstallationConfiguration) -> Self {
+impl InstallationConfiguration {
+    /// An installation at `individual_address` with no links, topology,
+    /// APDU ceiling or security choices.
+    pub fn new(individual_address: IndividualAddress) -> Self {
         Self {
-            identity: installation.identity,
-            data_secure_enabled: installation.data_secure_enabled,
-            object_memberships: installation.object_memberships,
-            net_security: installation.net_security,
-            topology: installation.topology,
-            max_apdu: installation.max_apdu,
-            parameters: Vec::new(),
-            objects: Vec::new(),
+            individual_address,
+            object_memberships: Vec::new(),
+            topology: TopologyConfiguration::default(),
+            max_apdu: None,
+            security: SecurityIntent::default(),
         }
     }
 }
 
-/// Existing compiler input plus the effective object roster it must use.
-#[derive(Debug, Clone)]
-pub struct LoweredDeviceConfiguration {
-    pub individual_address: IndividualAddress,
-    pub parameters: Vec<ParameterValue>,
-    pub links: Vec<GroupLink>,
+/// The product-side result of evaluating one configured device.
+///
+/// [`super::MaterializedDevice::from_evaluated`] encodes these from a checked
+/// product evaluation. Expert adapters holding an evaluation made elsewhere
+/// supply them to [`super::MaterializedDevice::from_parts`] instead.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EncodedConfiguration {
+    /// Stored parameter values in write order; a later entry for the same
+    /// storage overwrites an earlier one.
+    pub parameters: Vec<EncodedParameter>,
+    /// The effective group-object roster.
     pub com_objects: Vec<ComObjectDef>,
-    pub topology: TopologyConfiguration,
     /// Typed values for the product parameters referenced by load-procedure
     /// choices. Storage bytes alone cannot preserve a `ParameterRef` override
     /// or distinguish numeric, text, Boolean, and opaque comparisons.
     pub procedure_parameters: BTreeMap<String, ProcedureParameter>,
-    /// Optional project-authored ceiling applied after live interface and
-    /// target capability discovery. `None` leaves capability negotiation
-    /// authoritative instead of silently forcing standard frames.
-    pub configured_max_apdu: Option<u16>,
 }
 
-impl LoweredDeviceConfiguration {
-    pub fn new(individual_address: IndividualAddress, configured_max_apdu: Option<u16>) -> Self {
-        Self {
-            individual_address,
-            parameters: Vec::new(),
-            links: Vec::new(),
-            com_objects: Vec::new(),
-            topology: TopologyConfiguration::default(),
-            procedure_parameters: BTreeMap::new(),
-            configured_max_apdu,
-        }
-    }
-
-    pub fn with_com_objects(mut self, com_objects: Vec<ComObjectDef>) -> Self {
-        self.com_objects = com_objects;
-        self
-    }
-
-    pub fn with_topology(mut self, topology: TopologyConfiguration) -> Self {
-        self.topology = topology;
-        self
-    }
-
-    pub fn with_procedure_parameters(mut self, parameters: BTreeMap<String, ProcedureParameter>) -> Self {
-        self.procedure_parameters = parameters;
-        self
-    }
-}
-
-impl DeviceConfiguration {
-    /// Product resolution happens before key sources are consulted. It needs
-    /// the structural project form before key resolution, but must not
-    /// pretend that the final security tables have already been resolved.
-    pub(crate) fn into_product_structure(mut self) -> Result<LoweredDeviceConfiguration> {
-        let mut configuration = LoweredDeviceConfiguration::new(self.identity.desired_address, self.max_apdu);
-        configuration.parameters = self.parameters;
-        let memberships = &mut self.object_memberships;
-        memberships.sort_by_key(|membership| match membership.role {
-            MembershipRole::Primary => 0,
-            MembershipRole::Additional => 1,
-        });
-        configuration.links = memberships
-            .iter()
-            .map(|membership| GroupLink { group_address: membership.group_address, com_object: membership.com_object })
-            .collect();
-
-        configuration.com_objects = self.objects;
-        configuration.topology = self.topology;
-        Ok(configuration)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn primary_associations_are_lowered_before_additional_ones() {
-        let primary = GroupAddress::from_three_level(1, 0, 1);
-        let additional = GroupAddress::from_three_level(1, 0, 2);
-        let configuration = DeviceConfiguration {
-            identity: DeviceIdentity { desired_address: IndividualAddress::new(1, 1, 1), serial_number: None },
-            data_secure_enabled: false,
-            parameters: Vec::new(),
-            object_memberships: vec![
-                ObjectMembership { group_address: additional, com_object: 971, role: MembershipRole::Additional },
-                ObjectMembership { group_address: primary, com_object: 971, role: MembershipRole::Primary },
-            ],
-            objects: Vec::new(),
-            net_security: BTreeMap::new(),
-            topology: TopologyConfiguration::default(),
-            max_apdu: None,
-        };
-        let lowered = configuration.into_product_structure().expect("configuration lowers");
-        assert_eq!(lowered.links[0].group_address, primary);
-        assert_eq!(lowered.links[1].group_address, additional);
-        assert!(lowered.links.iter().all(|link| link.com_object == 971));
-    }
-}
-
-/// A group address ↔ group object link (one association).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GroupLink {
-    pub group_address: GroupAddress,
-    /// The group object number (ASAP) as the product database numbers it.
-    /// The selected association-table codec checks its wire width.
-    pub com_object: u16,
-}
-
-/// A parameter value that differs from the product default.
+/// A parameter value encoded for its target storage.
+///
+/// Distinct from the typed `zweidraehte_ets_files::runtime::model::ParameterValue`
+/// an editor holds: this is the byte image the compiler patches.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParameterValue {
+pub struct EncodedParameter {
     /// The parameter's full MTXML identifier.
     pub id: String,
     /// Raw bytes in device-memory order. For a `BinaryValue` restriction,

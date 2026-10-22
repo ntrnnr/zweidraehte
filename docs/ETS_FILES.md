@@ -51,17 +51,18 @@ flowchart LR
 `runtime::Device::from_product` opens an editable configuration from a retained
 `Arc<SelectedProduct>`. `evaluate` validates its edits and returns a borrowed
 `EvaluatedProduct` containing effective settings, objects, resolved geometry and
-the active module roster used to compute it. `modules()` borrows that roster in
-instance-ID order; `into_parts()` transfers it and the resolved product without
-cloning. Final allocator arguments come from the same evaluation throughout
-client lowering. `into_product()` remains available to geometry-only consumers.
+the active module roster used to compute it. The resolved `ProductData` owns
+that roster (`ProductData::modules()`, in instance-ID order), so geometry and
+module procedures cannot come from two lists; `into_product()` transfers it
+without cloning. Final allocator arguments come from the same evaluation
+throughout client lowering.
 The borrow prevents edits from invalidating an evaluation still in use. Raw
 `Device::new` remains useful for schema inspection but cannot publish an evaluation.
 The client lowers that evaluation with installation choices; callers cannot pair
 an editor with independently supplied product facts through that checked route.
-Its `configuration::MaterializedDevice::new` also accepts expert-supplied facts
-without running this evaluator; compiler validation cannot certify their dynamic
-evaluation. `parameter_description` exposes effective values, defaults, access
+Its `configuration::MaterializedDevice::from_parts` also accepts expert-supplied
+encoded values without running this evaluator; compiler validation cannot
+certify their dynamic evaluation. `parameter_description` exposes effective values, defaults, access
 and types to presentation consumers.
 
 Interactive previews can use `FormPresentation::snapshot` to obtain a full

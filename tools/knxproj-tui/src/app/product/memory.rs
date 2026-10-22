@@ -9,8 +9,8 @@ use zweidraehte_client::commissioning::{
     ObjectSelector, Occurrence, ProfileSelection, ProgramImage, ProgrammingInput, TargetSelection,
 };
 use zweidraehte_client::configuration::{
-    DeviceIdentity, InstallationConfiguration, MembershipRole as ClientMembershipRole,
-    ObjectMembership as ClientObjectMembership, ResolvedDevice, ResolvedKeyMaterial,
+    InstallationConfiguration, MaterializedDevice, MembershipRole as ClientMembershipRole,
+    ObjectMembership as ClientObjectMembership, ResolvedKeyMaterial, SecurityIntent,
 };
 use zweidraehte_client::project::product_object_flags;
 use zweidraehte_ets_files::product::ParameterLocation;
@@ -266,11 +266,9 @@ impl ProductEditor {
 
         let authored_device = context
             .and_then(|context| context.authored.as_ref().and_then(|project| project.devices.get(&context.device)));
-        let identity = DeviceIdentity {
-            desired_address: authored_device
-                .map_or_else(|| zweidraehte_proto::address::IndividualAddress::new(1, 1, 1), |device| device.address),
-            serial_number: authored_device.and_then(|device| device.serial),
-        };
+        let address = authored_device
+            .map_or_else(|| zweidraehte_proto::address::IndividualAddress::new(1, 1, 1), |device| device.address);
+        let serial_number = authored_device.and_then(|device| device.serial);
         let object_memberships = self
             .view
             .device
@@ -288,18 +286,16 @@ impl ProductEditor {
             })
             .collect();
         let base = InstallationConfiguration {
-            identity,
+            object_memberships,
+            max_apdu: authored_device.and_then(|device| device.max_apdu),
             // Project keys are intentionally absent from UI memory. The
             // preview redacts Security IO key spans when a caller supplies
             // them; this product view compiles the ordinary application image.
-            data_secure_enabled: false,
-            object_memberships,
-            net_security: BTreeMap::new(),
-            topology: Default::default(),
-            max_apdu: authored_device.and_then(|device| device.max_apdu),
+            security: SecurityIntent { serial_number, ..Default::default() },
+            ..InstallationConfiguration::new(address)
         };
         let evaluated = self.view.device.evaluate(&object_settings).map_err(|error| error.to_string())?;
-        let resolved = ResolvedDevice::from_evaluated(evaluated, base).map_err(|error| error.to_string())?;
+        let resolved = MaterializedDevice::from_evaluated(evaluated, base).map_err(|error| error.to_string())?;
         let parameters = resolved
             .product()
             .parameters()
@@ -328,12 +324,13 @@ impl ProductEditor {
         // The editor bound its product to the selected Master Data when it
         // was prepared, so the resolved device already carries that document.
         let mask = resolved.product().mask_version().ok_or_else(|| "product has no exact mask version".to_owned())?;
-        let device = resolved
-            .into_materialized(ResolvedKeyMaterial::new(identity.serial_number))
-            .map_err(|error| error.to_string())?;
+        let keys = serial_number.map_or_else(ResolvedKeyMaterial::default, |serial| {
+            ResolvedKeyMaterial::default().with_serial_number(serial)
+        });
+        let device = resolved.into_keyed(keys);
         let input =
             ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Automatic), CompileOptions {
-                target: TargetSelection::ExistingAddress(identity.desired_address),
+                target: TargetSelection::ExistingAddress(address),
                 automatic_sections: None,
                 progress_messages_by_reference: BTreeMap::new(),
                 progress_messages_by_id: BTreeMap::new(),

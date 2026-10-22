@@ -27,13 +27,13 @@ impl ResolvedIpSecureConfiguration {
         Self::default()
     }
 
-    pub fn with_backbone_key(mut self, key: Option<[u8; 16]>) -> Self {
-        self.backbone_key = key.map(Into::into);
+    pub fn with_backbone_key(mut self, key: [u8; 16]) -> Self {
+        self.backbone_key = Some(key.into());
         self
     }
 
-    pub fn with_device_authentication_code(mut self, code: Option<[u8; 16]>) -> Self {
-        self.device_authentication_code = code.map(Into::into);
+    pub fn with_device_authentication_code(mut self, code: [u8; 16]) -> Self {
+        self.device_authentication_code = Some(code.into());
         self
     }
 
@@ -76,7 +76,10 @@ impl core::fmt::Debug for ResolvedIpSecureConfiguration {
 }
 
 /// Key material and device tables resolved before any bus mutation.
-#[derive(Clone)]
+///
+/// [`Default`] holds no serial number, secrets or tables; the `with_*`
+/// setters add each value that was resolved.
+#[derive(Clone, Default)]
 pub struct ResolvedKeyMaterial {
     serial_number: Option<[u8; 6]>,
     fdsk: Option<SecretBytes>,
@@ -112,36 +115,28 @@ impl ResolvedKeyMaterial {
         ManagementCredentials::new(self.serial_number, self.tool_key(), self.fdsk())
     }
 
-    pub fn new(serial_number: Option<[u8; 6]>) -> Self {
-        Self {
-            serial_number,
-            fdsk: None,
-            tool_key: None,
-            application_security: None,
-            ip_secure: None,
-            secured_groups: BTreeMap::new(),
-            needs_tool_key_generation: false,
-            provenance: Vec::new(),
-        }
-    }
-
-    pub fn with_fdsk(mut self, fdsk: Option<[u8; 16]>) -> Self {
-        self.fdsk = fdsk.map(Into::into);
+    pub fn with_serial_number(mut self, serial_number: [u8; 6]) -> Self {
+        self.serial_number = Some(serial_number);
         self
     }
 
-    pub fn with_tool_key(mut self, tool_key: Option<[u8; 16]>) -> Self {
-        self.tool_key = tool_key.map(Into::into);
+    pub fn with_fdsk(mut self, fdsk: [u8; 16]) -> Self {
+        self.fdsk = Some(fdsk.into());
         self
     }
 
-    pub fn with_application_security(mut self, security: Option<SecurityConfig>) -> Self {
-        self.application_security = security;
+    pub fn with_tool_key(mut self, tool_key: [u8; 16]) -> Self {
+        self.tool_key = Some(tool_key.into());
         self
     }
 
-    pub fn with_ip_secure(mut self, security: Option<ResolvedIpSecureConfiguration>) -> Self {
-        self.ip_secure = security;
+    pub fn with_application_security(mut self, security: SecurityConfig) -> Self {
+        self.application_security = Some(security);
+        self
+    }
+
+    pub fn with_ip_secure(mut self, security: ResolvedIpSecureConfiguration) -> Self {
+        self.ip_secure = Some(security);
         self
     }
 

@@ -525,7 +525,7 @@ fn untyped_parameter_property_takes_its_width_from_the_observed_pdt() {
     use crate::commissioning::CompileOptions;
     use crate::commissioning::input::{CommissioningIntent, DownloadMode, TargetSelection};
     use crate::commissioning::test_support::architecture::{catalog, programming_input, resolve_profile};
-    use crate::configuration::LoweredDeviceConfiguration;
+    use crate::configuration::MaterializedDevice;
     use zweidraehte_proto::address::IndividualAddress;
 
     let catalog = catalog(23);
@@ -535,8 +535,11 @@ fn untyped_parameter_property_takes_its_width_from_the_observed_pdt() {
     let profile = resolve_profile(&catalog, 0x0705, None, &product);
 
     let address = IndividualAddress::new(1, 1, 10);
-    let mut configuration = LoweredDeviceConfiguration::new(address, Some(15));
-    configuration.parameters.push(crate::configuration::ParameterValue { id: "background".to_owned(), value: vec![9] });
+    let mut configuration = MaterializedDevice::fixture(address, Some(15));
+    configuration
+        .encoded_mut()
+        .parameters
+        .push(crate::configuration::EncodedParameter { id: "background".to_owned(), value: vec![9] });
     let compile = |profile: &crate::commissioning::ResolvedProfile| {
         programming_input(
             &catalog,
@@ -640,14 +643,15 @@ fn declared_property_write(
     use crate::commissioning::CompileOptions;
     use crate::commissioning::input::{CommissioningIntent, DownloadMode, TargetSelection};
     use crate::commissioning::test_support::architecture::programming_input;
-    use crate::configuration::LoweredDeviceConfiguration;
+    use crate::configuration::MaterializedDevice;
     use zweidraehte_proto::address::IndividualAddress;
 
     let address = IndividualAddress::new(1, 1, 10);
-    let mut configuration = LoweredDeviceConfiguration::new(address, Some(15));
+    let mut configuration = MaterializedDevice::fixture(address, Some(15));
     configuration
+        .encoded_mut()
         .parameters
-        .push(crate::configuration::ParameterValue { id: "background".to_owned(), value: value.to_vec() });
+        .push(crate::configuration::EncodedParameter { id: "background".to_owned(), value: value.to_vec() });
     let input = programming_input(
         catalog,
         product,
@@ -760,7 +764,7 @@ fn untyped_indexed_parameter_property_writes_its_image_segment_at_the_described_
     use crate::commissioning::image::{ImageLocation, ImageSpace};
     use crate::commissioning::input::{CommissioningIntent, DownloadMode, TargetSelection};
     use crate::commissioning::test_support::architecture::{catalog, programming_input};
-    use crate::configuration::LoweredDeviceConfiguration;
+    use crate::configuration::MaterializedDevice;
     use zweidraehte_proto::address::IndividualAddress;
 
     let catalog = catalog(23);
@@ -777,10 +781,11 @@ fn untyped_indexed_parameter_property_writes_its_image_segment_at_the_described_
             ),
         );
         let address = IndividualAddress::new(1, 1, 10);
-        let mut configuration = LoweredDeviceConfiguration::new(address, Some(15));
+        let mut configuration = MaterializedDevice::fixture(address, Some(15));
         configuration
+            .encoded_mut()
             .parameters
-            .push(crate::configuration::ParameterValue { id: "background".to_owned(), value: vec![1, 2, 3, 4] });
+            .push(crate::configuration::EncodedParameter { id: "background".to_owned(), value: vec![1, 2, 3, 4] });
         programming_input(
             &catalog,
             &product,
@@ -897,7 +902,7 @@ fn declared_buffer_allocation_does_not_expand_to_the_typed_wire_width() {
     use crate::commissioning::image::{ImageLocation, ImageSpace};
     use crate::commissioning::input::{CommissioningIntent, DownloadMode, TargetSelection};
     use crate::commissioning::test_support::architecture::{edited_catalog, programming_input};
-    use crate::configuration::LoweredDeviceConfiguration;
+    use crate::configuration::MaterializedDevice;
     use zweidraehte_proto::address::IndividualAddress;
 
     let catalog = edited_catalog(23, |xml| {
@@ -923,7 +928,7 @@ fn declared_buffer_allocation_does_not_expand_to_the_typed_wire_width() {
             &controls,
         );
         let address = IndividualAddress::new(1, 1, 10);
-        let configuration = LoweredDeviceConfiguration::new(address, Some(15));
+        let configuration = MaterializedDevice::fixture(address, Some(15));
         let program = programming_input(
             &catalog,
             &product,

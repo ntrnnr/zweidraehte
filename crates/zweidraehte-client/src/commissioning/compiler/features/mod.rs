@@ -26,7 +26,7 @@ use zweidraehte_ets_files::product::ProductData;
 #[cfg(test)]
 use crate::commissioning::catalog::profile::ResolvedProfile;
 #[cfg(test)]
-use crate::configuration::LoweredDeviceConfiguration;
+use crate::configuration::MaterializedDevice;
 #[cfg(test)]
 use crate::configuration::{ResolvedIpSecureConfiguration, ResolvedKeyMaterial};
 
@@ -167,24 +167,24 @@ impl RecipeSet {
 #[cfg(test)]
 fn fixture_input(
     product: &ProductData,
-    configuration: &LoweredDeviceConfiguration,
+    configuration: &MaterializedDevice,
     data_secure: Option<&crate::configuration::SecurityConfig>,
     ip_secure: Option<&ResolvedIpSecureConfiguration>,
 ) -> crate::commissioning::ProgrammingInput {
     use crate::commissioning::{CommissioningIntent, CompileOptions, DownloadMode, TargetSelection};
-    let device = crate::configuration::MaterializedDevice::new(
-        product.clone(),
-        configuration.clone(),
-        Vec::new(),
-        ResolvedKeyMaterial::new(None)
-            .with_application_security(data_secure.cloned())
-            .with_ip_secure(ip_secure.cloned()),
-    );
+    let mut keys = ResolvedKeyMaterial::default();
+    if let Some(security) = data_secure {
+        keys = keys.with_application_security(security.clone());
+    }
+    if let Some(security) = ip_secure {
+        keys = keys.with_ip_secure(security.clone());
+    }
+    let device = configuration.clone().with_product(product.clone()).with_key_material(keys);
     crate::commissioning::ProgrammingInput::new(
         device,
         CommissioningIntent::Download(DownloadMode::Full),
         CompileOptions {
-            target: TargetSelection::ExistingAddress(configuration.individual_address),
+            target: TargetSelection::ExistingAddress(configuration.individual_address()),
             automatic_sections: None,
             progress_messages_by_reference: Default::default(),
             progress_messages_by_id: Default::default(),
@@ -221,7 +221,7 @@ fn fixture_compiler<'a>(
 fn compile_fixture(
     profile: &ResolvedProfile,
     product: &ProductData,
-    configuration: &LoweredDeviceConfiguration,
+    configuration: &MaterializedDevice,
     data_secure: Option<&crate::configuration::SecurityConfig>,
     ip_secure: Option<&ResolvedIpSecureConfiguration>,
     emit: impl FnOnce(&mut ProgramCompiler<'_>) -> Result<(), CompileError>,

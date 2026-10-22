@@ -26,7 +26,7 @@ use zweidraehte_client::commissioning::{
 };
 use zweidraehte_client::configuration::ResolvedKeyMaterial;
 use zweidraehte_client::configuration::{
-    DeviceIdentity, InstallationConfiguration, MaterializedDevice, MembershipRole, ObjectMembership, ResolvedDevice,
+    InstallationConfiguration, MaterializedDevice, MembershipRole, ObjectMembership,
 };
 use zweidraehte_client::{GroupAddress, IndividualAddress, pid};
 use zweidraehte_ets_files::MasterData;
@@ -78,6 +78,7 @@ fn vendor_program_compiles_to_a_stable_download() {
     // The co-packaged project-11 Master Data preserves this legacy System 7
     // product's exact resource geometry and procedure semantics.
     let catalog = Arc::new(MasterData::from_file(master_data).expect("the fixture Master Data parses"));
+    let selected = selected.bind_master_data(Arc::clone(&catalog)).expect("fixture document binds");
 
     let mut device = Device::from_product(Arc::new(selected), None, None);
     let settings = ProductConfiguration {
@@ -93,52 +94,34 @@ fn vendor_program_compiles_to_a_stable_download() {
     let additional = GroupAddress::from_three_level(5, 1, 3);
     let second = GroupAddress::from_three_level(5, 1, 2);
     let configuration = InstallationConfiguration {
-        identity: DeviceIdentity { desired_address: IndividualAddress::new(1, 1, 60), serial_number: None },
-        data_secure_enabled: false,
         object_memberships: vec![
             ObjectMembership { group_address: primary, com_object: 0, role: MembershipRole::Primary },
             ObjectMembership { group_address: additional, com_object: 0, role: MembershipRole::Additional },
             ObjectMembership { group_address: second, com_object: 1, role: MembershipRole::Primary },
         ],
-        net_security: BTreeMap::new(),
-        topology: Default::default(),
-        max_apdu: None,
+        ..InstallationConfiguration::new(IndividualAddress::new(1, 1, 60))
     };
-    let resolved = ResolvedDevice::from_evaluated(
+    let resolved = MaterializedDevice::from_evaluated(
         device.evaluate(&settings.objects).expect("checked vendor settings"),
         configuration,
     )
     .expect("the configuration resolves");
 
-    let resolved = resolved.into_materialized(ResolvedKeyMaterial::new(None)).expect("configuration materializes");
+    let resolved = resolved.into_keyed(ResolvedKeyMaterial::default());
     let Some(profile) = fixture_profile(&catalog, resolved.product()) else { return };
-    let full = compile_plan(
-        &catalog,
-        &profile,
-        resolved.product(),
-        resolved.configuration(),
-        CommissioningIntent::Download(DownloadMode::Full),
-        None,
-    );
+    let full = compile_plan(&profile, &resolved, CommissioningIntent::Download(DownloadMode::Full), None);
 
     // The sparse data/mask pairs and normalized controls are the complete
     // non-secret device-bound result. Snapshotting both catches drift in
     // parsing, exact-profile resolution, table encoding, patching, and
     // load-control lowering.
     let mut report = String::new();
-    let _ = writeln!(report, "parameters patched: {}", resolved.configuration().parameters.len());
-    let _ = writeln!(report, "links: {}", resolved.configuration().links.len());
+    let _ = writeln!(report, "parameters patched: {}", resolved.parameters().len());
+    let _ = writeln!(report, "links: {}", resolved.object_memberships().len());
     append_plan(&mut report, &full);
     insta::assert_snapshot!("mdt_full_download", report);
 
-    let unload = compile_plan(
-        &catalog,
-        &profile,
-        resolved.product(),
-        resolved.configuration(),
-        CommissioningIntent::Unload(UnloadMode::AllConfiguration),
-        None,
-    );
+    let unload = compile_plan(&profile, &resolved, CommissioningIntent::Unload(UnloadMode::AllConfiguration), None);
     let mut unload_report = String::new();
     append_plan(&mut unload_report, &unload);
     insta::assert_snapshot!("mdt_unload_all", unload_report);
@@ -192,47 +175,32 @@ fn published_partial_procedures_compile_for_real_bcu2_and_system_b_products() {
             continue;
         };
         let catalog = &loaded;
+        let selected = selected.bind_master_data(Arc::clone(catalog)).expect("fixture document binds");
 
         let mut device = Device::from_product(Arc::new(selected), None, None);
         let settings = ProductConfiguration { parameters: Vec::new(), objects: Vec::new() };
         apply_configuration(&mut device, &settings).expect("the default product configuration applies");
-        let resolved = ResolvedDevice::from_evaluated(
+        let resolved = MaterializedDevice::from_evaluated(
             device.evaluate(&settings.objects).expect("checked vendor defaults"),
-            InstallationConfiguration {
-                identity: DeviceIdentity { desired_address: IndividualAddress::new(1, 1, 42), serial_number: None },
-                data_secure_enabled: false,
-                object_memberships: Vec::new(),
-                net_security: BTreeMap::new(),
-                topology: Default::default(),
-                max_apdu: None,
-            },
+            InstallationConfiguration::new(IndividualAddress::new(1, 1, 42)),
         )
         .expect("the default configuration resolves");
 
-        let resolved = resolved.into_materialized(ResolvedKeyMaterial::new(None)).expect("configuration materializes");
+        let resolved = resolved.into_keyed(ResolvedKeyMaterial::default());
         let Some(profile) = fixture_profile(catalog, resolved.product()) else { continue };
 
         // Automatic selection is intentional. This BCU2 product owns one
         // complete procedure, so every application update safely widens to
         // that full AP1 path. System B publishes a dedicated `par` procedure.
         let parameters = compile_plan(
-            catalog,
             &profile,
-            resolved.product(),
-            resolved.configuration(),
+            &resolved,
             CommissioningIntent::Download(DownloadMode::Automatic),
             Some(ProgramSections::PARAMETERS),
         );
         assert_eq!(parameters.program_sections(), Some(expected_parameters), "{}", path.display());
 
-        let full = compile_plan(
-            catalog,
-            &profile,
-            resolved.product(),
-            resolved.configuration(),
-            CommissioningIntent::Download(DownloadMode::Full),
-            None,
-        );
+        let full = compile_plan(&profile, &resolved, CommissioningIntent::Download(DownloadMode::Full), None);
         if path == Path::new(BCU2_VENDOR_XML) {
             assert!(parameters.is_full_program_scope());
             assert_eq!(procedure_len(&parameters), procedure_len(&full));
@@ -407,10 +375,8 @@ fn published_partial_procedures_compile_for_real_bcu2_and_system_b_products() {
         }
 
         let group = compile_plan(
-            catalog,
             &profile,
-            resolved.product(),
-            resolved.configuration(),
+            &resolved,
             CommissioningIntent::Download(DownloadMode::Automatic),
             Some(ProgramSections::GROUP_COMMUNICATION),
         );
@@ -453,38 +419,27 @@ fn operation_data_matches(plan: &CompiledProgram, data: &OperationData, expected
 }
 
 fn compile_plan(
-    catalog: &Arc<MasterData>,
     profile: &ResolvedProfile,
-    product: &ProductData,
-    configuration: &zweidraehte_client::configuration::LoweredDeviceConfiguration,
+    device: &MaterializedDevice,
     intent: CommissioningIntent,
     automatic_sections: Option<ProgramSections>,
 ) -> CompiledProgram {
-    let input = ProgrammingInput::new(
-        MaterializedDevice::new(
-            product.clone().bind_master_data(Arc::clone(catalog)).expect("fixture document binds"),
-            configuration.clone(),
-            Vec::new(),
-            ResolvedKeyMaterial::new(None),
-        ),
-        intent,
-        CompileOptions {
-            target: TargetSelection::ExistingAddress(configuration.individual_address),
-            automatic_sections,
-            progress_messages_by_reference: BTreeMap::new(),
-            progress_messages_by_id: BTreeMap::new(),
-        },
-    )
+    let input = ProgrammingInput::new(device.clone(), intent, CompileOptions {
+        target: TargetSelection::ExistingAddress(device.individual_address()),
+        automatic_sections,
+        progress_messages_by_reference: BTreeMap::new(),
+        progress_messages_by_id: BTreeMap::new(),
+    })
     // This compiler-only fixture models an already-disabled application and
     // explicit plain management; it does not observe or contact vendor hardware.
-    .facts(
-        ProgrammingFacts::new(ObservedTarget {
-            previous_address: configuration.individual_address,
+    .facts(ProgrammingFacts {
+        target: Some(ObservedTarget {
+            previous_address: device.individual_address(),
             serial_number: None,
             credential: ManagementCredential::Plaintext,
-        })
-        .with_data_security(ObservedDataSecurity::Disabled),
-    );
+        }),
+        data_security: ObservedDataSecurity::Disabled,
+    });
     // A fixed-width System B table declares its own row width; record it as
     // the observation a live target would supply.
     let declared = match profile

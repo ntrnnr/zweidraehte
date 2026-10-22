@@ -7,7 +7,7 @@ use crate::commissioning::procedure::OperationData;
 use crate::commissioning::procedure::OperationExtent;
 use crate::commissioning::procedure::OperationTarget;
 use crate::commissioning::procedure::ProcedureOperation;
-use crate::configuration::LoweredDeviceConfiguration;
+use crate::configuration::MaterializedDevice;
 use crate::configuration::ResolvedIpSecureConfiguration;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -45,16 +45,16 @@ fn plain_management_binds_public_ip_settings_with_dormant_security_controls() {
     });
     intent.password_users.clear();
     let configuration = configuration(&product, intent);
-    prepare_classic_ip_profile(&mut profile, &product, configuration.topology.ip.as_ref())
+    prepare_classic_ip_profile(&mut profile, &product, configuration.topology().ip.as_ref())
         .expect("standard IP configuration metadata");
     let target = ObservedTarget {
-        previous_address: configuration.individual_address,
+        previous_address: configuration.individual_address(),
         serial_number: None,
         credential: ManagementCredential::Plaintext,
     };
     let mut input = super::super::fixture_input(&product, &configuration, None, None)
         .data_security(DesiredDataSecurity::Disabled)
-        .facts(ProgrammingFacts::new(target).with_data_security(ObservedDataSecurity::Disabled));
+        .facts(ProgrammingFacts { target: Some(target), data_security: ObservedDataSecurity::Disabled });
     input.intent = CommissioningIntent::Download(DownloadMode::Partial(ProgramSections::CONFIGURATION));
     let mut compiler = super::super::fixture_compiler(&input, &profile);
     compiler.select_controls().expect("configuration-only source");
@@ -114,7 +114,7 @@ fn configuration_only_ip_controls_frame_the_selected_empty_source_and_restart() 
         });
         intent.password_users.clear();
         let configuration = configuration(&product, intent);
-        prepare_classic_ip_profile(&mut profile, &product, configuration.topology.ip.as_ref())
+        prepare_classic_ip_profile(&mut profile, &product, configuration.topology().ip.as_ref())
             .expect("standard OT11 facts resolve");
         let mut input = super::super::fixture_input(&product, &configuration, None, None)
             .data_security(DesiredDataSecurity::Disabled);
@@ -171,7 +171,7 @@ fn generated_ip_controls_keep_their_own_guards_under_keyed_source_selection() {
     });
     intent.password_users.clear();
     let configuration = configuration(&product, intent);
-    prepare_classic_ip_profile(&mut profile, &product, configuration.topology.ip.as_ref())
+    prepare_classic_ip_profile(&mut profile, &product, configuration.topology().ip.as_ref())
         .expect("standard OT11 facts resolve");
 
     // Native IP task controls own their guards, even when a tool key opens the
@@ -179,10 +179,10 @@ fn generated_ip_controls_keep_their_own_guards_under_keyed_source_selection() {
     // either management mode; service-family security still requires a key.
     for credential in [ManagementCredential::Plaintext, ManagementCredential::ToolKey, ManagementCredential::Fdsk] {
         let target =
-            ObservedTarget { previous_address: configuration.individual_address, serial_number: None, credential };
+            ObservedTarget { previous_address: configuration.individual_address(), serial_number: None, credential };
         let mut input = super::super::fixture_input(&product, &configuration, None, None)
             .data_security(DesiredDataSecurity::Disabled)
-            .facts(ProgrammingFacts::new(target).with_data_security(ObservedDataSecurity::Disabled));
+            .facts(ProgrammingFacts { target: Some(target), data_security: ObservedDataSecurity::Disabled });
         input.intent = CommissioningIntent::Download(DownloadMode::Partial(ProgramSections::CONFIGURATION));
         let mut compiler = super::super::fixture_compiler(&input, &profile);
         compiler.select_controls().expect("configuration source selection resolves");
@@ -228,16 +228,16 @@ fn authored_ip_property_writes_take_the_configured_feature_image() {
     intent.password_users.clear();
     intent.friendly_name = "KNX IP test".to_owned();
     let configuration = configuration(&product, intent);
-    prepare_classic_ip_profile(&mut profile, &product, configuration.topology.ip.as_ref())
+    prepare_classic_ip_profile(&mut profile, &product, configuration.topology().ip.as_ref())
         .expect("standard OT11 facts resolve");
     let target = ObservedTarget {
-        previous_address: configuration.individual_address,
+        previous_address: configuration.individual_address(),
         serial_number: None,
         credential: ManagementCredential::Plaintext,
     };
     let input = super::super::fixture_input(&product, &configuration, None, None)
         .data_security(DesiredDataSecurity::Disabled)
-        .facts(ProgrammingFacts::new(target).with_data_security(ObservedDataSecurity::Disabled));
+        .facts(ProgrammingFacts { target: Some(target), data_security: ObservedDataSecurity::Disabled });
     let mut compiler = super::super::fixture_compiler(&input, &profile);
     compiler.select_controls().expect("product procedure selection");
     compiler.build_image().expect("IP feature image");
@@ -277,7 +277,7 @@ fn basic_tool_configuration_has_exact_ot11_image_shape() {
         security: None,
         password_users: Vec::new(),
     });
-    prepare_classic_ip_profile(&mut profile, &product, configuration.topology.ip.as_ref())
+    prepare_classic_ip_profile(&mut profile, &product, configuration.topology().ip.as_ref())
         .expect("standard OT11 facts resolve");
 
     let (image, operations) =
@@ -346,7 +346,7 @@ fn all_plain_ip_secure_families_need_no_private_payload_and_keep_order() {
     });
     intent.password_users.clear();
     let configuration = configuration(&product, intent);
-    prepare_classic_ip_profile(&mut profile, &product, configuration.topology.ip.as_ref())
+    prepare_classic_ip_profile(&mut profile, &product, configuration.topology().ip.as_ref())
         .expect("standard OT11 facts resolve");
 
     let (_image, operations) =
@@ -370,7 +370,7 @@ fn secure_service_credentials_are_image_bytes_ordered_by_family() {
     let product = product(true);
     let mut profile = profile("MV-57B0");
     let configuration = configuration(&product, basic_secure_intent());
-    prepare_classic_ip_profile(&mut profile, &product, configuration.topology.ip.as_ref())
+    prepare_classic_ip_profile(&mut profile, &product, configuration.topology().ip.as_ref())
         .expect("standard OT11 facts resolve");
     let secrets = ResolvedIpSecureConfiguration {
         backbone_key: Some([0xa1; 16].into()),
@@ -446,7 +446,7 @@ fn secure_credential_binding_rejects_duplicate_missing_extra_and_short_material(
     let product = product(true);
     let mut profile = profile("MV-57B0");
     let configuration = configuration(&product, basic_secure_intent());
-    prepare_classic_ip_profile(&mut profile, &product, configuration.topology.ip.as_ref())
+    prepare_classic_ip_profile(&mut profile, &product, configuration.topology().ip.as_ref())
         .expect("standard OT11 facts resolve");
     let first = NonZeroU8::new(1).expect("nonzero");
     let second = NonZeroU8::new(2).expect("nonzero");
@@ -592,10 +592,10 @@ fn profile(mask: &str) -> ResolvedProfile {
     )
 }
 
-fn configuration(product: &ProductData, ip: ToolManagedIpConfiguration) -> LoweredDeviceConfiguration {
+fn configuration(product: &ProductData, ip: ToolManagedIpConfiguration) -> MaterializedDevice {
     let mut topology = TopologyConfiguration::default();
     topology.ip = Some(ip);
-    LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 10), Some(15))
+    MaterializedDevice::fixture(IndividualAddress::new(1, 1, 10), Some(15))
         .with_com_objects((product).com_objects().to_vec())
         .with_topology(topology)
 }
@@ -689,7 +689,7 @@ fn secure_routing_needs_only_the_backbone_key() {
 
     let mut profile = profile("MV-57B0");
     let configuration = configuration(&product, intent);
-    prepare_classic_ip_profile(&mut profile, &product, configuration.topology.ip.as_ref())
+    prepare_classic_ip_profile(&mut profile, &product, configuration.topology().ip.as_ref())
         .expect("standard OT11 facts resolve");
     let secrets = ResolvedIpSecureConfiguration {
         backbone_key: Some([0xa1; 16].into()),
@@ -732,7 +732,7 @@ fn ip_secure_keys_are_never_split_across_telegrams() {
     let product = product(true);
     let mut profile = profile("MV-57B0");
     let configuration = configuration(&product, basic_secure_intent());
-    prepare_classic_ip_profile(&mut profile, &product, configuration.topology.ip.as_ref())
+    prepare_classic_ip_profile(&mut profile, &product, configuration.topology().ip.as_ref())
         .expect("standard OT11 facts resolve");
     let secrets = ResolvedIpSecureConfiguration {
         backbone_key: Some([0xa1; 16].into()),

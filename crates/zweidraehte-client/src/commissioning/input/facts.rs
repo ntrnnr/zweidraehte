@@ -27,9 +27,4 @@ impl ProgrammingFacts {
     pub fn new(target: ObservedTarget) -> Self {
         Self { target: Some(target), ..Self::default() }
     }
-
-    pub fn with_data_security(mut self, mode: ObservedDataSecurity) -> Self {
-        self.data_security = mode;
-        self
-    }
 }

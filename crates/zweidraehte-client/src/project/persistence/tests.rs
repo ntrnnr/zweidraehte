@@ -4,7 +4,6 @@ use crate::commissioning::{
     CommissioningIntent, CommissioningSectionOutcome, DifferentialPolicy, DownloadMode, ExecutionReport,
     MutationStatus, ProgramSections, ProgrammingInput, TargetSelection, UnloadMode,
 };
-use crate::configuration::MaterializedDevice;
 use crate::configuration::ResolvedKeyMaterial;
 use crate::project::PlannedProjectDevice;
 use crate::project::error::Error;
@@ -37,7 +36,7 @@ fn only_exposed_group_rows_enter_atomic_failure_recovery() {
     };
     let mut other = metadata.clone();
     other.id.scope = KeyScope::Group("unsent".into());
-    let material = ResolvedKeyMaterial::new(None).with_provenance(vec![metadata.clone(), other]);
+    let material = ResolvedKeyMaterial::default().with_provenance(vec![metadata.clone(), other]);
     let nets = BTreeMap::from([(address, "floor:room".into()), (unsent, "unsent".into())]);
     assert!(
         group_key_exposure_manifest(&credential_commitments(&material), &nets, &BTreeSet::new())
@@ -52,11 +51,11 @@ fn only_exposed_group_rows_enter_atomic_failure_recovery() {
         group_key_exposure_manifest(&credential_commitments(&material), &BTreeMap::new(), &BTreeSet::from([address]))
             .is_err()
     );
-    let missing = ResolvedKeyMaterial::new(None);
+    let missing = ResolvedKeyMaterial::default();
     assert!(group_key_exposure_manifest(&credential_commitments(&missing), &nets, &BTreeSet::from([address])).is_err());
     let mut conflicting = metadata.clone();
     conflicting.fingerprint = [10; 32];
-    let conflicting = ResolvedKeyMaterial::new(None).with_provenance(vec![metadata, conflicting]);
+    let conflicting = ResolvedKeyMaterial::default().with_provenance(vec![metadata, conflicting]);
     assert!(
         group_key_exposure_manifest(&credential_commitments(&conflicting), &nets, &BTreeSet::from([address])).is_err()
     );
@@ -152,7 +151,7 @@ fn confirmed_address_assignment_survives_a_later_application_failure() {
     effects.confirm_address(crate::commissioning::AddressAssignment {
         serial_number: None,
         previous: zweidraehte_proto::address::IndividualAddress::new(15, 15, 255),
-        current: planned.device.configuration().individual_address,
+        current: planned.device.individual_address(),
         changed: true,
     });
     effects.record_sections([ProgrammingSection::Address, ProgrammingSection::Parameters]);
@@ -345,7 +344,7 @@ pub(in crate::project) const PERSISTENCE_PRODUCT_XML: &str = r#"
 
 pub(in crate::project) fn persistence_fixture(intent: CommissioningIntent) -> (PlannedProjectDevice, ExecutionReport) {
     use crate::commissioning::DiscoveredDevice;
-    use crate::configuration::LoweredDeviceConfiguration;
+    use crate::configuration::MaterializedDevice;
     let catalog = parse_master_data(
         r#"
         <KNX xmlns="http://knx.org/xml/project/23"><MasterData Id="MD" Version="1"><MaskVersions>
@@ -358,12 +357,9 @@ pub(in crate::project) fn persistence_fixture(intent: CommissioningIntent) -> (P
     .expect("fixture catalog");
     let product = ProductData::from_mtxml_str(PERSISTENCE_PRODUCT_XML).expect("fixture product");
     let address = zweidraehte_proto::address::IndividualAddress::new(1, 1, 23);
-    let device = MaterializedDevice::new(
-        product.bind_master_data(std::sync::Arc::clone(&catalog)).expect("catalog binds"),
-        LoweredDeviceConfiguration::new(address, Some(15)),
-        Vec::new(),
-        ResolvedKeyMaterial::new(None),
-    );
+    let device = MaterializedDevice::fixture(address, Some(15))
+        .with_product(product.bind_master_data(std::sync::Arc::clone(&catalog)).expect("catalog binds"))
+        .with_key_material(ResolvedKeyMaterial::default());
     let target = TargetSelection::ExistingAddress(address);
     let plan = ProgrammingInput::new(device.clone(), intent, CompileOptions {
         target: target.clone(),

@@ -39,7 +39,7 @@ impl ProgramCompiler<'_> {
     pub(in crate::commissioning::compiler) fn contribute_topology(&mut self) -> Result<(), CompileError> {
         let input = self.input;
         let profile = &self.profile;
-        let topology = &input.device.configuration().topology;
+        let topology = input.device.topology();
         let include_medium_configuration = self.feature_sections.contains(ProgramSections::CONFIGURATION);
         validate_network_topology(profile, topology)?;
 
@@ -110,7 +110,7 @@ impl ProgramCompiler<'_> {
         //
         // TODO: Segment couplers also load it at other addresses; the
         // project model does not mark segment couplers yet.
-        let filter_address = input.device.configuration().individual_address.device() == 0;
+        let filter_address = input.device.individual_address().device() == 0;
         if self.feature_sections.contains(ProgramSections::GROUP_COMMUNICATION) && filter_address {
             match (profile.resource("GroupFilterTable")?, &topology.group_filter) {
                 (Some(_), None) => {
@@ -143,7 +143,7 @@ impl ProgramCompiler<'_> {
     pub(in crate::commissioning::compiler) fn contribute_router_configuration(&mut self) -> Result<(), CompileError> {
         let input = self.input;
         let profile = &self.profile;
-        let topology = &input.device.configuration().topology;
+        let topology = input.device.topology();
 
         // The reference adds router configuration for a modern MV-0912 line
         // coupler without a second domain whose individual address is not a
@@ -159,7 +159,7 @@ impl ProgramCompiler<'_> {
         // firewall) once a witness needs them.
         if profile.mask().full_id == "MV-0912"
             && topology.domain_address.is_none()
-            && input.device.configuration().individual_address.device() != 0
+            && input.device.individual_address().device() != 0
             && input.device.product().programming_options().line_coupler_0912_new_programming_style().value
             && self.recipes.request().is_some_and(|request| request.procedure_type == "Load")
         {

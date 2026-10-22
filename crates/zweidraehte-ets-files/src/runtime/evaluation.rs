@@ -128,7 +128,6 @@ pub struct EvaluatedProduct<'a> {
     settings: ProductConfiguration,
     objects: Vec<EffectiveComObject>,
     product: ProductData,
-    modules: Vec<MaterializedModule>,
 }
 
 impl std::fmt::Debug for EvaluatedProduct<'_> {
@@ -138,7 +137,7 @@ impl std::fmt::Debug for EvaluatedProduct<'_> {
             .field("product", &self.product.id())
             .field("edited_parameters", &self.settings.parameters.len())
             .field("objects", &self.objects.len())
-            .field("modules", &self.modules.len())
+            .field("modules", &self.product.modules().len())
             .finish_non_exhaustive()
     }
 }
@@ -164,12 +163,12 @@ impl<'a> EvaluatedProduct<'a> {
         validate_configuration(device, &settings)?;
         let objects = effective_com_objects(device, &settings);
 
-        // Retain the exact allocator results used for geometry. Lowering takes
-        // this same roster instead of reconstructing it from editor state.
-        let mut modules = device.all_expanded_modules().map(MaterializedModule::from).collect::<Vec<_>>();
-        modules.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
+        // The resolved product retains the exact allocator results used for
+        // its geometry. Lowering takes that roster instead of reconstructing
+        // it from editor state.
+        let modules = device.all_expanded_modules().map(MaterializedModule::from).collect::<Vec<_>>();
         let product = selected.product().resolve_module_geometry(&modules)?;
-        Ok(Self { device, settings, objects, product, modules })
+        Ok(Self { device, settings, objects, product })
     }
 
     pub fn device(&self) -> &Device {
@@ -188,7 +187,7 @@ impl<'a> EvaluatedProduct<'a> {
     /// Active module instances and final arguments used to resolve the product's
     /// geometry, sorted by instance ID. Inactive draft instances are omitted.
     pub fn modules(&self) -> &[MaterializedModule] {
-        &self.modules
+        self.product.modules()
     }
 
     /// Visit programming inputs in order: memory defaults, visible references
@@ -316,13 +315,8 @@ impl<'a> EvaluatedProduct<'a> {
         Some(ParameterOverlay { id, source, value, parameter_type, size_bits, reference_order })
     }
 
-    /// Transfer the resolved product and its module roster without cloning.
-    /// Lowering reads the settings and object views before consuming these parts.
-    pub fn into_parts(self) -> (ProductData, Vec<MaterializedModule>) {
-        (self.product, self.modules)
-    }
-
-    /// Transfer only the resolved product, discarding the other evaluated values.
+    /// Transfer the resolved product, which carries its module roster, without
+    /// cloning. Lowering reads the settings and object views before consuming it.
     pub fn into_product(self) -> ProductData {
         self.product
     }

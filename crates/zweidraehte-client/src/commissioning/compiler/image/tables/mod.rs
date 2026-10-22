@@ -14,24 +14,24 @@ pub(crate) use objects::{NativeObjectFormat, NativeObjectTable};
 use super::CompiledTableKind;
 use crate::commissioning::catalog::profile::ResourceFlavour;
 use crate::commissioning::error::{CompileError, OverflowedTable};
-use crate::configuration::LoweredDeviceConfiguration;
+use crate::configuration::MaterializedDevice;
 use zweidraehte_ets_files::product::{ComObjectDef, ProductData};
 use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::com_object::ComObjectFlags;
 
 pub(super) struct TableInput<'a> {
     pub product: &'a ProductData,
-    pub configuration: &'a LoweredDeviceConfiguration,
+    pub device: &'a MaterializedDevice,
     pub groups: Vec<GroupAddress>,
     pub load_parameters: bool,
 }
 
 impl<'a> TableInput<'a> {
-    pub fn new(product: &'a ProductData, configuration: &'a LoweredDeviceConfiguration) -> Self {
-        let mut groups: Vec<_> = configuration.links.iter().map(|link| link.group_address).collect();
+    pub fn new(product: &'a ProductData, device: &'a MaterializedDevice) -> Self {
+        let mut groups: Vec<_> = device.object_memberships().iter().map(|link| link.group_address).collect();
         groups.sort_unstable();
         groups.dedup();
-        Self { product, configuration, groups, load_parameters: true }
+        Self { product, device, groups, load_parameters: true }
     }
 
     /// Active objects as their table rows encode them.
@@ -43,9 +43,9 @@ impl<'a> TableInput<'a> {
     /// `0xC7` to `0xC3`). The configured flag is kept for linked objects.
     pub fn linked_objects(&self) -> Vec<ComObjectDef> {
         let linked: std::collections::BTreeSet<u16> =
-            self.configuration.links.iter().map(|link| link.com_object).collect();
-        self.configuration
-            .com_objects
+            self.device.object_memberships().iter().map(|link| link.com_object).collect();
+        self.device
+            .com_objects()
             .iter()
             .map(|object| {
                 let mut object = object.clone();
@@ -58,12 +58,12 @@ impl<'a> TableInput<'a> {
     }
 
     pub fn active_numbers(&self) -> Vec<u16> {
-        self.configuration.com_objects.iter().map(|object| object.number).collect()
+        self.device.com_objects().iter().map(|object| object.number).collect()
     }
 
     pub fn associations(&self) -> Result<Vec<(u16, u16)>, CompileError> {
-        self.configuration
-            .links
+        self.device
+            .object_memberships()
             .iter()
             .map(|link| {
                 let index =
@@ -153,14 +153,14 @@ impl TableCodec {
         seed: impl FnOnce() -> Result<TableSeed, CompileError>,
     ) -> Result<EncodedTable, CompileError> {
         match self {
-            Self::Addresses(codec) => codec.encode(input.configuration.individual_address, &input.groups),
+            Self::Addresses(codec) => codec.encode(input.device.individual_address(), &input.groups),
             // Indexed formats reserve one slot per roster object; the roster
             // contains the active objects (see `ObjectTable`).
             Self::Associations(codec) => codec.encode(&input.associations()?, &input.active_numbers()),
             // TODO: confirm the unlinked-object rule for System 300 before
             // changing the configured bit in its DPT rows.
             Self::Objects(codec @ ObjectTable::DptProperties) => {
-                let mut encoded = codec.encode(input.product, &input.configuration.com_objects, seed)?;
+                let mut encoded = codec.encode(input.product, input.device.com_objects(), seed)?;
                 if input.load_parameters {
                     // Native LoadApplicationProgram includes parameter loading.
                     // Fill only wholly unowned bytes; partially owned parameter

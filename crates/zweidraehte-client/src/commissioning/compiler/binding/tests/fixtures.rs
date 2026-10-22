@@ -345,8 +345,8 @@ pub(super) fn resolve_profile(
     .expect("profile resolves")
 }
 
-pub(super) fn configuration() -> LoweredDeviceConfiguration {
-    LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 10), Some(15))
+pub(super) fn configuration() -> MaterializedDevice {
+    MaterializedDevice::fixture(IndividualAddress::new(1, 1, 10), Some(15))
 }
 
 /// Every fixture starts with disabled application security; access is supplied
@@ -354,27 +354,27 @@ pub(super) fn configuration() -> LoweredDeviceConfiguration {
 pub(super) fn programming_input(
     catalog: &std::sync::Arc<MasterData>,
     product: &ProductData,
-    configuration: &LoweredDeviceConfiguration,
+    configuration: &MaterializedDevice,
     intent: CommissioningIntent,
     options: CompileOptions,
 ) -> ProgrammingInput {
     let network = ObservedTarget {
-        previous_address: configuration.individual_address,
+        previous_address: configuration.individual_address(),
         serial_number: None,
         credential: ManagementCredential::Plaintext,
     };
-    let keys = ResolvedKeyMaterial::new(None);
+    let keys = ResolvedKeyMaterial::default();
     ProgrammingInput::new(
-        MaterializedDevice::new(
-            product.clone().bind_master_data(std::sync::Arc::clone(catalog)).expect("fixture document binds"),
-            configuration.clone(),
-            Vec::new(),
-            keys,
-        ),
+        configuration
+            .clone()
+            .with_product(
+                product.clone().bind_master_data(std::sync::Arc::clone(catalog)).expect("fixture document binds"),
+            )
+            .with_key_material(keys),
         intent,
         options,
     )
-    .facts(ProgrammingFacts::new(network).with_data_security(ObservedDataSecurity::Disabled))
+    .facts(ProgrammingFacts { target: Some(network), data_security: ObservedDataSecurity::Disabled })
 }
 
 pub(super) fn compile_options(_restart_kind: RestartKind) -> CompileOptions {

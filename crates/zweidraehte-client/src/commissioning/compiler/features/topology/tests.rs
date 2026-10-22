@@ -4,7 +4,7 @@ use crate::commissioning::input::DownloadMode;
 use crate::commissioning::procedure::ProcedureStep;
 use crate::commissioning::test_support::architecture::resolve_profile;
 use crate::commissioning::test_support::architecture::{catalog, compile, compile_with_mode, product, rf_topology};
-use crate::configuration::{LoweredDeviceConfiguration, TopologyConfiguration};
+use crate::configuration::{MaterializedDevice, TopologyConfiguration};
 use zweidraehte_proto::address::IndividualAddress as DeviceAddress;
 
 use std::collections::BTreeSet;
@@ -104,8 +104,7 @@ fn full_rf_downloads_state_the_multi_type_and_leave_the_domain_out_of_the_image(
     for (mode, value) in [(RfDeviceMode::Ready, 0), (RfDeviceMode::Multi, 1)] {
         let mut topology = rf_topology();
         topology.rf_device_mode = Some(mode);
-        let configuration =
-            LoweredDeviceConfiguration::new(DeviceAddress::new(1, 1, 10), Some(15)).with_topology(topology);
+        let configuration = MaterializedDevice::fixture(DeviceAddress::new(1, 1, 10), Some(15)).with_topology(topology);
         let (image, steps) =
             super::super::compile_fixture(&profile, &product, &configuration, None, None, |compiler| {
                 compiler.contribute_topology()

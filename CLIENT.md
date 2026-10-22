@@ -79,17 +79,19 @@ definition until the selection and its editors are dropped; see
 [product selection](docs/ETS_FILES.md#product-selection) for this tradeoff.
 `Device::evaluate` checks edits, derivation, effective settings and geometry;
 its borrowed `EvaluatedProduct` prevents mutation while the result is in use.
-It retains the sorted active module instances and final allocator arguments used
-for geometry. `modules()` lends that roster; `into_parts()` transfers it with
-the resolved product. Client lowering consumes those parts without walking
-expanded editor modules again or cloning their arguments.
-`ResolvedDevice::from_evaluated` combines that result with
-`InstallationConfiguration`, which contains no encoded parameters or objects.
-The resolved device owns the product, evaluated
-configuration, module geometry and exact procedure-selector values. Its consuming
-`into_materialized(keys)` conversion creates the flat compiler configuration once.
-`LoweredDeviceConfiguration::new(address, apdu_ceiling)` makes the optional APDU
-ceiling explicit; `Some(15)` imposes the standard-frame limit, while project
+Its resolved product retains the sorted active module instances and final
+allocator arguments used for geometry (`ProductData::modules()`);
+`into_product()` transfers it. Client lowering consumes that product without
+walking expanded editor modules again or cloning their arguments.
+`MaterializedDevice::from_evaluated` combines that result with
+`InstallationConfiguration`, which contains no encoded parameters or objects,
+and returns a `MaterializedDevice<Unkeyed>`. That device owns the product,
+address, links, topology, the `EncodedConfiguration` (parameters, objects and
+exact procedure-selector values) and the authored `SecurityIntent`. Key
+resolution reads the intent; `into_keyed(keys)` replaces it with
+`ResolvedKeyMaterial`, and only the resulting `MaterializedDevice<Keyed>`
+compiles. `InstallationConfiguration::max_apdu` makes the optional APDU ceiling
+explicit; `Some(15)` imposes the standard-frame limit, while project
 configuration retains its authored optional limit.
 
 `EvaluatedProduct::parameter_overlays()` owns programming selection, effective
@@ -578,12 +580,12 @@ Project APIs are no longer duplicated at the root: import, for example,
 to `configuration`, without a second export through `commissioning`. Bus response
 parsing and compiler, execution and binding machinery remain internal.
 
-The standalone `DeviceConfiguration::into_lowered` shortcut is removed.
 Normal callers obtain `MaterializedDevice` through
-`ResolvedDevice::from_evaluated(...).into_materialized(keys)`. The expert
-`MaterializedDevice::new` constructor remains available for adapters supplying
-already evaluated or synthetic facts. It groups those facts without proving
-they describe one consistent evaluation. Compilation validates programming
+`MaterializedDevice::from_evaluated(...).into_keyed(keys)`. The expert
+`MaterializedDevice::from_parts(product, installation, encoded)` constructor
+remains available for adapters supplying already evaluated or synthetic facts;
+`product` must already carry its module geometry. It groups those facts without
+proving they describe one consistent evaluation. Compilation validates programming
 constraints; it does not independently verify a caller's dynamic evaluation.
 Inspecting or constructing a procedure does not bypass live preparation before
 execution.

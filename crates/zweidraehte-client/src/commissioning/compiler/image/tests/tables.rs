@@ -59,7 +59,7 @@ fn dynamic_bcu1_tables_share_capacity_but_cannot_overrun_the_pool() {
     let mut segments = product.segments().to_vec();
     segments[0].data[80] = 2;
     let product = product.with_fixture_segments(segments);
-    configuration.links.push(GroupLink { group_address: GroupAddress::from_three_level(1, 2, 4), com_object: 0 });
+    configuration.object_memberships_mut().push(ObjectMembership::primary(GroupAddress::from_three_level(1, 2, 4), 0));
     let mut image = SparseDeviceImage::new();
     let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("segments seed");
     let layout =
@@ -97,8 +97,8 @@ fn dynamic_bcu1_tables_share_capacity_but_cannot_overrun_the_pool() {
 
     for address in 5..12 {
         configuration
-            .links
-            .push(GroupLink { group_address: GroupAddress::from_three_level(1, 2, address), com_object: 0 });
+            .object_memberships_mut()
+            .push(ObjectMembership::primary(GroupAddress::from_three_level(1, 2, address), 0));
     }
     let mut image = SparseDeviceImage::new();
     let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("segments seed");
@@ -142,7 +142,7 @@ fn dynamic_bcu2_shared_tables_preserve_seeded_gaps_between_nominal_capacities() 
     let (before, tail) = xml.split_once("<FixupList>").expect("fixture has fixups");
     let (_, after) = tail.split_once("</FixupList>").expect("fixture closes fixups");
     let dynamic = ProductData::from_mtxml_str(&format!("{before}{after}")).expect("dynamic fixture parses");
-    configuration.links.clear();
+    configuration.object_memberships_mut().clear();
 
     // Both BCU2 association realizations keep authored bytes between their
     // nominal table capacities. BCU1 instead releases the whole shared pool,
@@ -268,7 +268,7 @@ fn system_300_group_object_rows_overlay_flags_on_parameter_dpt_bytes() {
 
     let product =
         ProductData::from_mtxml_str(BCU1_MTXML).expect("fixture parses").with_fixture_com_objects(objects, vec![0, 1]);
-    let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15))
+    let configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15))
         .with_com_objects(product.com_objects().to_vec());
     let table = TableCodec::new(CompiledTableKind::GroupObject, ResourceFlavour::GroupObjectTableSystem300)
         .expect("known format")
@@ -313,8 +313,8 @@ fn system300_property_tables_omit_memory_headers_and_preserve_parameter_owned_ta
         .expect("fixture parses")
         .with_fixture_com_objects(objects.clone(), vec![1]);
     let mut configuration =
-        LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15)).with_com_objects(objects);
-    configuration.links.push(GroupLink { group_address: GroupAddress::from_three_level(1, 2, 3), com_object: 1 });
+        MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15)).with_com_objects(objects);
+    configuration.object_memberships_mut().push(ObjectMembership::primary(GroupAddress::from_three_level(1, 2, 3), 1));
     let at = |object_type, property_id| ImageLocation {
         space: ImageSpace::Property {
             object: ObjectSelector::Type { object_type, occurrence: Occurrence::Zero },
@@ -363,8 +363,8 @@ fn compiled_table_spans_report_encoded_extents_instead_of_resource_capacity() {
     let mut product_segments = product.segments().to_vec();
     product_segments[0].data[80] = 2;
     let product = product.with_fixture_segments(product_segments);
-    let mut project = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
-    project.links.push(GroupLink { group_address: GroupAddress::from_three_level(1, 2, 3), com_object: 0 });
+    let mut project = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
+    project.object_memberships_mut().push(ObjectMembership::primary(GroupAddress::from_three_level(1, 2, 3), 0));
     let configuration = project.with_com_objects(product.com_objects().to_vec());
     let profile = table_profile();
     let mut image = SparseDeviceImage::new();
@@ -409,7 +409,7 @@ fn a_zero_filled_ia_slot_is_not_owned() {
     let product = product.with_fixture_segments(product_segments);
     // Clearing the data also blanks the object table later in this shared
     // segment, so the configuration activates no objects.
-    let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+    let configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
     let mut image = SparseDeviceImage::new();
     let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("product segments seed");
     let seeded = image.project(&ImageLocation::standard_memory(0x116), &[0; 3]).expect("in range");
@@ -436,8 +436,8 @@ fn fixed_tables_own_their_rows_but_not_the_ia_slot_or_unused_capacity() {
     let mut product_segments = product.segments().to_vec();
     product_segments[0].data[80] = 2;
     let product = product.with_fixture_segments(product_segments);
-    let mut project = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
-    project.links.push(GroupLink { group_address: GroupAddress::from_three_level(1, 2, 3), com_object: 0 });
+    let mut project = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
+    project.object_memberships_mut().push(ObjectMembership::primary(GroupAddress::from_three_level(1, 2, 3), 0));
     let configuration = project.with_com_objects(product.com_objects().to_vec());
     let profile = table_profile();
     let mut image = SparseDeviceImage::new();
@@ -470,11 +470,11 @@ fn fixed_address_table_overflow_is_typed_at_its_declared_maximum() {
     let max_entries = u8::try_from(max_entries).expect("the fixture declares five entries");
     let profile = table_profile();
     let compile = |groups: u8| {
-        let mut project = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+        let mut project = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
         for address in 1..=groups {
             project
-                .links
-                .push(GroupLink { group_address: GroupAddress::from_three_level(1, 2, address), com_object: 0 });
+                .object_memberships_mut()
+                .push(ObjectMembership::primary(GroupAddress::from_three_level(1, 2, address), 0));
         }
         let configuration = project.with_com_objects(product.com_objects().to_vec());
         let mut image = SparseDeviceImage::new();
@@ -520,11 +520,11 @@ fn adjacent_table_placement_keeps_family_padding_and_the_combined_end() {
         let product = ProductData::from_mtxml_str(&xml).expect("adjacent table fixture parses");
         let profile = table_profile_with_flavours("AddressTable_Bcu1", flavour);
         for groups in [0, 1, 3, 6] {
-            let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+            let mut configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
             for address in 1..=groups {
                 configuration
-                    .links
-                    .push(GroupLink { group_address: GroupAddress::from_two_level(0, address), com_object: 1 });
+                    .object_memberships_mut()
+                    .push(ObjectMembership::primary(GroupAddress::from_two_level(0, address), 1));
             }
             let mut image = SparseDeviceImage::new();
             let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("segments seed");
@@ -562,8 +562,8 @@ fn adjacent_table_placement_closes_a_free_gap_before_the_association_segment() {
             .replace("Address=\"16640\"", &format!("Address=\"{}\"", start + 18));
         let product = ProductData::from_mtxml_str(&xml).expect("gapped table fixture parses");
         let profile = table_profile_with_flavours("AddressTable_Bcu1", flavour);
-        let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
-        configuration.links.push(GroupLink { group_address: GroupAddress::from_two_level(0, 1), com_object: 1 });
+        let mut configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
+        configuration.object_memberships_mut().push(ObjectMembership::primary(GroupAddress::from_two_level(0, 1), 1));
         let mut image = SparseDeviceImage::new();
         let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("segments seed");
         let tables = CommunicationTables::prepare(
@@ -593,9 +593,11 @@ fn system7_dynamic_placement_rejects_overflow_without_mutating_the_image() {
         .replace("Address=\"16640\"", "Address=\"16401\"");
     let product = ProductData::from_mtxml_str(&xml).expect("adjacent table fixture parses");
     let profile = table_profile_with_flavours("AddressTable_Bcu1", "AssociationTable_M112");
-    let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+    let mut configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
     for address in 1..=8 {
-        configuration.links.push(GroupLink { group_address: GroupAddress::from_two_level(0, address), com_object: 1 });
+        configuration
+            .object_memberships_mut()
+            .push(ObjectMembership::primary(GroupAddress::from_two_level(0, address), 1));
     }
     let mut image = SparseDeviceImage::new();
     let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("segments seed");
@@ -607,7 +609,7 @@ fn system7_dynamic_placement_rejects_overflow_without_mutating_the_image() {
     assert_eq!(error.kind, CompileErrorKind::TableOverflow(OverflowedTable::SharedAddressAssociation));
     assert_eq!(image, before);
 
-    configuration.links.pop();
+    configuration.object_memberships_mut().pop();
     let tables =
         CommunicationTables::prepare(&profile, &product, &configuration, &buffers, &mut image, ImageDemand::Complete)
             .expect("seven groups exactly fill the pool");
@@ -632,11 +634,11 @@ fn system7_dynamic_tables_release_only_nominal_capacity() {
     let product = ProductData::from_mtxml_str(&xml).expect("adjacent table fixture parses");
     let profile = table_profile_with_flavours("AddressTable_Bcu1", "AssociationTable_M112");
     for groups in [0, 1, 3] {
-        let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+        let mut configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
         for address in 1..=groups {
             configuration
-                .links
-                .push(GroupLink { group_address: GroupAddress::from_two_level(0, address), com_object: 1 });
+                .object_memberships_mut()
+                .push(ObjectMembership::primary(GroupAddress::from_two_level(0, address), 1));
         }
         let mut image = SparseDeviceImage::new();
         let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).expect("segments seed");
@@ -710,7 +712,7 @@ fn absent_bcu2_object_table_does_not_create_an_empty_header() {
           <LoadProcedures><LoadProcedure /></LoadProcedures>
         </Static>
       </ApplicationProgram></ApplicationPrograms></Manufacturer></ManufacturerData></KNX>"#;
-    let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+    let configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
 
     for product in [&ProductData::from_mtxml_str(xml).expect("interface fixture parses"), &product] {
         let mut image = SparseDeviceImage::new();
@@ -767,7 +769,7 @@ fn empty_object_header_spans_adjacent_declared_segments() {
         xml.replace("GroupObjectTable_Bcu11", "GroupObjectTable_Bcu2")
     });
     let product = split_empty_object_header_product(278);
-    let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+    let configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
     let required = [RequiredImageRange { location: ImageLocation::standard_memory(278), length: 1 }];
     for scoped in [false, true] {
         let demand = if scoped { ImageDemand::Ranges(&required) } else { ImageDemand::Complete };
@@ -813,9 +815,9 @@ fn split_object_header_keeps_gaps_spaces_and_row_capacity_checked() {
             });
         }
         let product = split_empty_object_header_product(if case == "gap" { 279 } else { 278 });
-        let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+        let mut configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
         if case == "row-overflow" {
-            configuration.com_objects.push(ComObjectDef {
+            configuration.encoded_mut().com_objects.push(ComObjectDef {
                 number: 0,
                 flags: ComObjectFlags::from_byte(0x57),
                 object_type: ComObjectType::Uint1,
@@ -852,7 +854,7 @@ fn split_object_header_keeps_gaps_spaces_and_row_capacity_checked() {
 #[test]
 fn bcu2_association_pointer_uses_published_standard_memory_allocation() {
     let product = split_empty_object_header_product(278);
-    let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+    let configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
     for space in ["StandardMemory", "UserMemory"] {
         let mut profile = table_profile_for_mask(0x0021, "Bcu2", "AddressTable_Bcu1", "AssociationTable_Bcu2");
         crate::commissioning::catalog::profile::testing::edit_profile(&mut profile, |xml| {
@@ -901,11 +903,11 @@ fn adjacent_bcu2_alignment_and_code_tails_follow_full_and_selective_ownership() 
     for flags in [0, 0x80] {
         let product = ProductData::from_mtxml_str(&adjacent_bcu2_fixture(flags)).unwrap();
         for groups in [0, 1, 3, 6, 9, 16, 40] {
-            let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+            let mut configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
             for address in 1..=groups {
                 configuration
-                    .links
-                    .push(GroupLink { group_address: GroupAddress::from_two_level(0, address), com_object: 1 });
+                    .object_memberships_mut()
+                    .push(ObjectMembership::primary(GroupAddress::from_two_level(0, address), 1));
             }
             for scope in 0..8 {
                 let sections = if scope == 0 {
@@ -984,8 +986,8 @@ fn adjacent_bcu2_pointer_follows_the_nominal_association_page() {
     let early = late.replace("Address=\"788\"", "Address=\"508\"").replace("Size=\"510\"", "Size=\"230\"");
     for (xml, nominal) in [(late, 788), (early, 508)] {
         let product = ProductData::from_mtxml_str(&xml).expect("adjacent BCU2 fixture with a header segment");
-        let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
-        configuration.links.push(GroupLink { group_address: GroupAddress::from_two_level(0, 1), com_object: 1 });
+        let mut configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
+        configuration.object_memberships_mut().push(ObjectMembership::primary(GroupAddress::from_two_level(0, 1), 1));
         let mut image = SparseDeviceImage::new();
         let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).unwrap();
         let tables = CommunicationTables::prepare(
@@ -1018,7 +1020,7 @@ fn adjacent_bcu2_rejects_missing_or_ambiguous_flags_before_mutating_the_image() 
     let too_small = source.replace("MaxEntries=\"108\"", "MaxEntries=\"254\"");
     for xml in [ambiguous, missing, too_small] {
         let product = ProductData::from_mtxml_str(&xml).unwrap();
-        let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+        let configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
         let mut image = SparseDeviceImage::new();
         let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).unwrap();
         let before = image.clone();
@@ -1064,7 +1066,7 @@ fn adjacent_bcu2_uses_the_selected_typed_allocation_flags() {
             Vec::new(),
         )
         .unwrap();
-        let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+        let configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
         let mut image = SparseDeviceImage::new();
         let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).unwrap();
         let tables = CommunicationTables::prepare_for_program(
@@ -1092,7 +1094,7 @@ fn fixed_nonadjacent_and_scoped_system7_tables_keep_authored_geometry() {
     // authored places. A free gap closes (see the test above).
     let dynamic_occupied_gap = dynamic.replace("Address=\"17152\"", "Address=\"16500\"");
     let profile = table_profile_with_flavours("AddressTable_Bcu1", "AssociationTable_M112");
-    let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
+    let configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
     for (xml, demand) in [
         (adjacent, ImageDemand::Complete),
         (dynamic_occupied_gap, ImageDemand::Complete),
@@ -1193,11 +1195,8 @@ fn bcu2_shared_pool_relocates_only_selected_tables_without_split_padding() {
     let grp = ProgramSections::GROUP_COMMUNICATION;
     let cfg = ProgramSections::CONFIGURATION;
     for groups in [0, 1, 3, 6, 9, 16, 40] {
-        configuration.links = (0..groups)
-            .map(|i| GroupLink {
-                group_address: GroupAddress::from_three_level(0, 0, i + 1),
-                com_object: u16::from(i % 2),
-            })
+        *configuration.object_memberships_mut() = (0..groups)
+            .map(|i| ObjectMembership::primary(GroupAddress::from_three_level(0, 0, i + 1), u16::from(i % 2)))
             .collect();
         for selected in [
             None,
@@ -1231,9 +1230,8 @@ fn bcu2_shared_pool_relocates_only_selected_tables_without_split_padding() {
             assert_eq!(compiled.image.byte(&ImageLocation::standard_memory(0x118)), None);
         }
     }
-    configuration.links = (0..41)
-        .map(|i| GroupLink { group_address: GroupAddress::from_three_level(0, 0, i + 1), com_object: 0 })
-        .collect();
+    *configuration.object_memberships_mut() =
+        (0..41).map(|i| ObjectMembership::primary(GroupAddress::from_three_level(0, 0, i + 1), 0)).collect();
     let mut image = SparseDeviceImage::new();
     let buffers = seed_segments(&product, ImageDemand::Complete, &mut image).unwrap();
     let before = image.clone();

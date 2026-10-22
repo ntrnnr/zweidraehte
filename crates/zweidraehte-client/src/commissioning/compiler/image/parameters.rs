@@ -5,19 +5,19 @@ use super::{ImageDemand, region_patch};
 use crate::commissioning::catalog::profile::{DeclaredProperty, ObjectSelector, ResolvedProfile};
 use crate::commissioning::catalog::rules::product_property_object;
 use crate::commissioning::image::{ImageLocation, ImageSegment, ImageSpace, NativeImageRegion, SparseDeviceImage};
-use crate::configuration::{LoweredDeviceConfiguration, ParameterValue};
+use crate::configuration::{EncodedParameter, MaterializedDevice};
 use std::collections::BTreeMap;
 use zweidraehte_ets_files::product::{ParameterByteOrder, ProductData};
 use zweidraehte_project::ProgrammingSection;
 
 pub(super) fn apply_parameters(
     product: &ProductData,
-    configuration: &LoweredDeviceConfiguration,
+    device: &MaterializedDevice,
     regions: &BTreeMap<String, NativeImageRegion>,
     image: &mut SparseDeviceImage,
     demand: ImageDemand<'_>,
 ) -> Result<(), CompileError> {
-    for value in &configuration.parameters {
+    for value in device.parameters() {
         let Some(location) = product.parameters().iter().find(|location| location.id == value.id) else {
             if !demand.is_complete() || product.property_parameters().iter().any(|location| location.id == value.id) {
                 continue;
@@ -98,7 +98,7 @@ pub(super) fn apply_parameters(
 pub(super) fn apply_property_parameters(
     profile: &ResolvedProfile,
     product: &ProductData,
-    configuration: &LoweredDeviceConfiguration,
+    device: &MaterializedDevice,
     image: &mut SparseDeviceImage,
     demand: ImageDemand<'_>,
 ) -> Result<(), CompileError> {
@@ -106,7 +106,7 @@ pub(super) fn apply_property_parameters(
     // Materialization orders defaults before active union members. Preserve
     // that last-writer precedence just as memory parameters do; declaration
     // order can otherwise overwrite an active member with an inactive one.
-    for value in &configuration.parameters {
+    for value in device.parameters() {
         let Some(location) = product.property_parameters().iter().find(|location| location.id == value.id) else {
             continue;
         };
@@ -239,7 +239,7 @@ pub(super) fn apply_property_parameters(
 
 fn null_restriction_span(
     product: &ProductData,
-    value: &ParameterValue,
+    value: &EncodedParameter,
     size_bits: u16,
     bit_offset: u8,
 ) -> Option<usize> {
@@ -247,7 +247,7 @@ fn null_restriction_span(
         .then(|| if size_bits == 0 { 0 } else { (usize::from(size_bits) + usize::from(bit_offset)).div_ceil(8) })
 }
 
-fn raw_parameter_length(value: &ParameterValue, capacity: u32, bit_offset: u8) -> Result<u32, CompileError> {
+fn raw_parameter_length(value: &EncodedParameter, capacity: u32, bit_offset: u8) -> Result<u32, CompileError> {
     if bit_offset != 0 || value.value.len() as u64 > u64::from(capacity) {
         return Err(CompileError::invalid(format!(
             "raw parameter {} is unaligned or exceeds its declared capacity",
@@ -273,7 +273,7 @@ fn transfer_parameter_bytes(
 }
 
 pub(super) fn encode_parameter(
-    parameter: &ParameterValue,
+    parameter: &EncodedParameter,
     size_bits: u16,
     bit_offset: u8,
     byte_ordered: bool,
@@ -312,7 +312,7 @@ pub(super) fn encode_parameter(
     Ok((data, masks))
 }
 
-fn parameter_span(value: &ParameterValue, size_bits: u16, bit_offset: u8) -> Result<usize, CompileError> {
+fn parameter_span(value: &EncodedParameter, size_bits: u16, bit_offset: u8) -> Result<usize, CompileError> {
     if bit_offset == 0 && size_bits.is_multiple_of(8) {
         if size_bits != 0 && value.value.len() > usize::from(size_bits / 8) {
             return Err(CompileError::invalid(format!("parameter {0:?} is wider than its declared type", value.id)));

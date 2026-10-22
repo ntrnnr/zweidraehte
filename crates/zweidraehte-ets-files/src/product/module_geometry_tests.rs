@@ -75,6 +75,10 @@ fn evaluated_roster_resolves_without_replaying_dynamic_instances() {
         ("second::entry", PropertyObject::Index(3), 101, 21, 0, 8),
         ("second::entry-union", PropertyObject::Index(3), 101, 23, 0, 8),
     ]);
+    // The product keeps the roster it resolved, in instance-ID order, so
+    // module procedures instantiate from the same list as this geometry.
+    assert!(product.modules().is_empty());
+    assert_eq!(resolved.modules(), [instance("first", 10), instance("second", 20)]);
 
     let repeated = resolved.resolve_module_geometry(&modules).expect("resolution is idempotent");
     assert_eq!(repeated.parameters(), resolved.parameters());
@@ -83,6 +87,7 @@ fn evaluated_roster_resolves_without_replaying_dynamic_instances() {
     assert_eq!(removed.parameters(), product.parameters());
     assert_eq!(removed.property_parameters(), product.property_parameters());
     assert_eq!(removed.schema_provenance(), product.schema_provenance());
+    assert!(removed.modules().is_empty(), "a new roster replaces the previous one");
 
     let device = Device::new(program, None);
     assert_eq!(device.derivation_error(), None);

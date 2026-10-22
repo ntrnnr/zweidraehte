@@ -334,7 +334,7 @@ impl ProgrammingBatchPlan {
                 )
             } else {
                 serial_number.map_or_else(
-                    || TargetSelection::ExistingAddress(planned.device.configuration().individual_address),
+                    || TargetSelection::ExistingAddress(planned.device.individual_address()),
                     TargetSelection::SerialNumber,
                 )
             };
@@ -649,14 +649,9 @@ impl ProjectPlanner<'_> {
             let supports_data_secure = lowered.resolved.product().supports_data_secure();
             // Management-only operations need credentials, not unrelated group keys.
             let resolved = lowered.resolved;
-            let management = (!includes_application).then(|| {
-                let mut configuration = resolved.configuration().clone();
-                configuration.object_memberships.clear();
-                configuration.net_security.clear();
-                configuration
-            });
+            let management = (!includes_application).then(|| resolved.without_group_communication());
             let mut keys = resolve_project_key_material(
-                management.as_ref().unwrap_or(resolved.configuration()),
+                management.as_ref().unwrap_or(&resolved),
                 &id.0,
                 &lowered.net_ids,
                 &[],
@@ -685,9 +680,9 @@ impl ProjectPlanner<'_> {
                 security.replace_siat(rows.into_iter().collect());
             }
             if includes_application {
-                keys::validate_application_security(resolved.configuration(), keys.application_security())?;
+                keys::validate_application_security(&resolved, keys.application_security())?;
             }
-            let device = resolved.into_materialized(keys)?.bind_master_data(document)?;
+            let device = resolved.into_keyed(keys).bind_master_data(document)?;
             let (mut desired_manifest, image_requirements) = if includes_application {
                 let image = device.project_preview(&id, authored, state)?;
                 let requirements = image.requirements().to_vec();
@@ -1071,7 +1066,7 @@ fn derive_senders(
         }
 
         let flags: BTreeMap<_, _> =
-            device.resolved.configuration().objects.iter().map(|object| (object.number, object.flags)).collect();
+            device.resolved.com_objects().iter().map(|object| (object.number, object.flags)).collect();
         for object in authored.objects.values() {
             let Some(flags) = flags.get(&object.com_object) else { continue };
             if !flags.communication_enable()

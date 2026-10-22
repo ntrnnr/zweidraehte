@@ -8,7 +8,7 @@ use super::{
     SerialAddressingSupport,
 };
 use crate::bus::access::{ManagementCredential, ManagementCredentials};
-use crate::configuration::{DeviceIdentity, ResolvedKeyMaterial};
+use crate::configuration::ResolvedKeyMaterial;
 use crate::project::error::{Error, Result};
 use crate::security::Keyring;
 use crate::security::channel::seq_from_bytes;
@@ -38,8 +38,7 @@ impl ProjectManagementTarget {
         keyring: Option<&Keyring>,
         serial_addressing: SerialAddressingSupport,
     ) -> Result<Self> {
-        let identity = DeviceIdentity { desired_address: device.address, serial_number: device.serial };
-        let (keys, _) = resolve_management_keys(identity, &device.id.0, keys, keyring)?;
+        let (keys, _) = resolve_management_keys(device.serial, device.address, &device.id.0, keys, keyring)?;
         Ok(Self { id: device.id.clone(), address: device.address, serial_addressing, keys })
     }
 

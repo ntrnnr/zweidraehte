@@ -319,7 +319,7 @@ pub(in crate::commissioning) fn select_procedure<'a>(
     let mut omitted_controls = omitted_controls;
     if is_download
         && composition == ProcedureComposition::Default
-        && resolved.input.device.configuration().individual_address.device() != 0
+        && resolved.input.device.individual_address().device() != 0
         && let Some(index) =
             controls.iter().position(|control| matches!(control, LoadControl::LdCtrlClearLCFilterTable(_)))
     {
@@ -329,12 +329,12 @@ pub(in crate::commissioning) fn select_procedure<'a>(
     let module_procedures = modules::instantiate(product, resolved.input.device.modules())?;
     // The IP feature writes its configured parameters into the IP object's
     // property images during image construction, after this selection.
-    let feature_property_objects =
-        if profile.tool_managed_ip.is_some() && resolved.input.device.configuration().topology.ip.is_some() {
-            vec![crate::commissioning::catalog::rules::ip::IP_OBJECT]
-        } else {
-            Vec::new()
-        };
+    let feature_property_objects = if profile.tool_managed_ip.is_some() && resolved.input.device.topology().ip.is_some()
+    {
+        vec![crate::commissioning::catalog::rules::ip::IP_OBJECT]
+    } else {
+        Vec::new()
+    };
     let input = ProcedureInput {
         profile,
         procedure_id: source,
@@ -347,7 +347,7 @@ pub(in crate::commissioning) fn select_procedure<'a>(
         module_procedures,
         feature_property_objects,
         omitted_controls,
-        parameter_values: &resolved.input.device.configuration().procedure_parameters,
+        parameter_values: resolved.input.device.procedure_parameters(),
         applicability: request.applicability,
         configuration_anchor: profile.configuration_anchor(),
         download_stamps,

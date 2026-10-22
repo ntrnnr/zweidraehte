@@ -7,8 +7,8 @@ use crate::commissioning::compiler::image::tables::{
 use crate::commissioning::compiler::image::*;
 use crate::commissioning::error::{CompileError, CompileErrorKind};
 use crate::commissioning::image::RequiredImageRange;
-use crate::configuration::LoweredDeviceConfiguration;
-use crate::configuration::ParameterValue;
+use crate::configuration::EncodedParameter;
+use crate::configuration::MaterializedDevice;
 use zweidraehte_ets_files::product::ParameterLocation;
 use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
@@ -21,7 +21,7 @@ use zweidraehte_ets_files::product::{ComObjectDef, ParameterByteOrder};
 use zweidraehte_proto::address::IndividualAddress;
 
 use crate::commissioning::catalog::profile::ResourceFlavour;
-use crate::configuration::GroupLink;
+use crate::configuration::ObjectMembership;
 
 mod identity;
 mod ownership;
@@ -30,7 +30,7 @@ mod reservations;
 mod scoped;
 mod tables;
 
-fn plain_fixture() -> (std::sync::Arc<MasterData>, ResolvedProfile, ProductData, LoweredDeviceConfiguration) {
+fn plain_fixture() -> (std::sync::Arc<MasterData>, ResolvedProfile, ProductData, MaterializedDevice) {
     // These tests exercise image behavior. Remove the independently tested
     // ROM fixup so an unrelated Master Data function is not a dependency.
     let (before, tail) = BCU1_MTXML.split_once("<FixupList>").expect("fixture has fixups");
@@ -41,8 +41,8 @@ fn plain_fixture() -> (std::sync::Arc<MasterData>, ResolvedProfile, ProductData,
     segments[0].data[80] = 2;
     let product = product.with_fixture_segments(segments);
     let catalog = parse_master_data(r#"<KNX xmlns="http://knx.org/xml/project/20"><MasterData Id="MD" Version="1"><MaskVersions /></MasterData></KNX>"#).expect("empty catalog parses");
-    let mut project = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
-    project.links.push(GroupLink { group_address: GroupAddress::from_three_level(1, 2, 3), com_object: 0 });
+    let mut project = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 1), Some(15));
+    project.object_memberships_mut().push(ObjectMembership::primary(GroupAddress::from_three_level(1, 2, 3), 0));
     let configuration = project.with_com_objects(product.com_objects().to_vec());
     (catalog, table_profile(), product, configuration)
 }
@@ -51,14 +51,12 @@ fn plain_fixture() -> (std::sync::Arc<MasterData>, ResolvedProfile, ProductData,
 // mask a byte ownership or allocation error in the canonical image builder.
 fn image_input(
     product: &ProductData,
-    configuration: &LoweredDeviceConfiguration,
+    configuration: &MaterializedDevice,
     unloading: bool,
 ) -> crate::commissioning::ProgrammingInput {
     use crate::commissioning::{CompileOptions, DownloadMode, ProgrammingInput, TargetSelection, UnloadMode};
-    use crate::configuration::MaterializedDevice;
     use crate::configuration::ResolvedKeyMaterial;
-    let device =
-        MaterializedDevice::new(product.clone(), configuration.clone(), Vec::new(), ResolvedKeyMaterial::new(None));
+    let device = configuration.clone().with_product(product.clone()).with_key_material(ResolvedKeyMaterial::default());
     ProgrammingInput::new(
         device,
         if unloading {
@@ -67,7 +65,7 @@ fn image_input(
             CommissioningIntent::Download(DownloadMode::Full)
         },
         CompileOptions {
-            target: TargetSelection::ExistingAddress(configuration.individual_address),
+            target: TargetSelection::ExistingAddress(configuration.individual_address()),
             automatic_sections: None,
             progress_messages_by_reference: Default::default(),
             progress_messages_by_id: Default::default(),
@@ -96,7 +94,7 @@ fn compile_unload(
     _catalog: &std::sync::Arc<MasterData>,
     profile: &ResolvedProfile,
     product: &ProductData,
-    configuration: &LoweredDeviceConfiguration,
+    configuration: &MaterializedDevice,
     required: &[RequiredImageRange],
 ) -> Result<ProgramImage, CompileError> {
     let input = image_input(product, configuration, true);
@@ -109,7 +107,7 @@ fn compile_full_image(
     _catalog: &std::sync::Arc<MasterData>,
     profile: &ResolvedProfile,
     product: &ProductData,
-    configuration: &LoweredDeviceConfiguration,
+    configuration: &MaterializedDevice,
 ) -> Result<ProgramImage, CompileError> {
     crate::commissioning::compiler::application_identity::validate_application_metadata(profile, product)?;
     let input = image_input(product, configuration, false);
@@ -121,7 +119,7 @@ fn compile_full_image(
 fn compile_partial_image(
     profile: &ResolvedProfile,
     product: &ProductData,
-    configuration: &LoweredDeviceConfiguration,
+    configuration: &MaterializedDevice,
     sections: ProgramSections,
 ) -> Result<ProgramImage, CompileError> {
     use crate::commissioning::compiler::binding::procedure::ParsedProcedure;

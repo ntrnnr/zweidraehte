@@ -70,6 +70,9 @@ impl Serialize for ProductIdentity<'_> {
             raw_data_parameter_max_sizes,
             binary_restriction_parameters,
             resolved_module_parameter_ids,
+            // The roster's effect on storage is in `parameters` and the
+            // resolved IDs above; its procedures are hashed with the device.
+            resolved_modules: _,
             property_parameters,
             address_table_segment,
             address_table_offset,

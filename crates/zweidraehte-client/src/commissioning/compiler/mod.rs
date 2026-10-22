@@ -114,7 +114,7 @@ impl<'a> ProgramCompiler<'a> {
         crate::commissioning::catalog::rules::ip::prepare_classic_ip_profile(
             &mut profile,
             input.device.product(),
-            input.device.configuration().topology.ip.as_ref(),
+            input.device.topology().ip.as_ref(),
         )?;
 
         // The hardware relation determines application scope. Pure address

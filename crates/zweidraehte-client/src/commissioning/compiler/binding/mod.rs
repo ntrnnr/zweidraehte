@@ -27,7 +27,6 @@ impl ProgramCompiler<'_> {
         ))?;
         let credential = observed_target.credential;
         let product = device.product();
-        let configuration = device.configuration();
 
         // Select once, after the desired image and target evidence are available.
         if matches!(recipes, crate::commissioning::compiler::selection::RecipeSet::Automatic) {
@@ -52,10 +51,10 @@ impl ProgramCompiler<'_> {
         let ProgramImage { image, mut manifest, regions: native_regions, product_fingerprint, table_spans, .. } =
             compiled_image;
 
-        let address = configuration.individual_address.as_bytes();
+        let address = device.individual_address();
         manifest.insert(
             zweidraehte_project::ProgrammingSection::Address,
-            zweidraehte_project::semantic_fingerprint("individual-address", "desired", address),
+            zweidraehte_project::semantic_fingerprint("individual-address", "desired", address.as_bytes()),
         );
 
         if desired_data_security == DesiredDataSecurity::Disabled && product.supports_data_secure() {
@@ -121,7 +120,7 @@ impl ProgramCompiler<'_> {
             // as SecureOnly, so they stay dormant on that management path.
             // This permission does not cover credentials, secure IP services,
             // or the separate Data Secure contribution.
-            let dormant_plain_ip_security = configuration.topology.ip.as_ref().is_some_and(|ip| {
+            let dormant_plain_ip_security = device.topology().ip.as_ref().is_some_and(|ip| {
                 ip.password_users.is_empty()
                     && ip.security.as_ref().is_some_and(|security| {
                         security.routing == IpServiceSecurity::Plain
@@ -164,10 +163,10 @@ impl ProgramCompiler<'_> {
                 Vec::new()
             },
             native_regions,
-            configured_max_apdu: configuration.configured_max_apdu,
+            configured_max_apdu: device.max_apdu(),
             intent,
             target: options.target.clone(),
-            individual_address: configuration.individual_address,
+            individual_address: device.individual_address(),
             network_restart_kind: profile
                 .management_style()
                 .map_or(restart_kind, |style| profile.network_restart_kind(style, product.supports_data_secure())),
@@ -176,7 +175,7 @@ impl ProgramCompiler<'_> {
                 .map(|request| request.applicability.sections),
             full_program_scope: procedure_request
                 .is_some_and(|request| request.procedure_type == "Load" && request.applicability.full),
-            topology: configuration.topology.clone(),
+            topology: device.topology().clone(),
             profile,
             network: NetworkProgram::default(),
             image,

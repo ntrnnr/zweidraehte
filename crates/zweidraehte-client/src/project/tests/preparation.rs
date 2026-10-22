@@ -36,7 +36,7 @@ async fn cancellation_before_preparation_sends_no_sender_probe() {
             query: true,
             zero_sequence_policy: ZeroSiatSequencePolicy::Untouched,
             probe_key_material: Some(
-                ResolvedKeyMaterial::new(Some([0, 0xFA, 0, 0, 0, 2])).with_tool_key(Some([0x44; 16])),
+                ResolvedKeyMaterial::default().with_serial_number([0, 0xFA, 0, 0, 0, 2]).with_tool_key([0x44; 16]),
             ),
         }],
         commissioner_options: Default::default(),

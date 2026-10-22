@@ -10,7 +10,7 @@ use crate::commissioning::procedure::OperationTarget;
 use crate::commissioning::procedure::ProcedureStep;
 use crate::commissioning::procedure::{OperationData, ProcedureOperation};
 use crate::configuration::{
-    GroupLink, GroupObjectProtection, GroupObjectSecurity, LoweredDeviceConfiguration, SecurityConfig,
+    GroupObjectProtection, GroupObjectSecurity, MaterializedDevice, ObjectMembership, SecurityConfig,
 };
 use std::collections::BTreeSet;
 use zweidraehte_ets_files::product::ComObjectDef;
@@ -29,7 +29,7 @@ fn desired_image(
         .expect("fixture parses")
         .with_fixture_data_secure(supported)
         .with_fixture_security_capacities(4, 4, 0);
-    let project = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 10), Some(15));
+    let project = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 10), Some(15));
     let security = configured.then(SecurityConfig::default);
     let configuration = project.with_com_objects(product.com_objects().to_vec());
     let input = super::super::fixture_input(&product, &configuration, security.as_ref(), None).data_security(desired);
@@ -110,16 +110,16 @@ fn disabled_security_owns_flags_but_transfers_only_with_keyed_management() {
         .expect("fixture parses")
         .with_fixture_data_secure(true)
         .with_fixture_security_capacities(4, 4, 0);
-    let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 10), Some(15))
+    let configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 10), Some(15))
         .with_com_objects(product.com_objects().to_vec());
     let profile = profile();
 
     for credential in [ManagementCredential::ToolKey, ManagementCredential::Fdsk, ManagementCredential::Plaintext] {
         let target =
-            ObservedTarget { previous_address: configuration.individual_address, serial_number: None, credential };
+            ObservedTarget { previous_address: configuration.individual_address(), serial_number: None, credential };
         let input = super::super::fixture_input(&product, &configuration, None, None)
             .data_security(DesiredDataSecurity::Disabled)
-            .facts(ProgrammingFacts::new(target).with_data_security(ObservedDataSecurity::Disabled));
+            .facts(ProgrammingFacts { target: Some(target), data_security: ObservedDataSecurity::Disabled });
         let mut compiler = super::super::fixture_compiler(&input, &profile);
         compiler.contribute_data_secure().expect("disabled security compiles");
         let image = compiler.image.image;
@@ -236,7 +236,7 @@ fn disabled_security_empty_effective_roster_has_no_flags() {
     // despite declaring communication objects in the application definition.
     let product = ProductData::from_mtxml_str(SYSTEM7_MTXML).expect("fixture parses").with_fixture_data_secure(true);
     assert!(!product.com_object_numbers().is_empty());
-    let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 10), Some(15));
+    let configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 10), Some(15));
     let input =
         super::super::fixture_input(&product, &configuration, None, None).data_security(DesiredDataSecurity::Disabled);
     let mut compiler = super::super::fixture_compiler(&input, &profile());
@@ -252,8 +252,8 @@ fn standard_overlay_writes_group_keys_from_the_image() {
         .with_fixture_security_capacities(4, 4, 0);
     let group_address = GroupAddress::from_three_level(1, 2, 3);
     let key = [0xA7; 16];
-    let mut project = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 10), Some(15));
-    project.links.push(GroupLink { group_address, com_object: 1 });
+    let mut project = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 10), Some(15));
+    project.object_memberships_mut().push(ObjectMembership::primary(group_address, 1));
     let security =
         Some(SecurityConfig::new(vec![(group_address, key)], vec![(IndividualAddress::new(1, 1, 11), 42)], vec![
             GroupObjectSecurity { com_object: 1, protection: GroupObjectProtection::AuthenticationConfidentiality },
@@ -480,7 +480,7 @@ fn security_preserves_native_source_cursor_order() {
         .expect("fixture parses")
         .with_fixture_data_secure(true)
         .with_fixture_security_capacities(4, 4, 0);
-    let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 10), Some(15))
+    let configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 10), Some(15))
         .with_com_objects(product.com_objects().to_vec());
     let mut profile = profile();
     crate::commissioning::catalog::profile::testing::append_xml(
@@ -489,13 +489,13 @@ fn security_preserves_native_source_cursor_order() {
         r#"<Feature Name="PropertyMappedLsms" Value="1"/>"#,
     );
     let target = ObservedTarget {
-        previous_address: configuration.individual_address,
+        previous_address: configuration.individual_address(),
         serial_number: None,
         credential: ManagementCredential::ToolKey,
     };
     let group_address = GroupAddress::from_three_level(1, 2, 3);
     let mut keyed_configuration = configuration.clone();
-    keyed_configuration.links.push(GroupLink { group_address, com_object: 1 });
+    keyed_configuration.object_memberships_mut().push(ObjectMembership::primary(group_address, 1));
     let security =
         SecurityConfig::new(vec![(group_address, [0xA7; 16])], vec![(IndividualAddress::new(1, 1, 11), 42)], vec![
             GroupObjectSecurity { com_object: 1, protection: GroupObjectProtection::AuthenticationConfidentiality },
@@ -509,7 +509,7 @@ fn security_preserves_native_source_cursor_order() {
             super::super::fixture_input(&product, &configuration, None, None)
                 .data_security(DesiredDataSecurity::Disabled)
         }
-        .facts(ProgrammingFacts::new(target).with_data_security(ObservedDataSecurity::Disabled));
+        .facts(ProgrammingFacts { target: Some(target), data_security: ObservedDataSecurity::Disabled });
 
         for &(names, expected) in cases {
             let expected: Vec<&str> = expected
@@ -636,9 +636,8 @@ fn group_key_exposure_identities_follow_encoded_rows_not_input_order() {
         .with_fixture_security_capacities(4, 4, 0);
     let first = GroupAddress::from_three_level(1, 0, 1);
     let second = GroupAddress::from_three_level(1, 0, 2);
-    let mut project = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 10), Some(15));
-    project.links =
-        vec![GroupLink { group_address: second, com_object: 1 }, GroupLink { group_address: first, com_object: 1 }];
+    let mut project = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 10), Some(15));
+    *project.object_memberships_mut() = vec![ObjectMembership::primary(second, 1), ObjectMembership::primary(first, 1)];
     let security =
         Some(SecurityConfig::new(vec![(second, [0x22; 16]), (first, [0x11; 16])], vec![], vec![GroupObjectSecurity {
             com_object: 1,
@@ -677,9 +676,8 @@ fn group_key_rows_are_never_split_across_telegrams() {
         .with_fixture_security_capacities(4, 4, 0);
     let first = GroupAddress::from_three_level(1, 0, 1);
     let second = GroupAddress::from_three_level(1, 0, 2);
-    let mut project = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 10), Some(15));
-    project.links =
-        vec![GroupLink { group_address: first, com_object: 1 }, GroupLink { group_address: second, com_object: 1 }];
+    let mut project = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 10), Some(15));
+    *project.object_memberships_mut() = vec![ObjectMembership::primary(first, 1), ObjectMembership::primary(second, 1)];
     let security =
         Some(SecurityConfig::new(vec![(first, [0x11; 16]), (second, [0x22; 16])], vec![], vec![GroupObjectSecurity {
             com_object: 1,

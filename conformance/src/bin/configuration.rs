@@ -47,8 +47,8 @@ use zweidraehte_client::commissioning::{
 };
 use zweidraehte_client::configuration::ResolvedKeyMaterial;
 use zweidraehte_client::configuration::{
-    GroupLink, GroupObjectProtection, GroupObjectSecurity, LoweredDeviceConfiguration, MaterializedDevice,
-    ParameterValue, SecurityConfig as DownloadSecurityConfig,
+    EncodedConfiguration, EncodedParameter, GroupObjectProtection, GroupObjectSecurity, InstallationConfiguration,
+    MaterializedDevice, ObjectMembership, SecurityConfig as DownloadSecurityConfig,
 };
 use zweidraehte_client::project::{BatchSelection, ProjectMasterData, ProjectPlanner, ProjectProduct};
 use zweidraehte_client::{
@@ -92,10 +92,6 @@ fn tester_ia() -> IndividualAddress {
     IndividualAddress::new(10, 15, 254)
 }
 
-fn default_configuration(product: &ProductData, project: &LoweredDeviceConfiguration) -> LoweredDeviceConfiguration {
-    project.clone().with_com_objects((product).com_objects().to_vec())
-}
-
 /// Run one complete application operation through the public commissioning
 /// boundary. The product's mask and application metadata select the exact
 /// profile inside the stable current Master Data catalog.
@@ -119,26 +115,6 @@ async fn commission_operation_with_sections(
     automatic_sections: Option<ProgramSections>,
     context: &str,
 ) -> Result<ExecutionReport, String> {
-    // Planned project devices arrive bound; direct fixtures select the
-    // product's installation document here, before commissioning.
-    let device = if device.product().master_data().is_some() {
-        device
-    } else {
-        let document = zweidraehte_ets_files::master_data::MasterDataLoadRequest::Product(device.product())
-            .load()
-            .map_err(|error| format!("{context}: loading versioned Master Data: {error}"))?;
-        let product = device
-            .product()
-            .clone()
-            .bind_master_data(document)
-            .map_err(|error| format!("{context}: associating Master Data: {error}"))?;
-        MaterializedDevice::new(
-            product,
-            device.configuration().clone(),
-            device.modules().to_vec(),
-            device.key_material().clone(),
-        )
-    };
     let commissioner = Commissioner::new(bus).with_options(CommissionerOptions {
         scan_window: Duration::from_millis(150),
         restart_delay: Duration::from_millis(50),
@@ -379,12 +355,24 @@ fn image_evidence_gaps(report: &ExecutionReport) -> String {
     gaps.join("; ")
 }
 
+/// Assemble a direct fixture device with the product's default object roster.
+///
+/// Planned project devices arrive bound; a direct fixture selects the
+/// product's installation document here, before it is assembled.
 fn materialized_device(
     product: &ProductData,
-    configuration: &LoweredDeviceConfiguration,
+    installation: &InstallationConfiguration,
+    parameters: Vec<EncodedParameter>,
     key_material: ResolvedKeyMaterial,
-) -> MaterializedDevice {
-    MaterializedDevice::new(product.clone(), configuration.clone(), Vec::new(), key_material)
+) -> Result<MaterializedDevice, String> {
+    let document = zweidraehte_ets_files::master_data::MasterDataLoadRequest::Product(product)
+        .load()
+        .map_err(|error| format!("loading versioned Master Data: {error}"))?;
+    let product =
+        product.clone().bind_master_data(document).map_err(|error| format!("associating Master Data: {error}"))?;
+    let encoded =
+        EncodedConfiguration { parameters, com_objects: product.com_objects().to_vec(), ..Default::default() };
+    Ok(MaterializedDevice::from_parts(product, installation.clone(), encoded).into_keyed(key_material))
 }
 
 // ============================================================================
@@ -2039,10 +2027,10 @@ async fn run_bcu2_light_switch_download(bus: &KnxBus, control: &DutControl, targ
     let product =
         ProductData::from_mtxml_str(&mtxml).map_err(|e| format!("reading the light-switch product back: {e}"))?;
 
-    let mut project = LoweredDeviceConfiguration::new(dut_ia(), Some(15));
+    let mut project = InstallationConfiguration { max_apdu: Some(15), ..InstallationConfiguration::new(dut_ia()) };
     // Button 1's primary object onto a group address.
-    project.links = vec![GroupLink { group_address: GroupAddress::from_three_level(3, 2, 1), com_object: 0 }];
-    project.configured_max_apdu = Some(target.max_apdu());
+    project.object_memberships = vec![ObjectMembership::primary(GroupAddress::from_three_level(3, 2, 1), 0)];
+    project.max_apdu = Some(target.max_apdu());
     // Two overrides on top of the defaults: debounce 150 ms (4),
     // long press 1000 ms (3). Parameter ids are ordinal in the
     // generated MTXML, so the memory offset — the struct layout,
@@ -2056,13 +2044,15 @@ async fn run_bcu2_light_switch_download(bus: &KnxBus, control: &DutControl, targ
             .map(|p| p.id.clone())
             .ok_or_else(|| format!("the product lacks a parameter at offset {offset}"))
     };
-    project.parameters =
-        vec![ParameterValue { id: param_id(0)?, value: vec![4] }, ParameterValue { id: param_id(1)?, value: vec![3] }];
+    let parameters = vec![EncodedParameter { id: param_id(0)?, value: vec![4] }, EncodedParameter {
+        id: param_id(1)?,
+        value: vec![3],
+    }];
 
-    let configuration = default_configuration(&product, &project);
+    let configuration = project.clone();
     let report = commission_operation(
         bus,
-        materialized_device(&product, &configuration, ResolvedKeyMaterial::new(None)),
+        materialized_device(&product, &configuration, parameters.clone(), ResolvedKeyMaterial::default())?,
         CommissioningIntent::Download(DownloadMode::Full),
         TargetSelection::ExistingAddress(dut_ia()),
         true,
@@ -2223,16 +2213,14 @@ fn scenario_bcu2_secure_commission<'a>(
         let product = ProductData::from_mtxml_str(&bcu2_light_switch_product::generate_secure_mtxml()?)
             .map_err(|e| format!("reading secure BCU2 light-switch product back: {e}"))?;
 
-        let mut project = LoweredDeviceConfiguration::new(dut_ia(), Some(15));
+        let mut project = InstallationConfiguration { max_apdu: Some(15), ..InstallationConfiguration::new(dut_ia()) };
         // The light-switch primary object transmits; its status sibling
         // receives. Link both to the same GA so the bidirectional secure test
         // follows the real product flags instead of relying on the fixture's
         // all-flags-enabled object zero.
-        project.links = vec![GroupLink { group_address: rewired_ga, com_object: 0 }, GroupLink {
-            group_address: rewired_ga,
-            com_object: 1,
-        }];
-        project.configured_max_apdu = Some(40);
+        project.object_memberships =
+            vec![ObjectMembership::primary(rewired_ga, 0), ObjectMembership::primary(rewired_ga, 1)];
+        project.max_apdu = Some(40);
         let param_id = |offset: u32| {
             product
                 .parameters()
@@ -2241,11 +2229,11 @@ fn scenario_bcu2_secure_commission<'a>(
                 .map(|parameter| parameter.id.clone())
                 .ok_or_else(|| format!("the secure product lacks a parameter at offset {offset}"))
         };
-        project.parameters = vec![ParameterValue { id: param_id(0)?, value: vec![4] }, ParameterValue {
+        let parameters = vec![EncodedParameter { id: param_id(0)?, value: vec![4] }, EncodedParameter {
             id: param_id(1)?,
             value: vec![3],
         }];
-        let application_security = Some(DownloadSecurityConfig::new(
+        let application_security = DownloadSecurityConfig::new(
             vec![(rewired_ga, GROUP_KEY)],
             // The client itself is the secure group sender in the second
             // half of the scenario, so its IA must have a replay-counter row.
@@ -2254,18 +2242,20 @@ fn scenario_bcu2_secure_commission<'a>(
                 GroupObjectSecurity { com_object: 0, protection: GroupObjectProtection::AuthenticationConfidentiality },
                 GroupObjectSecurity { com_object: 1, protection: GroupObjectProtection::AuthenticationConfidentiality },
             ],
-        ));
+        );
 
-        let configuration = default_configuration(&product, &project);
+        let configuration = project.clone();
         let report = commission_operation(
             bus,
             materialized_device(
                 &product,
                 &configuration,
-                ResolvedKeyMaterial::new(Some(bcu2_stack::SERIAL_NUMBER))
-                    .with_tool_key(Some(TOOL_KEY))
+                parameters.clone(),
+                ResolvedKeyMaterial::default()
+                    .with_serial_number(bcu2_stack::SERIAL_NUMBER)
+                    .with_tool_key(TOOL_KEY)
                     .with_application_security(application_security.clone()),
-            ),
+            )?,
             CommissioningIntent::Download(DownloadMode::Full),
             TargetSelection::ExistingAddress(dut_ia()),
             false,
@@ -2563,26 +2553,29 @@ fn scenario_micro_s7_secure_commission<'a>(
         let product = ProductData::from_mtxml_str(&micro_system7_product::generate_secure_mtxml()?)
             .map_err(|e| format!("reading secure micro System 7 product back: {e}"))?;
 
-        let mut project = LoweredDeviceConfiguration::new(dut_ia(), Some(15));
+        let mut project = InstallationConfiguration { max_apdu: Some(15), ..InstallationConfiguration::new(dut_ia()) };
         // Object 3 is the fixture's byte-sized, fully enabled GO. System 7
         // has a real slot zero, so its GO-security flag is element four.
-        project.links = vec![GroupLink { group_address: group, com_object: 3 }];
-        project.configured_max_apdu = Some(40);
+        project.object_memberships = vec![ObjectMembership::primary(group, 3)];
+        project.max_apdu = Some(40);
         let application_security =
-            Some(DownloadSecurityConfig::new(vec![(group, GROUP_KEY)], vec![(tester_ia(), 0)], vec![
-                GroupObjectSecurity { com_object: 3, protection: GroupObjectProtection::AuthenticationConfidentiality },
-            ]));
+            DownloadSecurityConfig::new(vec![(group, GROUP_KEY)], vec![(tester_ia(), 0)], vec![GroupObjectSecurity {
+                com_object: 3,
+                protection: GroupObjectProtection::AuthenticationConfidentiality,
+            }]);
 
-        let configuration = default_configuration(&product, &project);
+        let configuration = project.clone();
         let report = commission_operation(
             bus,
             materialized_device(
                 &product,
                 &configuration,
-                ResolvedKeyMaterial::new(Some(micro_system7_stack::SERIAL_NUMBER))
-                    .with_tool_key(Some(TOOL_KEY))
+                Vec::new(),
+                ResolvedKeyMaterial::default()
+                    .with_serial_number(micro_system7_stack::SERIAL_NUMBER)
+                    .with_tool_key(TOOL_KEY)
                     .with_application_security(application_security.clone()),
-            ),
+            )?,
             CommissioningIntent::Download(DownloadMode::Full),
             TargetSelection::ExistingAddress(dut_ia()),
             false,
@@ -2662,10 +2655,12 @@ fn scenario_micro_s7_secure_commission<'a>(
             materialized_device(
                 &product,
                 &configuration,
-                ResolvedKeyMaterial::new(Some(micro_system7_stack::SERIAL_NUMBER))
-                    .with_tool_key(Some(TOOL_KEY))
+                Vec::new(),
+                ResolvedKeyMaterial::default()
+                    .with_serial_number(micro_system7_stack::SERIAL_NUMBER)
+                    .with_tool_key(TOOL_KEY)
                     .with_application_security(application_security.clone()),
-            ),
+            )?,
             CommissioningIntent::Download(DownloadMode::Full),
             TargetSelection::ExistingAddress(dut_ia()),
             false,
@@ -3037,8 +3032,8 @@ fn scenario_system_b_scoped_downloads<'a>(
 ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
     Box::pin(async move {
         let product = system_b_product()?;
-        let mut project = LoweredDeviceConfiguration::new(dut_ia(), Some(15));
-        project.configured_max_apdu = Some(254);
+        let mut project = InstallationConfiguration { max_apdu: Some(15), ..InstallationConfiguration::new(dut_ia()) };
+        project.max_apdu = Some(254);
 
         // Establish installed application identity before either scoped update.
         // Each update changes the group table and proves the live device uses it.
@@ -3055,11 +3050,11 @@ fn scenario_system_b_scoped_downloads<'a>(
                 Some(ProgramSections::GROUP_COMMUNICATION),
             ),
         ] {
-            project.links = vec![GroupLink { group_address: group, com_object: 1 }];
-            let configuration = default_configuration(&product, &project);
+            project.object_memberships = vec![ObjectMembership::primary(group, 1)];
+            let configuration = project.clone();
             let report = commission_operation_with_sections(
                 bus,
-                materialized_device(&product, &configuration, ResolvedKeyMaterial::new(None)),
+                materialized_device(&product, &configuration, Vec::new(), ResolvedKeyMaterial::default())?,
                 CommissioningIntent::Download(mode),
                 TargetSelection::ExistingAddress(dut_ia()),
                 true,
@@ -3097,15 +3092,15 @@ fn scenario_system_b_redownload<'a>(
 
         let product = system_b_product()?;
 
-        let mut project = LoweredDeviceConfiguration::new(dut_ia(), Some(15));
-        project.configured_max_apdu = Some(254);
+        let mut project = InstallationConfiguration { max_apdu: Some(15), ..InstallationConfiguration::new(dut_ia()) };
+        project.max_apdu = Some(254);
 
         // First commissioning, from factory state.
-        project.links = vec![GroupLink { group_address: first_ga, com_object: 1 }];
-        let first_configuration = default_configuration(&product, &project);
+        project.object_memberships = vec![ObjectMembership::primary(first_ga, 1)];
+        let first_configuration = project.clone();
         commission_operation(
             bus,
-            materialized_device(&product, &first_configuration, ResolvedKeyMaterial::new(None)),
+            materialized_device(&product, &first_configuration, Vec::new(), ResolvedKeyMaterial::default())?,
             CommissioningIntent::Download(DownloadMode::Full),
             TargetSelection::ExistingAddress(dut_ia()),
             true,
@@ -3114,11 +3109,11 @@ fn scenario_system_b_redownload<'a>(
         .await?;
 
         // Second download straight onto the configured device.
-        project.links = vec![GroupLink { group_address: second_ga, com_object: 1 }];
-        let second_configuration = default_configuration(&product, &project);
+        project.object_memberships = vec![ObjectMembership::primary(second_ga, 1)];
+        let second_configuration = project.clone();
         commission_operation(
             bus,
-            materialized_device(&product, &second_configuration, ResolvedKeyMaterial::new(None)),
+            materialized_device(&product, &second_configuration, Vec::new(), ResolvedKeyMaterial::default())?,
             CommissioningIntent::Download(DownloadMode::Full),
             TargetSelection::ExistingAddress(dut_ia()),
             true,

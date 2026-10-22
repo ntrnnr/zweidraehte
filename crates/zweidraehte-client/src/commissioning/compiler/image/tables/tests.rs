@@ -358,20 +358,20 @@ fn small_system_b_associations_keep_primary_order_and_deduplicate() {
 
 #[test]
 fn wide_object_links_reach_the_selected_table_codec_without_truncation() {
-    use crate::configuration::GroupLink;
+    use crate::configuration::ObjectMembership;
 
     let product =
         ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::BCU1_MTXML).expect("fixture parses");
-    let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 0, 1), None);
-    configuration.com_objects = vec![ComObjectDef {
+    let mut configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 0, 1), None);
+    configuration.encoded_mut().com_objects = vec![ComObjectDef {
         number: 971,
         flags: ComObjectFlags::from_byte(0x47),
         object_type: ComObjectType::Uint1,
         datapoint_type: None,
     }];
     // Authored primary first, even though its group address sorts last.
-    configuration.links =
-        [2, 1, 2].map(|address| GroupLink { group_address: ga(0, 0, address), com_object: 971 }).to_vec();
+    *configuration.object_memberships_mut() =
+        [2, 1, 2].map(|address| ObjectMembership::primary(ga(0, 0, address), 971)).to_vec();
     let input = TableInput::new(&product, &configuration);
     assert_eq!(input.associations().expect("associations resolve"), [(2, 971), (1, 971), (2, 971)]);
     assert_eq!(input.linked_objects()[0].flags.to_byte(), 0x47);
@@ -472,13 +472,14 @@ fn pl110_address_table_rejects_groups_that_use_the_discriminator_bit() {
 // A caller supplies one semantic input and never decodes headers or pointer rows.
 #[test]
 fn unified_codec_reports_normalized_entries_and_preserves_primary_links() {
-    use crate::configuration::GroupLink;
+    use crate::configuration::ObjectMembership;
     use ResourceFlavour::*;
 
     let product =
         ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::BCU1_MTXML).expect("fixture parses");
-    let mut project = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 0, 1), Some(15));
-    project.links = [2, 1, 2].map(|address| GroupLink { group_address: ga(0, 0, address), com_object: 1 }).to_vec();
+    let mut project = MaterializedDevice::fixture(IndividualAddress::new(1, 0, 1), Some(15));
+    *project.object_memberships_mut() =
+        [2, 1, 2].map(|address| ObjectMembership::primary(ga(0, 0, address), 1)).to_vec();
     let configuration = project.with_com_objects(product.com_objects().to_vec());
     let input = TableInput::new(&product, &configuration);
 
@@ -508,7 +509,7 @@ fn unified_codec_reports_normalized_entries_and_preserves_primary_links() {
 
 #[test]
 fn unified_object_codec_preserves_native_bits_and_requests_only_required_seeds() {
-    use crate::configuration::LoweredDeviceConfiguration;
+    use crate::configuration::MaterializedDevice;
     use ResourceFlavour::*;
 
     let object = ComObjectDef {
@@ -520,14 +521,13 @@ fn unified_object_codec_preserves_native_bits_and_requests_only_required_seeds()
     let product = ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::BCU1_MTXML)
         .expect("fixture parses")
         .with_fixture_com_objects(vec![object], vec![1]);
-    let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 0, 1), Some(15))
+    let mut configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 0, 1), Some(15))
         .with_com_objects(product.com_objects().to_vec());
     // Linked, so the configured flags reach every codec unchanged; the
     // unlinked communication-enable rule has its own test below.
-    configuration.links.push(crate::configuration::GroupLink {
-        group_address: GroupAddress::from_three_level(1, 2, 3),
-        com_object: 1,
-    });
+    configuration
+        .object_memberships_mut()
+        .push(crate::configuration::ObjectMembership::primary(GroupAddress::from_three_level(1, 2, 3), 1));
     let input = TableInput::new(&product, &configuration);
     let compact_seed = &[2, 0xce, 0xc6, 0xff, 0, 0xc7, 0xff, 0xc3][..];
 
@@ -689,7 +689,7 @@ fn owned_counts_below_the_roster_stay_while_every_effective_row_is_formatted() {
 
 #[test]
 fn unlinked_active_objects_lose_communication_enable_except_system_300_rows() {
-    use crate::configuration::LoweredDeviceConfiguration;
+    use crate::configuration::MaterializedDevice;
 
     let objects = [1, 2].map(|number| ComObjectDef {
         number,
@@ -700,12 +700,11 @@ fn unlinked_active_objects_lose_communication_enable_except_system_300_rows() {
     let product = ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::BCU1_MTXML)
         .expect("fixture parses")
         .with_fixture_com_objects(objects.to_vec(), vec![1, 2]);
-    let mut configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 0, 1), Some(15))
+    let mut configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 0, 1), Some(15))
         .with_com_objects(product.com_objects().to_vec());
-    configuration.links.push(crate::configuration::GroupLink {
-        group_address: GroupAddress::from_three_level(1, 2, 3),
-        com_object: 2,
-    });
+    configuration
+        .object_memberships_mut()
+        .push(crate::configuration::ObjectMembership::primary(GroupAddress::from_three_level(1, 2, 3), 2));
     let input = TableInput::new(&product, &configuration);
 
     // Object 1 has no link: ETS writes its row with communication enable off.
@@ -755,14 +754,12 @@ fn system_300_overlays_flags_without_replacing_seed_dpt_or_ownership() {
 fn system_300_parameter_loading_fills_only_wholly_unowned_bytes() {
     let product = ProductData::default();
     let configuration =
-        LoweredDeviceConfiguration::new(IndividualAddress::new(1, 0, 1), Some(15)).with_com_objects(vec![
-            ComObjectDef {
-                number: 1,
-                flags: ComObjectFlags::from_byte(0x37),
-                object_type: ComObjectType::Byte1,
-                datapoint_type: None,
-            },
-        ]);
+        MaterializedDevice::fixture(IndividualAddress::new(1, 0, 1), Some(15)).with_com_objects(vec![ComObjectDef {
+            number: 1,
+            flags: ComObjectFlags::from_byte(0x37),
+            object_type: ComObjectType::Byte1,
+            datapoint_type: None,
+        }]);
     let codec = TableCodec::new(CompiledTableKind::GroupObject, ResourceFlavour::GroupObjectTableSystem300)
         .expect("System 300 codec");
     for load_parameters in [false, true] {

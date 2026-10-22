@@ -58,11 +58,11 @@ Three representations have distinct responsibilities:
 
 The Rust path uses `SelectedProduct` and `Device::from_product`, then
 `Device::evaluate`. A borrowed `EvaluatedProduct` prevents edits while its
-facts are being lowered. `ResolvedDevice::from_evaluated` combines it with
-`InstallationConfiguration`; `into_materialized(keys)` produces the compiler
-input. Low-level adapters can also supply an explicit `MaterializedDevice`
-with `configuration::MaterializedDevice::new` when the request already contains
-evaluated facts. That constructor does not evaluate or cross-check the supplied
+facts are being lowered. `MaterializedDevice::from_evaluated` combines it with
+`InstallationConfiguration`; `into_keyed(keys)` produces the compiler input.
+Low-level adapters can also supply an `EncodedConfiguration` to
+`configuration::MaterializedDevice::from_parts` when the request already
+contains evaluated facts. That constructor does not evaluate or cross-check the supplied
 parts; the adapter owns their consistency. Compiler validation checks supported
 programming constraints, not parity with ETS dynamic evaluation.
 

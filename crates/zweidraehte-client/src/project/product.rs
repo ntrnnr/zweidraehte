@@ -2,8 +2,8 @@
 
 use super::product_configuration;
 use crate::configuration::{
-    DeviceIdentity, GroupFilterConfiguration, InstallationConfiguration, MembershipRole, NetSecurityPolicy,
-    ObjectMembership, ResolvedDevice, ToolManagedIpConfiguration, TopologyConfiguration,
+    GroupFilterConfiguration, InstallationConfiguration, MaterializedDevice, MembershipRole, NetSecurityPolicy,
+    ObjectMembership, SecurityIntent, ToolManagedIpConfiguration, TopologyConfiguration, Unkeyed,
 };
 use crate::project::error::{Error, Result};
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,7 +25,7 @@ use zweidraehte_proto::com_object::ComObjectType;
 #[derive(Debug, Clone)]
 pub struct EvaluatedProjectDevice {
     pub id: ProjectDeviceId,
-    pub resolved: ResolvedDevice,
+    pub resolved: MaterializedDevice<Unkeyed>,
     /// Protocol address to logical net identity, used to select group keys.
     pub net_ids: BTreeMap<GroupAddress, String>,
     pub warnings: Vec<String>,
@@ -215,17 +215,20 @@ impl ProjectProduct {
         let mut device = Device::from_product(self.selected.clone(), None, None);
         apply_configuration(&mut device, &settings)?;
         let configuration = InstallationConfiguration {
-            identity: DeviceIdentity { desired_address: project_device.address, serial_number: project_device.serial },
-            data_secure_enabled: project_device.data_secure.is_enabled(),
+            individual_address: project_device.address,
             object_memberships,
-            net_security,
             topology,
             max_apdu: project_device.max_apdu,
+            security: SecurityIntent {
+                serial_number: project_device.serial,
+                data_secure_enabled: project_device.data_secure.is_enabled(),
+                net_security,
+            },
         };
-        let resolved = ResolvedDevice::from_evaluated(device.evaluate(&settings.objects)?, configuration)?;
+        let resolved = MaterializedDevice::from_evaluated(device.evaluate(&settings.objects)?, configuration)?;
 
         let mut warnings = Vec::new();
-        for object in &resolved.configuration().objects {
+        for object in resolved.com_objects() {
             let flags = object.flags;
             // Product objects omitted from the project have no authored links or
             // overrides. Their default T/R/I flags do not create a half-defined

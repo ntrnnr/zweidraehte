@@ -283,8 +283,9 @@ fn omitted_peiprog_controls_preserve_original_xml_and_merge_paths() {
         }]);
     let mut device_configuration = configuration();
     device_configuration
+        .encoded_mut()
         .parameters
-        .push(crate::configuration::ParameterValue { id: "selected-parameter".to_owned(), value: vec![0x55] });
+        .push(crate::configuration::EncodedParameter { id: "selected-parameter".to_owned(), value: vec![0x55] });
     let profile = resolve_system_b_profile(&catalog, &product);
     let program = compile_program_fixture(
         programming_input(

@@ -21,7 +21,6 @@ impl ProgramCompiler<'_> {
         let profile = &resolved.profile;
         let device = &resolved.input.device;
         let product = device.product();
-        let configuration = device.configuration();
         let intent = resolved.input.intent;
         let options = &resolved.input.options;
         let automatic = intent.download_mode() == Some(DownloadMode::Automatic);
@@ -77,7 +76,7 @@ impl ProgramCompiler<'_> {
         // produces an empty application image; execution must never discover a
         // missing or incompatible domain only after assigning the IA.
         if matches!(intent, CommissioningIntent::AssignAddress) {
-            validate_network_topology(profile, &configuration.topology)?;
+            validate_network_topology(profile, device.topology())?;
         }
 
         let feature_sections = if automatic {
