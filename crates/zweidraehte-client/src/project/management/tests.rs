@@ -348,8 +348,13 @@ async fn synchronization_does_not_load_unrelated_plain_products() {
         };
         tx.send(Ok(())).expect("shutdown reply");
     };
-    let (result, ()) =
-        tokio::join!(operation.synchronize(None, Some(&unused_catalog), ProjectSynchronization::Synchronize), peer);
+    let (result, ()) = tokio::join!(
+        operation.synchronize(ProjectSynchronization::Synchronize, ManagementSources {
+            keyring: None,
+            master_data: Some(&unused_catalog),
+        }),
+        peer
+    );
     assert!(result.expect("plain products do not gate secure synchronization").devices.is_empty());
     assert!(ProjectStore::open(&path).expect("reader").into_writer().is_ok());
 }

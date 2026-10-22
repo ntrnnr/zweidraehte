@@ -8,10 +8,10 @@ use std::num::NonZeroU8;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use zweidraehte_client::project::{
-    BatchSelection, Error as ClientError, PlannedProjectDevice, ProgrammingBatchPlan, ProjectCommissioningSession,
-    ProjectInputRequest, ProjectInputSources, ProjectOperation, ProjectOperationInputs, ProjectOperationRequest,
-    ProjectProduct, ProjectSetupRequirement, ProjectStatusCache, ProjectStatusInputs, ProjectStatusRequest,
-    ProjectSynchronization, build_project_keyring,
+    BatchSelection, Error as ClientError, KeyringExport, ManagementSources, MemoryReadOptions, PlannedProjectDevice,
+    ProgrammingPolicy, ProjectCommissioningSession, ProjectInputRequest, ProjectInputSources, ProjectOperation,
+    ProjectOperationInputs, ProjectProduct, ProjectProgramming, ProjectSetupRequirement, ProjectStatusCache,
+    ProjectStatusInputs, ProjectStatusRequest, ProjectSynchronization, build_project_keyring,
 };
 
 use anyhow::{Context, Result, bail};
@@ -20,9 +20,9 @@ use dialoguer::{Select, theme::ColorfulTheme};
 
 use zweidraehte_client::cli::{OptionalTargetArgs, SecurityArgs};
 use zweidraehte_client::commissioning::{
-    CommissioningCancellation, CommissioningEvent, CommissioningIntent, CommissioningStage, DifferentialDecision,
-    DifferentialFallback, DifferentialPolicy, DownloadMode, ImageSpace, ProfileSelection, ProgrammingModePolling,
-    TargetSelection, UnloadMode,
+    CommissioningEvent, CommissioningIntent, CommissioningObserver, CommissioningStage, CommissioningVeto,
+    DifferentialDecision, DifferentialFallback, DifferentialPolicy, DownloadMode, ImageSpace, PreparedProgram,
+    ProfileSelection, ProgrammingModePolling, TargetSelection, UnloadMode,
 };
 use zweidraehte_client::{BusTarget, MaskVersion};
 use zweidraehte_ets_files::archive::{
@@ -547,42 +547,34 @@ async fn main() -> Result<()> {
         Command::Check => run_check(&store, args.master_data.as_deref(), &args.security),
         Command::Address { device, all, dry_run, program_ia, programming_mode_timeout, device_mask } => {
             let device_mask = device_mask.as_deref().map(parse_mask).transpose()?;
-            run_programming(
-                store,
-                args.master_data.as_deref(),
-                &args.target,
-                &args.security,
+            run_programming(store, args.master_data.as_deref(), &args.target, &args.security, ProgrammingRun {
+                operation: ProgrammingOperation::Address,
                 device,
-                false,
+                affected: false,
                 all,
                 dry_run,
-                false,
+                force_full: false,
                 program_ia,
                 programming_mode_timeout,
                 device_mask,
-                None,
-                ProgrammingOperation::Address,
-            )
+                dump_blobs: None,
+            })
             .await
         }
         Command::Load { device, affected, dry_run, full, device_mask, dump_blobs } => {
             let device_mask = device_mask.as_deref().map(parse_mask).transpose()?;
-            run_programming(
-                store,
-                args.master_data.as_deref(),
-                &args.target,
-                &args.security,
+            run_programming(store, args.master_data.as_deref(), &args.target, &args.security, ProgrammingRun {
+                operation: ProgrammingOperation::Load,
                 device,
                 affected,
-                false,
+                all: false,
                 dry_run,
-                full,
-                false,
-                None,
+                force_full: full,
+                program_ia: false,
+                programming_mode_timeout: None,
                 device_mask,
-                dump_blobs.as_deref(),
-                ProgrammingOperation::Load,
-            )
+                dump_blobs: dump_blobs.as_deref(),
+            })
             .await
         }
         Command::Program {
@@ -596,22 +588,18 @@ async fn main() -> Result<()> {
             dump_blobs,
         } => {
             let device_mask = device_mask.as_deref().map(parse_mask).transpose()?;
-            run_programming(
-                store,
-                args.master_data.as_deref(),
-                &args.target,
-                &args.security,
+            run_programming(store, args.master_data.as_deref(), &args.target, &args.security, ProgrammingRun {
+                operation: ProgrammingOperation::Program,
                 device,
                 affected,
-                false,
+                all: false,
                 dry_run,
-                full,
+                force_full: full,
                 program_ia,
                 programming_mode_timeout,
                 device_mask,
-                dump_blobs.as_deref(),
-                ProgrammingOperation::Program,
-            )
+                dump_blobs: dump_blobs.as_deref(),
+            })
             .await
         }
         Command::Read { device, out } => {
@@ -1010,19 +998,19 @@ fn load_status_inputs(
     master_data: Option<&Path>,
     security: &SecurityArgs,
 ) -> Result<ProjectStatusInputs> {
-    ProjectStatusInputs::load(
-        ProjectStatusRequest {
-            project_path: store.project_path(),
-            draft: None,
-            scope: None,
-            master_data,
-            keyring_path: security.keyring_path(),
-        },
-        &mut ProjectStatusCache::default(),
-        || security.load_keyring().map_err(Into::into),
-        |_, _, _| {},
-    )
-    .context("load coherent project inputs")
+    ProjectStatusCache::default()
+        .load(
+            ProjectStatusRequest {
+                project_path: store.project_path(),
+                draft: None,
+                scope: None,
+                master_data,
+                keyring_path: security.keyring_path(),
+            },
+            || security.load_keyring().map_err(Into::into),
+            |_, _, _| {},
+        )
+        .context("load coherent project inputs")
 }
 
 fn changed_programming_components(status: zweidraehte_project::DeviceProgrammingStatus) -> Vec<&'static str> {
@@ -1099,20 +1087,13 @@ fn run_export_keyring(
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
         .unwrap_or("zweidraehte project");
-    let created = time::OffsetDateTime::now_utc()
-        .replace_nanosecond(0)
-        .context("while attempting to round the keyring creation time")?
-        .format(&time::format_description::well_known::Rfc3339)
-        .context("while attempting to format the keyring creation time")?;
-    let keyring = build_project_keyring(
-        store.authored(),
-        state,
-        keys,
-        project_name.unwrap_or(default_name),
-        concat!("zweidraehte knx-loader ", env!("CARGO_PKG_VERSION")),
-        created,
-    )
-    .context("while attempting to collect project keyring material")?;
+    let export = KeyringExport {
+        project_name: project_name.unwrap_or(default_name).to_owned(),
+        created_by: concat!("zweidraehte knx-loader ", env!("CARGO_PKG_VERSION")).to_owned(),
+        created: time::OffsetDateTime::now_utc(),
+    };
+    let keyring = build_project_keyring(store.authored(), state, keys, export)
+        .context("while attempting to collect project keyring material")?;
     let device_count = keyring.devices.len();
     let group_count = keyring.group_key_count();
     let xml = keyring.to_xml(&password).context("while attempting to encrypt and sign the ETS keyring")?;
@@ -1146,12 +1127,9 @@ fn write_new_secret_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     File::open(parent)?.sync_all()
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_programming(
-    store: ProjectStore,
-    master_data: Option<&Path>,
-    target: &OptionalTargetArgs,
-    security: &SecurityArgs,
+/// One `address`, `load` or `program` invocation, as parsed from the command line.
+struct ProgrammingRun<'a> {
+    operation: ProgrammingOperation,
     device: Option<String>,
     affected: bool,
     all: bool,
@@ -1160,13 +1138,32 @@ async fn run_programming(
     program_ia: bool,
     programming_mode_timeout: Option<u64>,
     device_mask: Option<MaskVersion>,
-    dump_blobs: Option<&Path>,
-    operation: ProgrammingOperation,
+    dump_blobs: Option<&'a Path>,
+}
+
+async fn run_programming(
+    store: ProjectStore,
+    master_data: Option<&Path>,
+    target: &OptionalTargetArgs,
+    security: &SecurityArgs,
+    run: ProgrammingRun<'_>,
 ) -> Result<()> {
+    let ProgrammingRun {
+        operation,
+        device,
+        affected,
+        all,
+        dry_run,
+        force_full,
+        program_ia,
+        programming_mode_timeout,
+        device_mask,
+        dump_blobs,
+    } = run;
     let (selected, selection) = programming_selection(device, affected, all, operation)
         .context("while attempting to select the programming scope")?;
     let requested_intent = operation.requested_intent(force_full);
-    let mut inputs = ProjectOperationInputs::load(
+    let inputs = ProjectOperationInputs::load(
         store,
         ProjectInputRequest {
             selected: &selected,
@@ -1177,17 +1174,20 @@ async fn run_programming(
         || security.load_keyring().map_err(Into::into),
     )
     .context("while attempting to acquire project programming inputs")?;
-    let mut plan = inputs.plan().context("while attempting to plan the commissioning batch")?;
-    ensure_single_programming_button_target(&plan, program_ia)
+    let mut programming = inputs.into_programming().context("while attempting to plan the commissioning batch")?;
+    ensure_single_programming_button_target(&programming, program_ia)
         .context("while attempting to validate programming-button selection")?;
-    if plan.devices().is_empty() {
+    if programming.plan().devices().is_empty() {
         println!("no affected devices");
         return Ok(());
     }
-    plan.configure(Default::default(), true, DifferentialPolicy::FallBackToUndifferenced);
-    configure_programming_button_target(&mut plan, program_ia, programming_mode_timeout)
+    let mut policy = ProgrammingPolicy::default();
+    policy.differential = DifferentialPolicy::FallBackToUndifferenced;
+    policy.generate_missing_tool_keys = true;
+    programming.set_policy(policy);
+    configure_programming_button_target(&mut programming, program_ia, programming_mode_timeout)
         .context("while attempting to configure programming-button discovery")?;
-    let requirements = inputs.requirements(&plan);
+    let requirements = programming.requirements();
     if operation == ProgrammingOperation::Load
         && let Some(ProjectSetupRequirement::GenerateToolKey { device }) = requirements
             .iter()
@@ -1195,14 +1195,14 @@ async fn run_programming(
     {
         bail!("device `{device}` has no Tool Key; run `knx-loader ... address {device}` or `program {device}` first");
     }
-    for planned in plan.devices() {
+    for planned in programming.plan().devices() {
         for warning in planned.warnings() {
             eprintln!("warning: {warning}");
         }
     }
 
     if dry_run {
-        for planned in plan.devices() {
+        for planned in programming.plan().devices() {
             let intent = planned.commissioning().intent;
             if operation.includes_application() {
                 let compiled = compile_offline(planned, intent, device_mask)
@@ -1218,14 +1218,14 @@ async fn run_programming(
                 println!("{}: would generate and persist a tool key before bus access", planned.id());
             }
         }
-        inputs.verify_unchanged().context("while attempting to verify dry-run inputs")?;
-        println!("dry run: {} planned devices", plan.devices().len());
+        programming.inputs().verify_unchanged().context("while attempting to verify dry-run inputs")?;
+        println!("dry run: {} planned devices", programming.plan().devices().len());
         return Ok(());
     }
 
-    match inputs.state_requirement() {
+    match programming.inputs().state_requirement() {
         Some(ProjectSetupRequirement::InitializeProject) => {
-            inputs.initialize().context("while attempting to initialize project keys and state")?;
+            programming.initialize().context("while attempting to initialize project keys and state")?;
         }
         Some(requirement) => {
             return Err(ClientError::from(requirement)).context("while attempting to prepare project state");
@@ -1233,33 +1233,10 @@ async fn run_programming(
         None => {}
     }
     let target = require_target(target).context("while attempting to select the bus interface")?;
-    let session = inputs.begin_session().context("while attempting to open the project commissioning session")?;
 
-    let cancellation = CommissioningCancellation::default();
-    let mut progress = |device: &ProjectDeviceId, event| print_commissioning_progress(Some(device), event);
-    let execution = ProjectOperationRequest::new(plan).generate_missing_tool_keys().execute(session, |security| target.connect_with_security(security), inputs.programming_inputs(), &cancellation, &mut progress, |device| {
-        let commissioning = device.commissioning();
-        let profile = commissioning.plan().profile();
-        if let Some(expected) = device_mask && profile.mask().dd0 != expected.as_u16() {
-            return Err(ClientError::DeviceConfiguration(format!(
-                "{} resolved live DD0 {:04X}, not requested --device-mask {:04X}",
-                device.id(), profile.mask().dd0, expected.as_u16(),
-            )));
-        }
-        let fallback = match commissioning.differential() {
-            DifferentialDecision::FellBackToUndifferenced { reason } => Some(*reason),
-            DifferentialDecision::VerifiedUndifferenced { .. } => Some(DifferentialFallback::NoUsefulDifference),
-            _ => None,
-        };
-        if let Some(reason) = fallback {
-            eprintln!("warning: {} cannot use a sparse difference ({reason:?}); using the undifferenced selected scope", device.id());
-        }
-        let steps = commissioning.plan().procedure().map_or(0, |procedure| procedure.steps.len());
-        println!("preflight {}: current {}, profile {}, sections {:?}, {steps} steps", device.id(),
-            commissioning.discovered_device().address.map_or_else(|| "unknown".to_owned(), |address| address.to_string()),
-            profile.mask(), commissioning.plan().program_sections());
-        Ok(())
-    }).await;
+    let execution = programming
+        .execute(|security| target.connect_with_security(security), &mut ProgressPrinter { device_mask })
+        .await;
 
     let reports = execution.map_err(|error| {
         if operation == ProgrammingOperation::Load && selected.len() == 1 && is_management_access_preflight_error(&error) {
@@ -1286,6 +1263,51 @@ async fn run_programming(
     }
     println!("{} {} devices", operation_completed(operation), reports.devices.len());
     Ok(())
+}
+
+/// Prints every device's progress and preflight, and refuses a device whose
+/// live profile contradicts an explicitly requested `--device-mask`.
+struct ProgressPrinter {
+    device_mask: Option<MaskVersion>,
+}
+
+impl CommissioningObserver<ProjectDeviceId> for ProgressPrinter {
+    fn event(&mut self, device: &ProjectDeviceId, event: CommissioningEvent) {
+        print_commissioning_progress(Some(device), event);
+    }
+
+    fn approve(&mut self, device: &ProjectDeviceId, prepared: &PreparedProgram) -> Result<(), CommissioningVeto> {
+        let profile = prepared.plan().profile();
+        if let Some(expected) = self.device_mask
+            && profile.mask().dd0 != expected.as_u16()
+        {
+            return Err(CommissioningVeto::new(format!(
+                "{device} resolved live DD0 {:04X}, not requested --device-mask {:04X}",
+                profile.mask().dd0,
+                expected.as_u16(),
+            )));
+        }
+
+        let fallback = match prepared.differential() {
+            DifferentialDecision::FellBackToUndifferenced { reason } => Some(*reason),
+            DifferentialDecision::VerifiedUndifferenced { .. } => Some(DifferentialFallback::NoUsefulDifference),
+            _ => None,
+        };
+        if let Some(reason) = fallback {
+            eprintln!(
+                "warning: {device} cannot use a sparse difference ({reason:?}); using the undifferenced selected scope"
+            );
+        }
+
+        let steps = prepared.plan().procedure().map_or(0, |procedure| procedure.steps.len());
+        println!(
+            "preflight {device}: current {}, profile {}, sections {:?}, {steps} steps",
+            prepared.discovered_device().address.map_or_else(|| "unknown".to_owned(), |address| address.to_string()),
+            profile.mask(),
+            prepared.plan().program_sections()
+        );
+        Ok(())
+    }
 }
 
 fn programming_selection(
@@ -1316,11 +1338,12 @@ fn programming_selection(
     Ok((Vec::new(), BatchSelection::AllStale))
 }
 
-fn ensure_single_programming_button_target(plan: &ProgrammingBatchPlan, program_ia: bool) -> Result<()> {
+fn ensure_single_programming_button_target(programming: &ProjectProgramming, program_ia: bool) -> Result<()> {
     if !program_ia {
         return Ok(());
     }
 
+    let plan = programming.plan();
     let address_targets = plan.devices().iter().filter(|device| plan.impact().selected.contains(&device.id())).count();
     if address_targets != 1 {
         bail!("physical programming mode requires exactly one selected device");
@@ -1330,7 +1353,7 @@ fn ensure_single_programming_button_target(plan: &ProgrammingBatchPlan, program_
 }
 
 fn configure_programming_button_target(
-    plan: &mut ProgrammingBatchPlan,
+    programming: &mut ProjectProgramming,
     program_ia: bool,
     timeout: Option<u64>,
 ) -> Result<()> {
@@ -1338,6 +1361,7 @@ fn configure_programming_button_target(
         return Ok(());
     }
 
+    let plan = programming.plan();
     let planned = plan
         .devices()
         .iter()
@@ -1347,7 +1371,8 @@ fn configure_programming_button_target(
     let mut polling = ProgrammingModePolling::default();
     polling.timeout = timeout.map_or(DEFAULT_PROGRAMMING_MODE_TIMEOUT, Duration::from_secs);
 
-    plan.set_target(&id, TargetSelection::ProgrammingButton(polling))
+    programming
+        .set_target(&id, TargetSelection::ProgrammingButton(polling))
         .context("select the programming-button target")?;
 
     Ok(())
@@ -1402,8 +1427,11 @@ async fn run_read(
         ProjectOperation::connect(session, keyring.as_ref(), |security| target.connect_with_security(security))
             .await
             .context("while attempting to open the project operation")?;
-    let result =
-        operation.read_device_memory(&ProjectDeviceId(device_id.into()), keyring.as_ref(), master_data, true).await;
+    let options = MemoryReadOptions {
+        sources: ManagementSources { keyring: keyring.as_ref(), master_data },
+        allow_plaintext: true,
+    };
+    let result = operation.read_device_memory(&ProjectDeviceId(device_id.into()), options).await;
 
     let report = match &result {
         Ok(report) => report,
@@ -1454,21 +1482,13 @@ async fn run_unload(
         || security.load_keyring().map_err(Into::into),
     )
     .context("while attempting to acquire project unload inputs")?;
-    let mut plan = inputs.plan().context("while attempting to plan the unload")?;
-    plan.configure(Default::default(), true, DifferentialPolicy::Disabled);
+    let mut programming = inputs.into_programming().context("while attempting to plan the unload")?;
+    let mut policy = ProgrammingPolicy::default();
+    policy.differential = DifferentialPolicy::Disabled;
+    programming.set_policy(policy);
     let target = require_target(target).context("while attempting to select the bus interface")?;
-    let session = inputs.begin_session().context("while attempting to open the project commissioning session")?;
-    let cancellation = CommissioningCancellation::default();
-    let mut progress = |device: &ProjectDeviceId, event| print_commissioning_progress(Some(device), event);
-    ProjectOperationRequest::new(plan)
-        .execute(
-            session,
-            |security| target.connect_with_security(security),
-            inputs.programming_inputs(),
-            &cancellation,
-            &mut progress,
-            |_| Ok(()),
-        )
+    programming
+        .execute(|security| target.connect_with_security(security), &mut ProgressPrinter { device_mask: None })
         .await
         .context("while attempting to unload the device")?;
 
@@ -1502,7 +1522,7 @@ async fn run_sync(
             .context("while attempting to open the project operation")?;
     let mode =
         if recover { ProjectSynchronization::Recover { client_floor } } else { ProjectSynchronization::Synchronize };
-    let result = operation.synchronize(keyring.as_ref(), master_data, mode).await;
+    let result = operation.synchronize(mode, ManagementSources { keyring: keyring.as_ref(), master_data }).await;
     let report = match &result {
         Ok(report) => report,
         Err(failure) => &failure.report,

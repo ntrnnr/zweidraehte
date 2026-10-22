@@ -3324,7 +3324,7 @@ mod project_editor_tests {
         let selected = with_catalog(parse_application_program(xml).expect("document"), master);
         let product = ProjectProduct::new(selected);
         let products = project.devices.keys().map(|id| (id.clone(), product.clone())).collect();
-        ProjectPlanner::new(&project, None, &products, None, None).programming_snapshot_for(&scope).expect("status")
+        ProjectPlanner::new(&project, &products).programming_snapshot_for(&scope).expect("status")
     }
 
     fn install_snapshot(app: &mut App, snapshot: ProgrammingSnapshot) {
@@ -3510,25 +3510,25 @@ mod project_editor_tests {
 
     #[test]
     fn queued_status_rejects_external_file_changes_before_display() {
-        use zweidraehte_client::project::{ProjectStatusInputs, ProjectStatusRequest};
+        use zweidraehte_client::project::ProjectStatusRequest;
         let (_directory, mut app, button) = app_with_project();
         let path = app.project.context().expect("context").path.clone();
         fs::write(&path, "# empty saved project\n").expect("source");
-        let snapshot = ProjectStatusInputs::load(
-            ProjectStatusRequest {
-                project_path: &path,
-                draft: None,
-                scope: None,
-                master_data: None,
-                keyring_path: None,
-            },
-            &mut ProjectStatusCache::default(),
-            || Ok(None),
-            |_, _, _| {},
-        )
-        .expect("coherent inputs")
-        .snapshot()
-        .expect("status");
+        let snapshot = ProjectStatusCache::default()
+            .load(
+                ProjectStatusRequest {
+                    project_path: &path,
+                    draft: None,
+                    scope: None,
+                    master_data: None,
+                    keyring_path: None,
+                },
+                || Ok(None),
+                |_, _, _| {},
+            )
+            .expect("coherent inputs")
+            .snapshot()
+            .expect("status");
         let tx = status_worker(&mut app);
         tx.send(crate::status::StatusRefreshMsg::Done {
             generation: app.project.generation(),

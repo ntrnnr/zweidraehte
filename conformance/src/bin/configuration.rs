@@ -38,11 +38,11 @@ use zweidraehte_project::ProgrammingSection;
 use zweidraehte_client::commissioning::inspection::{MemoryAddress, MemoryService};
 use zweidraehte_client::commissioning::inspection::{OperationData, OperationTarget, ProcedureOperation};
 use zweidraehte_client::commissioning::{
-    Commissioner, CommissionerOptions, CommissioningCancellation, CommissioningEvent, CommissioningIntent,
-    CommissioningSectionOutcome, CommissioningStage, CompileOptions, CompiledProgram, DownloadMode, ExecutionReport,
-    ImageSpace, ManagementAccessOptions, ManagementModel, MutationStatus, ObjectSelector, PreparationOptions,
-    ProgramSections, ProgrammingInput, ProgrammingModePolling, ResourceManagementStyle, RestartKind, TargetSelection,
-    UnloadMode,
+    Commissioner, CommissionerOptions, CommissioningEvent, CommissioningIntent, CommissioningObserver,
+    CommissioningSectionOutcome, CommissioningStage, CommissioningVeto, CompileOptions, CompiledProgram, DownloadMode,
+    ExecutionReport, ImageSpace, ManagementAccessOptions, ManagementModel, MutationStatus, ObjectSelector,
+    PreparationOptions, PreparedProgram, ProgramSections, ProgrammingInput, ProgrammingModePolling,
+    ResourceManagementStyle, RestartKind, TargetSelection, UnloadMode,
 };
 use zweidraehte_client::configuration::ResolvedKeyMaterial;
 use zweidraehte_client::configuration::{
@@ -105,6 +105,40 @@ async fn commission_operation(
     commission_operation_with_sections(bus, device, intent, target, allow_plaintext, None, context).await
 }
 
+/// Splits commissioning events at approval, and approves only a preparation
+/// that visibly ran every read-only stage.
+#[derive(Default)]
+struct StagedEvents {
+    preparation: Vec<CommissioningEvent>,
+    execution: Vec<CommissioningEvent>,
+    approved: bool,
+}
+
+impl CommissioningObserver for StagedEvents {
+    fn event(&mut self, _device: &(), event: CommissioningEvent) {
+        if self.approved { self.execution.push(event) } else { self.preparation.push(event) }
+    }
+
+    fn approve(&mut self, _device: &(), _prepared: &PreparedProgram) -> Result<(), CommissioningVeto> {
+        for expected in [
+            CommissioningStage::DiscoveringTarget,
+            CommissioningStage::IdentifyingProfile,
+            CommissioningStage::CompilingPlan,
+            CommissioningStage::ValidatingDifferential,
+        ] {
+            if !self
+                .preparation
+                .iter()
+                .any(|event| matches!(event, CommissioningEvent::Stage(stage) if *stage == expected))
+            {
+                return Err(CommissioningVeto::new(format!("preparation emitted no {expected:?} stage")));
+            }
+        }
+        self.approved = true;
+        Ok(())
+    }
+}
+
 async fn commission_operation_with_sections(
     bus: &KnxBus,
     device: MaterializedDevice,
@@ -124,35 +158,16 @@ async fn commission_operation_with_sections(
     compile_options.automatic_sections = automatic_sections;
     let input = ProgrammingInput::new(device, intent, compile_options);
     let options = PreparationOptions::new(ManagementAccessOptions::new().allow_plaintext(allow_plaintext));
-    let cancellation = CommissioningCancellation::default();
 
     // Preparation is contractually read-only. Retaining its events makes the
     // conformance scenario prove that discovery, exact profile selection and
     // complete compilation all happened before execution was allowed.
-    let mut preparation_events = Vec::new();
-    let prepared = commissioner
-        .prepare(input, options, &cancellation, |event| preparation_events.push(event))
-        .await
-        .map_err(|error| format!("{context}: preparing commissioning: {error}"))?;
-    for expected in [
-        CommissioningStage::DiscoveringTarget,
-        CommissioningStage::IdentifyingProfile,
-        CommissioningStage::CompilingPlan,
-        CommissioningStage::ValidatingDifferential,
-    ] {
-        if !preparation_events
-            .iter()
-            .any(|event| matches!(event, CommissioningEvent::Stage(stage) if *stage == expected))
-        {
-            return Err(format!("{context}: preparation emitted no {expected:?} stage"));
-        }
-    }
-
-    let mut execution_events = Vec::new();
+    let mut events = StagedEvents::default();
     let report = commissioner
-        .execute(prepared, &cancellation, |event| execution_events.push(event))
+        .commission(input, options, &mut events)
         .await
-        .map_err(|error| format!("{context}: executing commissioning: {error}"))?;
+        .map_err(|error| format!("{context}: commissioning: {error}"))?;
+    let execution_events = events.execution;
 
     if report.plan.intent() != intent || report.plan.target() != &expected_target {
         return Err(format!(
@@ -1079,7 +1094,8 @@ area {} conformance {{
     let products = [(id.clone(), ProjectProduct::new(product))].into_iter().collect();
     let catalogs = ProjectMasterData::load_for(&products, None)
         .map_err(|error| format!("loading plain fixture catalog: {error}"))?;
-    let plan = ProjectPlanner::new(&authored, None, &products, Some(&FixtureKeySource::default()), None)
+    let plan = ProjectPlanner::new(&authored, &products)
+        .with_keys(&FixtureKeySource::default())
         .with_master_data(&catalogs)
         .plan_commissioning(std::slice::from_ref(&id), BatchSelection::Selected, intent)
         .map_err(|error| format!("planning plain project fixture: {error}"))?;
@@ -1259,7 +1275,9 @@ area 1 conformance {{
             conflicting_key[0] ^= 0xFF;
             let conflicting =
                 FixtureKeySource::secure(tool_key, &[("test", conflicting_key), ("stale", stale_group_key)]);
-            if ProjectPlanner::new(&authored_with_stale, None, &products, Some(&conflicting), Some(&keyring))
+            if ProjectPlanner::new(&authored_with_stale, &products)
+                .with_keys(&conflicting)
+                .with_keyring(&keyring)
                 .with_master_data(&catalogs)
                 .plan_commissioning(
                     &selected,
@@ -1275,8 +1293,11 @@ area 1 conformance {{
     };
 
     let plan = |project: &AuthoredProject| {
-        let batch = ProjectPlanner::new(project, None, &products, Some(source), imported)
-            .with_master_data(&catalogs)
+        let mut planner = ProjectPlanner::new(project, &products).with_keys(source).with_master_data(&catalogs);
+        if let Some(imported) = imported {
+            planner = planner.with_keyring(imported);
+        }
+        let batch = planner
             .plan_commissioning(&selected, selection, CommissioningIntent::AssignAddressAndDownload(DownloadMode::Full))
             .map_err(|error| format!("planning secure project fixture: {error}"))?;
         let planned = batch.devices().first().ok_or_else(|| "secure project plan is empty".to_string())?;

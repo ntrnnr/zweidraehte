@@ -296,19 +296,28 @@ use zweidraehte_client::commissioning::{
 async fn program_device(
     commissioner: &Commissioner<'_>,
     input: ProgrammingInput,
+    cancellation: &mut CommissioningCancellation,
 ) -> Result<ExecutionReport> {
-    let cancellation = CommissioningCancellation::default();
     let access = ManagementAccessOptions::new().allow_plaintext(false);
     let prepared = commissioner
-        .prepare(input, PreparationOptions::new(access), &cancellation, |_| {})
+        .prepare(input, PreparationOptions::new(access), cancellation)
         .await?;
     println!("Target: {}", prepared.execution_address());
     println!("Baseline: {:?}", prepared.differential());
-    let report = commissioner.execute(prepared, &cancellation, |_| {}).await?;
+    let report = commissioner.execute(prepared, cancellation).await?;
     println!("Changed sections: {:?}", report.effects().affected_sections());
     Ok(report)
 }
 ```
+
+Both layers report through one `CommissioningObserver<Subject>` trait:
+`event` receives progress, `approve` may veto a prepared program before its
+first write, and `cancelled` is polled at step boundaries. Every method has a
+default, so `&mut ()` observes nothing and `CommissioningCancellation` only
+cancels. The commissioner observes one anonymous device (`Subject = ()`); a
+project batch passes each device's `ProjectDeviceId`. `prepare` and `execute`
+never ask for approval, because their caller holds the prepared program between
+the two calls; `Commissioner::commission` does all three steps and asks.
 
 For a `CommissioningError`, inspect `error.effects()` and
 `error.diagnostic().cleanup_failures()`. A confirmed assignment supplies recovery identity
@@ -344,8 +353,10 @@ password protection and file parsing.
 
 `ProjectOperationInputs::load` owns a saved project snapshot, products, catalogs,
 and decrypted keyring for one `ProjectInputRequest`. CLI load/unload/dry-run and
-TUI load/unload use this path. Loading and `plan()` leave project files untouched;
-the bundle lends its planner for inspection and `ProjectProgrammingInputs` for execution.
+TUI load/unload use this path. Loading and `into_programming()` leave project files
+untouched. The resulting `ProjectProgramming` owns both the inputs and the plan, so
+a plan cannot execute against products or keys loaded for another request; the
+inputs also lend their planner for inspection.
 Status and operation acquisition share product caching and catalog selection.
 Every product compiles against one installation catalog: an explicit
 installation file, read and watched when an unbound product needs it, or the
@@ -410,9 +421,9 @@ Only supported products with a nonzero resolved serial use serial targeting.
 The TUI uses this same result, including serials resolved from keys or keyrings.
 This static choice precedes discovery; programming still validates the live profile.
 
-`ProjectStatusInputs` acquires saved project state, explicit keyring/catalogue
-inputs, and immutable products through one library path shared by CLI status/check
-and TUI refreshes. A draft is paired with its exact saved base. Content checks
+`ProjectStatusCache::load` acquires saved project state, explicit keyring/catalogue
+inputs, and immutable products as `ProjectStatusInputs` through one library path
+shared by CLI status/check and TUI refreshes. A draft is paired with its exact saved base. Content checks
 bracket loading and evaluation; changed inputs return `StatusInputsChanged`.
 `ProjectStatusCache` shares products by package store, digest and catalogue leaf,
 and caches explicit Master Data by content through the same resource acquisition
@@ -461,19 +472,19 @@ flowchart TD
     UI -. borrowed views .-> NavigationState
 ```
 
-`ProjectOperationRequest` consumes the concrete batch plan and runs both selected
-and affected CLI/TUI operations through `ProjectCommissioningSession::program_queued`.
-It keeps the initial target order and explicit overrides, validates
-static inputs, then replans, prepares, executes and persists one target at a
-time. Later targets see earlier durable outcomes. Automatic stale-device queues
-may skip targets that become current; explicit full operations do not. A later
-failure retains prior physical reports, including a successful operation whose
-journal write failed. This queue is not atomic and does not preflight every
-live device before the first mutation. The explicit prepared-batch API remains
-available for callers choosing snapshot preparation and live revalidation.
-Explicit `generate_missing_tool_keys()` authorization materializes missing Tool
-Keys under the project writer before bus access. Preparation includes required
-sender synchronization.
+`ProjectProgramming::execute(connect, &mut observer)` is the only public way to
+program a project batch; selected and affected CLI/TUI operations both use it.
+It opens the project session and the bus itself, keeps the initial target order
+and explicit overrides, validates static inputs, then replans, prepares, asks the
+observer to approve, executes and persists one target at a time. Later targets
+see earlier durable outcomes. Automatic stale-device queues may skip targets that
+become current; explicit full operations do not. A later failure retains prior
+physical reports, including a successful operation whose journal write failed.
+This queue is not atomic and does not preflight every live device before the
+first mutation. `ProgrammingPolicy` carries the commissioner options, plaintext
+permission, differential policy and `generate_missing_tool_keys`; that
+authorization materializes missing Tool Keys under the project writer before bus
+access. Preparation includes required sender synchronization.
 
 `ProjectOperation` owns the session and bus. Its explicit async finalizer
 reconciles learned serials, disconnects, and compacts, attempting every remaining
@@ -524,11 +535,10 @@ flowchart LR
     Report --> Finish
 ```
 
-Custom management callers can still borrow `bus()` and `session()`, then call
-`finish` or `finish_recovery`. Callers owning a bus themselves use
-`ProjectCommissioningSession::finish_programming`; it reconciles and compacts
-without disconnecting their bus. Cancellation is cooperative: await completion
-to receive all outcomes. Dropping a future cannot perform async finalization.
+`ProjectOperation::connect` opens the bus for the management operations, which
+finalize themselves; their callers can borrow `bus()` and `session()` while the
+operation is open. Cancellation is cooperative: await completion to receive all
+outcomes. Dropping a future cannot perform async finalization.
 
 `zweidraehte_project::ProjectStore` is a read-only snapshot. Consume it with
 `into_writer()` to acquire a `ProjectWriter`, which owns exclusion and reloads

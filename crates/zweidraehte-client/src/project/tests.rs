@@ -292,7 +292,7 @@ fn shared_product_definitions_keep_device_edits_independent() {
 fn status_preview_and_batch_share_evaluation_and_secure_peer_scope() {
     let SecureFixture { project, products, catalog: _, catalogs, keyring, state, sender } = secure_fixture();
     let planner =
-        ProjectPlanner::new(&project, Some(&state), &products, None, Some(&keyring)).with_master_data(&catalogs);
+        ProjectPlanner::new(&project, &products).with_state(&state).with_keyring(&keyring).with_master_data(&catalogs);
     let id = ProjectDeviceId("receiver".into());
     let selection = BTreeSet::from([id.clone()]);
     let view = planner.programming_view_for(&selection).expect("status evaluates secure peers");
@@ -350,7 +350,11 @@ fn status_preview_and_batch_share_evaluation_and_secure_peer_scope() {
     let manifest = device.desired_manifest().clone();
     let previous = IndividualAddress::new(1, 1, 99);
     address.set_target(&id, TargetSelection::KnownPreviousAddress(previous)).expect("target override is allowed");
-    address.configure(CommissionerOptions::default(), false, DifferentialPolicy::Disabled);
+    address.set_policy(ProgrammingPolicy {
+        allow_plaintext: false,
+        differential: DifferentialPolicy::Disabled,
+        ..Default::default()
+    });
     let device = address.device(&id).expect("same receiver");
     assert_eq!(device.id(), &id);
     assert_eq!(device.desired_manifest(), &manifest);
@@ -374,7 +378,8 @@ fn status_preview_and_batch_share_evaluation_and_secure_peer_scope() {
         )
         .with_group_addresses(vec![(0x0801, vec![sender])]),
     ];
-    let imported_batch = ProjectPlanner::new(&imported_project, None, &products, None, Some(&imported))
+    let imported_batch = ProjectPlanner::new(&imported_project, &products)
+        .with_keyring(&imported)
         .with_master_data(&catalogs)
         .plan_commissioning(&[id.clone()], BatchSelection::Selected, CommissioningIntent::Download(DownloadMode::Full))
         .expect("imported managed sender evaluates without becoming a target");
@@ -383,7 +388,8 @@ fn status_preview_and_batch_share_evaluation_and_secure_peer_scope() {
     assert!(imported_batch.siat_senders[0].probe_key_material.is_some());
 
     let missing_sender_products = BTreeMap::from([(id.clone(), products[&id].clone())]);
-    let missing = ProjectPlanner::new(&imported_project, None, &missing_sender_products, None, Some(&imported))
+    let missing = ProjectPlanner::new(&imported_project, &missing_sender_products)
+        .with_keyring(&imported)
         .with_master_data(&catalogs)
         .plan_commissioning(&[id], BatchSelection::Selected, CommissioningIntent::Download(DownloadMode::Full));
     assert!(
@@ -395,6 +401,6 @@ fn status_preview_and_batch_share_evaluation_and_secure_peer_scope() {
 fn an_empty_operation_needs_no_product_catalog() {
     let project = AuthoredProject::parse("").expect("empty authored project");
     let products = BTreeMap::new();
-    let planner = ProjectPlanner::new(&project, None, &products, None, None);
+    let planner = ProjectPlanner::new(&project, &products);
     assert_eq!(planner.programming_view().expect("empty view"), ProgrammingView::default());
 }

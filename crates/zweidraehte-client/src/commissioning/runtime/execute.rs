@@ -4,9 +4,12 @@ use super::ExecutionSession;
 use crate::commissioning::error::CommissioningError;
 use crate::commissioning::error::DiagnosticResult as Result;
 use crate::commissioning::image::SparseDeviceImage;
+use crate::commissioning::input::ProgrammingInput;
 use crate::commissioning::report::effects::ExecutionEffects;
 use crate::commissioning::report::{CommissioningEvent, CommissioningStage, ExecutionReport};
-use crate::commissioning::runtime::commissioner::{Commissioner, CommissioningCancellation};
+use crate::commissioning::runtime::commissioner::{
+    Commissioner, CommissioningObserver, DeviceObservation, PreparationOptions,
+};
 use crate::commissioning::runtime::policy::successful_section_outcomes;
 use crate::commissioning::runtime::prepared::PreparedProgram;
 
@@ -14,15 +17,17 @@ impl Commissioner<'_> {
     /// Execute the prepared controls after revalidating their device evidence.
     /// Changed evidence, cancellation, or failed services return an error;
     /// device errors retain mutation status and mandatory cleanup failures.
-    pub async fn execute<F: FnMut(CommissioningEvent)>(
+    ///
+    /// The observer receives events and is polled for cancellation; the
+    /// caller already decided to execute, so it is not asked to approve.
+    pub async fn execute(
         &self,
         prepared: PreparedProgram,
-        cancellation: &CommissioningCancellation,
-        mut event: F,
+        observer: &mut impl CommissioningObserver,
     ) -> crate::commissioning::Result<ExecutionReport> {
         PreparedProgram::check_bus(prepared.bus_instance_id(), self.bus.instance_id())
             .map_err(CommissioningError::before_execution)?;
-        cancellation.check().map_err(CommissioningError::before_execution)?;
+        observer.checkpoint().map_err(CommissioningError::before_execution)?;
         let PreparedProgram { plan, mut evidence, access, authorization, replacement_tool_key, .. } = prepared;
         let config = self.management_config(evidence.target_max_apdu, plan.verify_mode(), authorization);
         let mut session = ExecutionSession::new(self.bus, plan.observed_target().previous_address, config, access)
@@ -32,13 +37,13 @@ impl Commissioner<'_> {
         session.images = super::image_state::ImageState::with_baseline(evidence.baseline_known.take());
 
         let completion: Result<_> = async {
-            session.revalidate_execution(&plan, &mut evidence, cancellation).await?;
+            session.revalidate_execution(&plan, &mut evidence, &*observer).await?;
             session.begin_execution();
-            session.execute_network(&plan, &evidence, cancellation, &mut event).await?;
-            session.execute_security_mode(&plan, cancellation, &mut event).await?;
-            let procedure = session.execute_application(&plan, cancellation, &mut event).await?;
+            session.execute_network(&plan, &evidence, observer).await?;
+            session.execute_security_mode(&plan, observer).await?;
+            let procedure = session.execute_application(&plan, observer).await?;
             let device_stamps = if plan.intent().download_mode().is_some() {
-                cancellation.check()?;
+                observer.checkpoint()?;
                 let stamps = session.images.completed_stamps()?;
                 evidence.validate_captured_stamps(&plan, &stamps)?;
                 stamps
@@ -52,7 +57,7 @@ impl Commissioner<'_> {
         let ((procedure, device_stamps), programmed_image, effects) = session.finalize(completion).await?;
         let sections = successful_section_outcomes(&plan, &programmed_image, effects.cleared_sections());
         let discovered = evidence.discovery(&plan);
-        event(CommissioningEvent::Stage(CommissioningStage::Complete));
+        observer.emit(CommissioningEvent::Stage(CommissioningStage::Complete));
         Ok(ExecutionReport {
             execution_address: evidence.execution_address,
             differential: evidence.differential,
@@ -64,6 +69,30 @@ impl Commissioner<'_> {
             sections,
             effects,
         })
+    }
+}
+
+impl Commissioner<'_> {
+    /// Prepare, ask the observer to approve, then execute.
+    ///
+    /// This is the one-call form of [`Self::prepare`] followed by
+    /// [`Self::execute`]. A veto returns an error before any configuration
+    /// write, with [`MutationStatus::NotStarted`].
+    ///
+    /// [`MutationStatus::NotStarted`]: crate::commissioning::MutationStatus::NotStarted
+    pub async fn commission(
+        &self,
+        input: ProgrammingInput,
+        options: PreparationOptions,
+        observer: &mut impl CommissioningObserver,
+    ) -> crate::commissioning::Result<ExecutionReport> {
+        let prepared = self.prepare(input, options, observer).await?;
+        observer.approve(&(), &prepared).map_err(|veto| {
+            CommissioningError::before_execution(crate::commissioning::Diagnostic::preparation(format!(
+                "the prepared program was not approved: {veto}"
+            )))
+        })?;
+        self.execute(prepared, observer).await
     }
 }
 

@@ -9,6 +9,7 @@ use crate::commissioning::procedure::{
 };
 use crate::commissioning::report::{CommissioningEvent, CommissioningStage, ProcedureReport};
 use crate::commissioning::runtime::TransferContext;
+use crate::commissioning::runtime::commissioner::{CommissioningObserver, DeviceObservation};
 use std::time::Duration;
 use zweidraehte_proto::pid;
 
@@ -64,7 +65,7 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
         self
     }
 
-    async fn verify_uncovered_image(&mut self, cancel: &impl Fn() -> bool) -> Result<(), Diagnostic> {
+    async fn verify_uncovered_image(&mut self, observer: &impl CommissioningObserver) -> Result<(), Diagnostic> {
         let reads = std::mem::take(&mut self.verification_reads);
         for (location, read) in reads {
             if !self.session.images.needs_observation(location, read.extent.byte_length) {
@@ -81,7 +82,7 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
                 vec![0..read.extent.byte_length as usize]
             };
             for range in ranges {
-                if cancel() {
+                if observer.cancelled() {
                     return Err(Diagnostic::new("commissioning was cancelled"));
                 }
                 let at = ImageLocation { space: location.space.clone(), offset: location.offset + range.start as u32 };
@@ -102,13 +103,12 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
         Ok(())
     }
 
-    pub(crate) async fn execute<C: Fn() -> bool, F: FnMut(CommissioningEvent)>(
+    pub(crate) async fn execute(
         mut self,
         image: &'a SparseDeviceImage,
         regions: &[crate::commissioning::image::NativeImageRegion],
         procedure: &'a NormalizedProcedure,
-        cancel: C,
-        mut event: F,
+        mut observer: impl CommissioningObserver,
     ) -> Result<ProcedureReport, Diagnostic> {
         self.session.seed_property_object_types(procedure)?;
         self.session.images.begin_program(image, regions, &procedure.stamp_output);
@@ -125,7 +125,7 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
             })
             .sum();
 
-        let result = self.execute_steps(&procedure.steps, &cancel, &mut event).await;
+        let result = self.execute_steps(&procedure.steps, &mut observer).await;
         // Disconnect always attempts restoration and close, retaining both
         // failures. No separate executor session counter can disagree with it.
         self.session.finish(result).await?;
@@ -136,11 +136,10 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
         })
     }
 
-    async fn execute_steps<C: Fn() -> bool, F: FnMut(CommissioningEvent)>(
+    async fn execute_steps(
         &mut self,
         steps: &[ProcedureStep],
-        cancel: &C,
-        event: &mut F,
+        observer: &mut impl CommissioningObserver,
     ) -> Result<(), Diagnostic> {
         // Each section needs every authored unload acknowledgement. A single
         // successful table unload cannot hide another table's ignored failure.
@@ -165,7 +164,7 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
         });
         let mut opened_session = false;
         for (index, step) in steps.iter().enumerate() {
-            if cancel() {
+            if observer.cancelled() {
                 return Err(Diagnostic::new("commissioning was cancelled"));
             }
 
@@ -179,12 +178,12 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
                 && self.session.connection.is_none()
                 && requires_device(&step.operation)
             {
-                event(CommissioningEvent::Stage(CommissioningStage::Connecting));
+                observer.emit(CommissioningEvent::Stage(CommissioningStage::Connecting));
                 self.reconnect().await.map_err(|error| error.at_control(step.path.clone()))?;
             }
             opened_session |= matches!(step.operation, ProcedureOperation::Connect);
 
-            event(CommissioningEvent::Step {
+            observer.emit(CommissioningEvent::Step {
                 index: index + 1,
                 total: steps.len(),
                 description: description(&step.operation),
@@ -203,13 +202,13 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
                 && last_device_step.is_none_or(|last| index > last)
                 && matches!(step.operation, ProcedureOperation::Disconnect | ProcedureOperation::Restart { .. })
             {
-                self.verify_uncovered_image(cancel).await?;
+                self.verify_uncovered_image(&*observer).await?;
             }
             self.session.control_mutated = false;
-            let result = self.execute_step(step, cancel, event).await;
+            let result = self.execute_step(step, observer).await;
             if self.session.control_mutated && !step.sections.is_empty() {
                 self.session.effects.record_sections(step.sections.iter().copied());
-                event(CommissioningEvent::ProgrammingSectionsMutated {
+                observer.emit(CommissioningEvent::ProgrammingSectionsMutated {
                     sections: step.sections.iter().copied().collect(),
                 });
             }
@@ -222,7 +221,7 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
                     }
                 }
             }
-            if cancel() {
+            if observer.cancelled() {
                 return Err(Diagnostic::new("commissioning was cancelled"));
             }
             if let Err(error) = result {
@@ -240,10 +239,10 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
             };
             if length != 0 {
                 self.data_done += length;
-                event(CommissioningEvent::Data { done: self.data_done, total: self.data_total });
+                observer.emit(CommissioningEvent::Data { done: self.data_done, total: self.data_total });
             }
         }
-        self.verify_uncovered_image(cancel).await
+        self.verify_uncovered_image(&*observer).await
     }
 
     /// Reopens the session a restart closed, with the tool state the
@@ -256,15 +255,14 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
         Ok(())
     }
 
-    async fn execute_step<C: Fn() -> bool, F: FnMut(CommissioningEvent)>(
+    async fn execute_step(
         &mut self,
         step: &ProcedureStep,
-        cancel: &C,
-        event: &mut F,
+        observer: &mut impl CommissioningObserver,
     ) -> Result<(), Diagnostic> {
         match &step.operation {
             ProcedureOperation::Connect => {
-                event(CommissioningEvent::Stage(CommissioningStage::Connecting));
+                observer.emit(CommissioningEvent::Stage(CommissioningStage::Connecting));
                 self.session.connect().await?;
                 if step.secure_only && !self.session.secure_management() {
                     return Err(Diagnostic::new("the commissioning plan requires secure management"));
@@ -274,8 +272,8 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
                 }
             }
             ProcedureOperation::Disconnect => {
-                event(CommissioningEvent::Stage(CommissioningStage::RestoringDeviceState));
-                event(CommissioningEvent::Stage(CommissioningStage::Disconnecting));
+                observer.emit(CommissioningEvent::Stage(CommissioningStage::RestoringDeviceState));
+                observer.emit(CommissioningEvent::Stage(CommissioningStage::Disconnecting));
                 self.session.disconnect().await?;
             }
             ProcedureOperation::Restart { kind } => self.session.restart_device(*kind).await?,
@@ -307,7 +305,7 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
                 self.session.images.forget_cache();
                 self.session.forget_described_property_types();
             }
-            ProcedureOperation::ProgressText(text) => event(CommissioningEvent::ProgressText(text.clone())),
+            ProcedureOperation::ProgressText(text) => observer.emit(CommissioningEvent::ProgressText(text.clone())),
             ProcedureOperation::LoadRecord(record) => self.session.load_record(record).await?,
             ProcedureOperation::AbsoluteSegment { record, transfers } => {
                 self.session.load_record(record).await?;
@@ -371,7 +369,7 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
                 let deadline = timeout_milliseconds
                     .map(|timeout| tokio::time::Instant::now() + Duration::from_millis(u64::from(timeout)));
                 loop {
-                    if cancel() {
+                    if observer.cancelled() {
                         return Err(Diagnostic::new("commissioning was cancelled"));
                     }
                     let result = match self.session.read_cached(target, *extent, *cache, None).await {
@@ -445,7 +443,7 @@ impl<'session, 'a> ProcedureRunner<'session, 'a> {
                 };
 
                 let step = ProcedureStep { operation, ..step.clone() };
-                Box::pin(self.execute_step(&step, cancel, event)).await?
+                Box::pin(self.execute_step(&step, observer)).await?
             }
             ProcedureOperation::DeclarePropertyDescriptor {
                 address,

@@ -1,5 +1,6 @@
 //! Preserve behavioral regressions from the former management simulator.
 use super::*;
+use crate::commissioning::CommissioningObserver;
 use crate::commissioning::catalog_testing::*;
 use crate::commissioning::runtime::TransferContext;
 
@@ -41,10 +42,8 @@ async fn described_image_read_resolves_pdt_even_when_owned_and_merges_only_unown
             script.push(Wire::ObjectProperty { object_index: 4, pid: 201, write: None, reply: Ok(vec![0xa0, 0xb0]) });
         }
         script.push(Wire::Close(Ok(())));
-        let (result, ()) = tokio::join!(
-            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
-            peer(rx, script)
-        );
+        let (result, ()) =
+            tokio::join!(ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()), peer(rx, script));
         result.expect("PDT lookup precedes ownership selection and repeated reads skip owned bytes");
         let bytes = session.images.working.range(&location, 2).expect("loaded property is represented");
         let mask = mask.unwrap_or(0);
@@ -76,7 +75,7 @@ async fn described_image_read_fails_missing_pdt_before_skipping_fully_owned_byte
         ProcedureOperation::Disconnect,
     ]);
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             Wire::Description { object_index: 4, pid: 201, pdt: None },
@@ -120,7 +119,7 @@ async fn described_image_read_offsets_elements_and_supplies_a_later_image_transf
     let image = SparseDeviceImage::new();
     let bytes = vec![1, 2, 3, 4];
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             Wire::Description { object_index: 3, pid: 27, pdt: Some(4) },
@@ -179,7 +178,7 @@ async fn numeric_lookup_identification_seeds_apply_before_earlier_ordinary_typed
     ]);
     let image = SparseDeviceImage::new();
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             // Identification already seeded both object types. The ordinary
@@ -218,7 +217,7 @@ async fn numeric_lookup_uses_a_declaration_only_after_it_executes() {
     ]);
     let image = SparseDeviceImage::new();
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             Wire::Description { object_index: 4, pid: 201, pdt: Some(2) },
@@ -264,7 +263,7 @@ async fn numeric_lookup_mask_seed_wins_until_clear_then_requires_new_discovery()
     ]);
     let image = SparseDeviceImage::new();
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             Wire::ObjectProperty { object_index: 4, pid: 201, write: None, reply: Ok(vec![42]) },
@@ -318,10 +317,8 @@ async fn numeric_lookup_fresh_reconnect_restores_mask_seeds_but_not_old_observed
         });
         script.push(Wire::Close(Ok(())));
         let image = SparseDeviceImage::new();
-        let (result, ()) = tokio::join!(
-            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
-            peer(rx, script)
-        );
+        let (result, ()) =
+            tokio::join!(ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()), peer(rx, script));
         result.expect("fresh identification restores mask metadata without reviving old observations");
     }
 }
@@ -351,7 +348,7 @@ async fn numeric_lookup_rejected_secure_declaration_does_not_populate_descriptor
     controls.steps[1].secure_only = true;
     let image = SparseDeviceImage::new();
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![Wire::Open(false), Wire::Close(Ok(())),])
     );
     // Rust currently refuses a plaintext secure-only control; native Hawk
@@ -480,7 +477,7 @@ async fn numeric_property_ranges_describe_six_bytes_and_preserve_cache_inversion
             procedure(vec![ProcedureOperation::Connect, operation.clone(), operation, ProcedureOperation::Disconnect]);
         let image = SparseDeviceImage::new();
         let (result, ()) = tokio::join!(
-            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
             peer(rx, vec![
                 Wire::Open(false),
                 Wire::Description { object_index: 4, pid: 201, pdt: Some(22) },
@@ -524,7 +521,7 @@ async fn clipped_property_comparisons_read_complete_elements_and_compare_only_th
     ]);
     let image = SparseDeviceImage::new();
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![Wire::Open(false), prop_read(27, 2, 2, &[1, 2, 3, 0xee]), Wire::Close(Ok(()))])
     );
     result.expect("readback suffix is not part of the selected comparison");
@@ -570,10 +567,8 @@ async fn clipped_property_writes_merge_and_chunk_a_complete_final_element() {
             script.push(prop_read(27, 7, 1, &expected[10..]));
         }
         script.push(Wire::Close(Ok(())));
-        let (result, ()) = tokio::join!(
-            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
-            peer(rx, script)
-        );
+        let (result, ()) =
+            tokio::join!(ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()), peer(rx, script));
         result.expect("the omitted final byte is read, preserved and written in its complete element");
         assert_eq!(image.range(&location, 11).expect("source keeps its original extent").mask(), [mask; 11]);
         assert!(image.range(&location, 12).is_err(), "padding never enlarges the desired source image");
@@ -610,7 +605,7 @@ async fn property_write_before_image_read_preserves_unowned_device_bytes() {
         let observed = vec![observed_byte; 8];
         let expected = vec![expected_byte; 8];
         let (result, ()) = tokio::join!(
-            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
             peer(rx, vec![
                 Wire::Open(false),
                 prop_read(27, 1, 1, &observed),
@@ -669,10 +664,8 @@ async fn memory_image_load_skips_owned_windows_and_preserves_desired_bits_in_lat
         }
         script.push(Wire::Close(Ok(())));
         let regions = vec![native(location(0x100), 3)];
-        let (result, ()) = tokio::join!(
-            ProcedureRunner::new(&mut session).execute(&image, &regions, &controls, || false, |_| {}),
-            peer(rx, script)
-        );
+        let (result, ()) =
+            tokio::join!(ProcedureRunner::new(&mut session).execute(&image, &regions, &controls, ()), peer(rx, script));
         result.expect("selected memory read and subsequent merged payload follow the wire script");
         assert_eq!(session.images.working_byte(&location(0x101)), Some((expected, 255)));
     }
@@ -701,7 +694,7 @@ async fn restart_closure_restores_mode_and_invalidates_knowledge_before_secure_r
     controls.steps[3].secure_only = true;
     session.images.known = image.clone();
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(true),
             prop_read(pid::DEVICE_CONTROL, 1, 1, &[0]),
@@ -955,7 +948,7 @@ async fn published_image_uses_confirmed_compound_ranges_and_retains_unrequested_
         .on_error
         .push(ErrorHandler { cause: LoadControlCause::DeviceReturnCode(2), action: ErrorAction::Ignore });
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&desired, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&desired, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             mem_write(0x100, &[1]),
@@ -1018,10 +1011,8 @@ async fn writes_after_restart_discard_the_earlier_publication_snapshot() {
             script.push(Wire::Memory { address: 0x201, count: 1, write: None, reply: Ok(vec![8]) });
         }
         script.push(Wire::Close(Ok(())));
-        let (result, ()) = tokio::join!(
-            ProcedureRunner::new(&mut session).execute(&desired, &[], &controls, || false, |_| {}),
-            peer(rx, script)
-        );
+        let (result, ()) =
+            tokio::join!(ProcedureRunner::new(&mut session).execute(&desired, &[], &controls, ()), peer(rx, script));
         result.expect("late comparison failure is authored as ignorable");
         let programmed_image = session.images.take_programmed_image();
         assert_eq!(programmed_image.byte(&location(0x200)), None);
@@ -1054,7 +1045,7 @@ async fn downloads_reopen_a_session_that_a_fragment_restart_closed() {
             script.extend([Wire::Open(false), mem_write(0x201, &[9]), Wire::Restart(Ok(())), Wire::Close(Ok(()))]);
         }
         let (result, ()) = tokio::join!(
-            ProcedureRunner::new(&mut session).unloading(unloading).execute(&desired, &[], &controls, || false, |_| {}),
+            ProcedureRunner::new(&mut session).unloading(unloading).execute(&desired, &[], &controls, ()),
             peer(rx, script)
         );
         if unloading {
@@ -1097,7 +1088,7 @@ async fn rejected_writes_and_allocations_cannot_restore_invalidated_bytes_from_a
             .on_error
             .push(ErrorHandler { cause: LoadControlCause::DeviceReturnCode(2), action: ErrorAction::Ignore });
         let (result, ()) = tokio::join!(
-            ProcedureRunner::new(&mut session).execute(&desired, &[], &controls, || false, |_| {}),
+            ProcedureRunner::new(&mut session).execute(&desired, &[], &controls, ()),
             peer(rx, vec![
                 Wire::Open(false),
                 Wire::Restart(Ok(())),
@@ -1186,10 +1177,8 @@ async fn published_image_retains_credentials_and_excludes_unowned_readback_bits(
             wire.push(prop_read(27, 1, 1, &[0xA7]));
         }
         wire.extend([prop_read(27, 1, 1, &[0xA7]), prop_read(28, 1, 1, &[0xA5]), Wire::Close(Ok(()))]);
-        let (result, ()) = tokio::join!(
-            ProcedureRunner::new(&mut session).execute(&desired, &[], &controls, || false, |_| {}),
-            peer(rx, wire)
-        );
+        let (result, ()) =
+            tokio::join!(ProcedureRunner::new(&mut session).execute(&desired, &[], &controls, ()), peer(rx, wire));
         result.expect("credential write and later reads complete");
         let programmed_image = session.images.take_programmed_image();
         // Credentials publish like any other owned byte.
@@ -1221,7 +1210,7 @@ async fn function_commands_send_bound_bytes_and_state_reads_remain_real_wire_ope
     );
     let image = SparseDeviceImage::new();
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             Wire::Function { command: true, data: vec![0, 0xA5, 4], return_code: 0, response: vec![9] },
@@ -1266,7 +1255,7 @@ async fn inline_function_responses_preserve_unrelated_observations_cache_and_wor
                 ProcedureOperation::Disconnect,
             ]);
             let (result, ()) = tokio::join!(
-                ProcedureRunner::new(&mut session).execute(&desired, &[], &controls, || false, |_| {}),
+                ProcedureRunner::new(&mut session).execute(&desired, &[], &controls, ()),
                 peer(rx, vec![
                     Wire::Open(false),
                     Wire::Memory { address: 0x100, count: 1, write: None, reply: Ok(vec![0xA0]) },
@@ -1339,7 +1328,7 @@ async fn load_record_without_room_for_an_extended_frame_uses_the_located_object_
     };
     let image = SparseDeviceImage::new();
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             object_type(0, 0),
@@ -1405,7 +1394,7 @@ async fn type_addressed_property_read_without_room_for_an_extended_frame_uses_th
     };
     let image = SparseDeviceImage::new();
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             object_type(0, 0),
@@ -1544,10 +1533,8 @@ async fn wide_pointer_service_follows_each_observed_range_without_downgrading_se
             zweidraehte_project::ProgrammingSection::Parameters,
             &ImageSegment::owned(destination.clone(), vec![9]).expect("one byte"),
         );
-        let (result, ()) = tokio::join!(
-            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
-            peer(rx, script)
-        );
+        let (result, ()) =
+            tokio::join!(ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()), peer(rx, script));
         result.expect("current pointer range selects the service");
         let programmed_image = session.images.take_programmed_image();
         assert_eq!(programmed_image.byte(&destination), Some((9, 255)));
@@ -1587,10 +1574,8 @@ async fn image_window_combines_read_ownership_with_desired_bytes_and_preserves_i
         Wire::Close(Ok(())),
     ];
     let regions = [native(location(0x100), 3)];
-    let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&desired, &regions, &controls, || false, |_| {}),
-        peer(rx, script)
-    );
+    let (result, ()) =
+        tokio::join!(ProcedureRunner::new(&mut session).execute(&desired, &regions, &controls, ()), peer(rx, script));
     result.unwrap();
     assert_eq!(desired.byte(&location(0x100)), None);
     assert_eq!(session.images.working_byte(&location(0x100)), Some((0xa0, 255)));
@@ -1661,10 +1646,8 @@ async fn absolute_transfers_follow_native_capacity_including_regions_loaded_earl
         operations.push(ProcedureOperation::Disconnect);
         script.push(Wire::Close(Ok(())));
         let controls = procedure(operations);
-        let (result, ()) = tokio::join!(
-            ProcedureRunner::new(&mut session).execute(&image, &regions, &controls, || false, |_| {}),
-            peer(rx, script)
-        );
+        let (result, ()) =
+            tokio::join!(ProcedureRunner::new(&mut session).execute(&image, &regions, &controls, ()), peer(rx, script));
         result.unwrap_or_else(|error| panic!("native allocation case {case}: {error}"));
     }
 }
@@ -1686,7 +1669,7 @@ async fn network_restart_cannot_resurrect_the_prepared_baseline_when_controls_st
     let client = async {
         session.connect().await?;
         session.restart_device(RestartKind::Basic).await?;
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}).await
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()).await
     };
     let (result, ()) = tokio::join!(
         client,
@@ -1843,7 +1826,7 @@ async fn ignored_factory_reset_failure_and_address_reset_do_not_prove_applicatio
             .on_error
             .push(ErrorHandler { cause: LoadControlCause::DeviceReturnCode(2), action: ErrorAction::Ignore });
         let (result, ()) = tokio::join!(
-            ProcedureRunner::new(&mut session).unloading(true).execute(&desired, &[], &controls, || false, |_| {}),
+            ProcedureRunner::new(&mut session).unloading(true).execute(&desired, &[], &controls, ()),
             peer(rx, vec![Wire::Open(false), Wire::Reset { code, error }, Wire::Close(Ok(()))])
         );
         result.expect("authored failure handler completes the procedure");
@@ -1930,7 +1913,7 @@ async fn type_addressed_declaration_describes_every_occurrence() {
     ]);
     let image = SparseDeviceImage::new();
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![Wire::Open(false), Wire::Close(Ok(()))])
     );
     let error = result.expect_err("the second router's property is declared read-only");
@@ -1963,8 +1946,7 @@ async fn final_evidence_requires_a_bound_read_and_survives_an_unobserved_progres
                 &desired,
                 &[],
                 &controls,
-                || false,
-                |_| {}
+                ()
             ),
             peer(rx, script),
         );
@@ -1995,7 +1977,7 @@ async fn verified_no_write_control_does_not_report_sections_as_mutated() {
     let mut events = Vec::new();
     session.images.known = image.clone();
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |event| events.push(event)),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, &mut events),
         peer(rx, vec![Wire::Open(false), Wire::Close(Ok(()))])
     );
     result.expect("verified destination needs no write");
@@ -2027,7 +2009,7 @@ async fn differential_property_never_splits_changed_elements() {
     ]);
     session.images.known = baseline;
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             Wire::Property { pid: 27, start: 2, count: 1, write: Some(vec![1, 9, 1]), reply: Ok(vec![1, 9, 1]) },
@@ -2089,7 +2071,7 @@ async fn property_writes_preserve_unrelated_differences_and_forget_possible_obje
         ProcedureOperation::Disconnect,
     ]);
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![Wire::Open(false), prop_write(27, 9), Wire::Close(Ok(()))])
     );
     result.expect("only the changed element requires a telegram");
@@ -2125,7 +2107,7 @@ async fn final_stamp_width_failure_keeps_confirmed_credential_transition() {
         optional: false,
     }]);
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             mem_write(0x200, &[7; 12]),
@@ -2167,7 +2149,7 @@ async fn differential_user_memory_keeps_short_equal_runs_and_twenty_bit_offsets(
     ]);
     session.images.known = baseline;
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             Wire::UserWrite { address: 0x8fffc, data: vec![1, 1, 9] },
@@ -2202,7 +2184,7 @@ async fn ignored_readback_mismatch_does_not_reestablish_the_old_differential_bas
         .push(ErrorHandler { cause: LoadControlCause::CompareMismatch, action: ErrorAction::Ignore });
     session.images.known = image.clone();
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             mem_write(0x200, &[9]),
@@ -2230,7 +2212,7 @@ async fn error_mapping_matches_exact_code_and_source_control() {
         controls.steps[2].source_control_code = Some(source);
         let image = SparseDeviceImage::new();
         let (result, ()) = tokio::join!(
-            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
             peer(rx, vec![
                 Wire::Open(false),
                 Wire::Memory { address: 0x200, count: 1, write: Some(vec![1]), reply: Err(Error::DeviceError(code)) },
@@ -2302,7 +2284,7 @@ async fn zero_mask_comparisons_skip_source_resolution_and_device_reads_even_when
                     ProcedureOperation::Disconnect,
                 ]);
                 let (result, ()) = tokio::join!(
-                    ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+                    ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
                     peer(rx, vec![Wire::Open(false), Wire::Close(Ok(()))])
                 );
                 result.expect("zero selected bits complete without comparing or resolving missing image data");
@@ -2350,7 +2332,7 @@ async fn image_only_comparisons_do_not_fill_reference_bits_from_the_device() {
                 Wire::Memory { address: 0x100, count: 3, write: None, reply: Ok(vec![0xa0, 0xa1, 0xa2]) }
             };
             let (result, ()) = tokio::join!(
-                ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+                ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
                 peer(rx, vec![Wire::Open(false), read, Wire::Close(Ok(()))])
             );
             result.expect("only one value read, with image-owned low bits compared; the second compare is cached");
@@ -2388,7 +2370,7 @@ async fn image_reference_ownership_changes_after_a_successful_image_load() {
         ProcedureOperation::Disconnect,
     ]);
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             Wire::Memory { address: 0x100, count: 3, write: None, reply: Ok(vec![0xa0, 0xa1, 0xa2]) },
@@ -2421,7 +2403,7 @@ async fn missing_memory_image_reference_skips_comparison_even_when_inverted() {
             ProcedureOperation::Disconnect,
         ]);
         let (result, ()) = tokio::join!(
-            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
             peer(rx, vec![Wire::Open(false), Wire::Close(Ok(()))])
         );
         result.expect("native missing-reference comparison performs no read");
@@ -2474,7 +2456,7 @@ async fn short_memory_image_reference_remains_an_error() {
         ProcedureOperation::Disconnect,
     ]);
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![Wire::Open(false), Wire::Close(Ok(()))])
     );
     assert!(
@@ -2508,7 +2490,7 @@ async fn image_load_creates_a_reference_for_a_later_memory_comparison() {
         ProcedureOperation::Disconnect,
     ]);
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             Wire::Memory { address: 0x100, count: 3, write: None, reply: Ok(vec![0xa0, 0xa1, 0xa2]) },
@@ -2546,7 +2528,7 @@ async fn empty_image_comparison_selection_skips_memory_reads_and_inversion() {
             ProcedureOperation::Disconnect,
         ]);
         let (result, ()) = tokio::join!(
-            ProcedureRunner::new(&mut session).execute(&image, &regions, &controls, || false, |_| {}),
+            ProcedureRunner::new(&mut session).execute(&image, &regions, &controls, ()),
             peer(rx, vec![Wire::Open(false), Wire::Close(Ok(()))])
         );
         result.expect("an empty image mask selects no comparison bits");
@@ -2607,7 +2589,7 @@ async fn property_comparison_uses_loaded_ownership_before_inline_fallback_and_ke
                 ProcedureOperation::Disconnect,
             ]);
             let (result, ()) = tokio::join!(
-                ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+                ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
                 peer(rx, vec![
                     Wire::Open(false),
                     Wire::Property { start, count, pid: 27, write: None, reply: Ok(loaded.clone()) },
@@ -2647,7 +2629,7 @@ async fn compare_observations_are_cached_without_changing_the_working_image() {
         ProcedureOperation::Disconnect,
     ]);
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             Wire::Memory { address: 0x100, count: 1, write: None, reply: Ok(vec![0xa0]) },
@@ -2677,7 +2659,7 @@ async fn property_chunks_keep_complete_elements_and_original_start() {
     ]);
     let image = SparseDeviceImage::new();
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             Wire::Property {
@@ -2714,7 +2696,7 @@ async fn masked_memory_write_preserves_unowned_device_bits() {
         ProcedureOperation::Disconnect,
     ]);
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             Wire::Memory { address: 0x200, count: 2, write: None, reply: Ok(vec![0xa0, 0xb0]) },
@@ -2750,7 +2732,7 @@ async fn repeated_masked_writes_preserve_fresh_unowned_device_bits() {
             ProcedureOperation::Disconnect,
         ]);
         let (result, ()) = tokio::join!(
-            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
             peer(rx, vec![
                 Wire::Open(false),
                 Wire::Memory { address: 0x200, count: 2, write: None, reply: Ok(vec![0xa0, 0xa0]) },
@@ -2794,7 +2776,7 @@ async fn buffered_fallback_write_preserves_later_desired_source() {
         ProcedureOperation::Disconnect,
     ]);
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![Wire::Open(false), mem_write(0x200, &[7, 8]), mem_write(0x200, &[5, 6]), Wire::Close(Ok(()))])
     );
     result.expect("the second write uses the original desired bytes");
@@ -2817,7 +2799,7 @@ async fn copying_working_data_compares_destination_knowledge_only() {
         ProcedureOperation::Disconnect,
     ]);
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &regions, &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &regions, &controls, ()),
         peer(
             rx,
             vec![Wire::Open(false), prop_read(27, 1, 2, &[8, 9]), mem_write(0x200, &[8, 9]), Wire::Close(Ok(())),]
@@ -2849,7 +2831,7 @@ async fn loaded_buffer_survives_cache_clear_and_later_device_write() {
         ProcedureOperation::Disconnect,
     ]);
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             prop_read(27, 1, 1, &[0xa0; 8]),
@@ -2873,15 +2855,20 @@ async fn cancellation_stops_comparison_retry_and_restores_device_mode() {
     controls.steps[1]
         .on_error
         .push(ErrorHandler { cause: LoadControlCause::CompareMismatch, action: ErrorAction::Ignore });
-    let calls = Cell::new(0);
-    let cancel = || {
-        let count = calls.get() + 1;
-        calls.set(count);
-        count >= 5
-    };
+    /// Requests cancellation on the fifth poll.
+    struct CancelOnFifthPoll(Cell<u32>);
+
+    impl CommissioningObserver for CancelOnFifthPoll {
+        fn cancelled(&self) -> bool {
+            let count = self.0.get() + 1;
+            self.0.set(count);
+            count >= 5
+        }
+    }
+
     let image = SparseDeviceImage::new();
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, cancel, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, CancelOnFifthPoll(Cell::new(0))),
         peer(rx, vec![
             Wire::Open(false),
             prop_read(pid::DEVICE_CONTROL, 1, 1, &[0]),
@@ -2910,7 +2897,7 @@ async fn failed_restore_and_disconnect_both_survive_primary_comparison_error() {
     controls.initial_state.memory_auto_verify = Some(true);
     let image = SparseDeviceImage::new();
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             prop_read(pid::DEVICE_CONTROL, 1, 1, &[0]),
@@ -2995,10 +2982,8 @@ async fn split_group_key_writes_report_only_successful_or_uncertain_rows() {
             }
         }
         wire.push(Wire::Close(Ok(())));
-        let (result, ()) = tokio::join!(
-            ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
-            peer(rx, wire)
-        );
+        let (result, ()) =
+            tokio::join!(ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()), peer(rx, wire));
         let exposed = failed_row.map_or(3, |row| row + usize::from(uncertain));
         let expected = groups[..exposed].iter().copied().collect::<BTreeSet<_>>();
         if failed_row.is_some() && !ignored {
@@ -3299,7 +3284,7 @@ async fn program_version_mismatch_escapes_its_compare_mismatch_handler() {
 
     let image = SparseDeviceImage::new();
     let (result, ()) = tokio::join!(
-        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}),
+        ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()),
         peer(rx, vec![
             Wire::Open(false),
             prop_read(27, 1, 1, &[4]),
@@ -3360,8 +3345,7 @@ async fn secure_key_row_that_cannot_fit_one_telegram_is_refused_before_sending()
         };
         tx.send(Ok(())).expect("closed");
     };
-    let (result, ()) =
-        tokio::join!(ProcedureRunner::new(&mut session).execute(&image, &[], &controls, || false, |_| {}), wire);
+    let (result, ()) = tokio::join!(ProcedureRunner::new(&mut session).execute(&image, &[], &controls, ()), wire);
     let error = result.expect_err("a row cannot be split");
     assert!(error.message.contains("cannot carry one complete property element"), "{}", error.message);
     assert!(!session.mutated());

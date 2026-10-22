@@ -114,6 +114,23 @@ pub struct ProjectMemoryReadReport {
     pub segments: Vec<ProjectMemoryReadout>,
 }
 
+/// Credentials and product catalogue for a project management operation.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ManagementSources<'a> {
+    /// An imported ETS keyring, consulted after the project's own keys.
+    pub keyring: Option<&'a Keyring>,
+    /// Installation Master Data for products that do not bind their own.
+    pub master_data: Option<&'a Path>,
+}
+
+/// How [`ProjectOperation::read_device_memory`] reaches the device.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MemoryReadOptions<'a> {
+    pub sources: ManagementSources<'a>,
+    /// Permit unauthenticated management for a device without secure credentials.
+    pub allow_plaintext: bool,
+}
+
 /// The primary error, partial observations and all cleanup errors remain
 /// inspectable independently. No application programming report is fabricated.
 #[derive(Debug, thiserror::Error)]
@@ -133,13 +150,12 @@ impl ProjectOperation {
     /// addressing evidence; desired application edits are not evaluated.
     pub async fn synchronize(
         self,
-        keyring: Option<&Keyring>,
-        master_data: Option<&Path>,
         mode: ProjectSynchronization,
+        sources: ManagementSources<'_>,
     ) -> ProjectManagementResult<ProjectSynchronizationReport> {
         let mut report = ProjectSynchronizationReport::default();
         let result = async {
-            let (project, _, targets) = management_inputs(self.session(), None, keyring, master_data)?;
+            let (project, _, targets) = management_inputs(self.session(), None, sources)?;
             self.synchronize_targets(&project, &targets, mode, &mut report).await
         }
         .await;
@@ -224,10 +240,9 @@ impl ProjectOperation {
     pub async fn read_device_memory(
         self,
         device: &ProjectDeviceId,
-        keyring: Option<&Keyring>,
-        master_data: Option<&Path>,
-        allow_plaintext: bool,
+        options: MemoryReadOptions<'_>,
     ) -> ProjectManagementResult<ProjectMemoryReadReport> {
+        let MemoryReadOptions { sources, allow_plaintext } = options;
         let mut report = ProjectMemoryReadReport {
             device: device.clone(),
             address: None,
@@ -236,7 +251,7 @@ impl ProjectOperation {
             segments: Vec::new(),
         };
         let result = async {
-            let (_, resources, targets) = management_inputs(self.session(), Some(device), keyring, master_data)?;
+            let (_, resources, targets) = management_inputs(self.session(), Some(device), sources)?;
             let target = targets.first().expect("selected target resolved");
             let ranges = resources.products[device]
                 .product()
@@ -298,9 +313,9 @@ impl ProjectOperation {
 fn management_inputs(
     session: &ProjectCommissioningSession,
     selected: Option<&ProjectDeviceId>,
-    keyring: Option<&Keyring>,
-    master_data: Option<&Path>,
+    sources: ManagementSources<'_>,
 ) -> Result<(AuthoredProject, ProductInputs, Vec<ProjectManagementTarget>)> {
+    let ManagementSources { keyring, master_data } = sources;
     session.inspect(|store| {
         let project = store.authored();
         let scope: BTreeSet<_> = match selected {

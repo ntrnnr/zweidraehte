@@ -5,11 +5,11 @@
 //! actor's best-effort shutdown; it cannot complete asynchronous finalization.
 
 use super::{
-    PreparedProjectDevice, ProgrammingBatchPlan, ProjectBatchFailure, ProjectBatchFailureStage, ProjectBatchReport,
+    ProgrammingBatchPlan, ProjectBatchFailure, ProjectBatchFailureStage, ProjectBatchReport,
     ProjectCommissioningSession, ProjectProgrammingInputs,
 };
 use crate::commissioning::{
-    CommissioningCancellation, CommissioningError, CommissioningEvent, ExecutionEffects, LearnedTarget, MutationStatus,
+    CommissioningError, CommissioningObserver, Diagnostic, ExecutionEffects, LearnedTarget, MutationStatus,
 };
 use crate::project::error::{Error, Result};
 use crate::security::{Keyring, SecurityStore};
@@ -20,62 +20,40 @@ use zweidraehte_project::{ProgrammingSection, ProjectDeviceId};
 #[cfg(test)]
 mod tests;
 
-/// A concrete commissioning request. The batch already contains the selected
-/// IDs, intent, target overrides and access policy; retaining it avoids a second
-/// set of independently configurable request fields.
-pub struct ProjectOperationRequest {
-    plan: ProgrammingBatchPlan,
-    generate_tool_keys: bool,
-}
-
-impl std::fmt::Debug for ProjectOperationRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ProjectOperationRequest")
-            .field("device_count", &self.plan.devices().len())
-            .field("generate_tool_keys", &self.generate_tool_keys)
-            .finish_non_exhaustive()
+/// Run the exact selected queue, retaining all effects and cleanup failures.
+///
+/// Missing Tool Keys are persisted first when the plan's policy asks for it,
+/// so a generated key is durable before any device can receive it.
+pub(crate) async fn execute_batch<Connect, Connecting>(
+    session: ProjectCommissioningSession,
+    mut plan: ProgrammingBatchPlan,
+    connect: Connect,
+    inputs: ProjectProgrammingInputs<'_>,
+    observer: &mut impl CommissioningObserver<ProjectDeviceId>,
+) -> Result<ProjectBatchReport>
+where
+    Connect: FnOnce(SecurityStore) -> Connecting,
+    Connecting: Future<Output = BusResult<KnxBus>>,
+{
+    if let Err(error) = ensure_not_cancelled(observer) {
+        return Err(setup_failure(session, error));
     }
-}
-
-impl ProjectOperationRequest {
-    pub fn new(plan: ProgrammingBatchPlan) -> Self {
-        Self { plan, generate_tool_keys: false }
-    }
-
-    /// Authorize persistence of missing Tool Keys before connecting to the bus.
-    pub fn generate_missing_tool_keys(mut self) -> Self {
-        self.generate_tool_keys = true;
-        self
-    }
-
-    /// Run the exact selected queue, retaining all effects and cleanup failures.
-    /// The connector factory keeps transport and executor choices with callers.
-    pub async fn execute<C, Fut, F, P>(
-        mut self,
-        session: ProjectCommissioningSession,
-        connect: C,
-        inputs: ProjectProgrammingInputs<'_>,
-        cancellation: &CommissioningCancellation,
-        progress: &mut F,
-        prepared: P,
-    ) -> Result<ProjectBatchReport>
-    where
-        C: FnOnce(SecurityStore) -> Fut,
-        Fut: Future<Output = BusResult<KnxBus>>,
-        F: FnMut(&ProjectDeviceId, CommissioningEvent) + Send,
-        P: FnMut(&PreparedProjectDevice) -> Result<()> + Send,
+    if plan.policy().generate_missing_tool_keys
+        && let Err(error) = session.materialize_tool_keys(&mut plan)
     {
-        if let Err(error) = cancellation.check() {
-            return Err(setup_failure(session, CommissioningError::before_execution(error).into()));
-        }
-        if self.generate_tool_keys
-            && let Err(error) = session.materialize_tool_keys(&mut self.plan)
-        {
-            return Err(setup_failure(session, error));
-        }
-        let operation = ProjectOperation::connect(session, inputs.keyring, connect).await?;
-        operation.program(self.plan, inputs, cancellation, progress, prepared).await
+        return Err(setup_failure(session, error));
     }
+    let operation = ProjectOperation::connect(session, inputs.keyring, connect).await?;
+    operation.program(plan, inputs, observer).await
+}
+
+/// Cancellation before a device is touched is a commissioning failure with no
+/// physical effect, exactly like cancellation inside the commissioner.
+pub(super) fn ensure_not_cancelled(observer: &impl CommissioningObserver<ProjectDeviceId>) -> Result<()> {
+    if observer.cancelled() {
+        return Err(CommissioningError::before_execution(Diagnostic::new("commissioning was cancelled")).into());
+    }
+    Ok(())
 }
 
 /// Owns the bus and the project writer until explicit async finalization.
@@ -135,37 +113,24 @@ impl ProjectOperation {
         &self.session
     }
 
-    pub async fn program<F, P>(
+    pub(crate) async fn program(
         self,
         plan: ProgrammingBatchPlan,
         inputs: ProjectProgrammingInputs<'_>,
-        cancellation: &CommissioningCancellation,
-        progress: &mut F,
-        prepared: P,
-    ) -> Result<ProjectBatchReport>
-    where
-        F: FnMut(&ProjectDeviceId, CommissioningEvent) + Send,
-        P: FnMut(&PreparedProjectDevice) -> Result<()> + Send,
-    {
-        let result = self.session.program_queued(&self.bus, plan, inputs, cancellation, progress, prepared).await;
+        observer: &mut impl CommissioningObserver<ProjectDeviceId>,
+    ) -> Result<ProjectBatchReport> {
+        let result = self.session.program_queued(&self.bus, plan, inputs, observer).await;
         self.finish(result).await
     }
 
     /// Reconcile authored identities, disconnect, then compact. Every phase is
     /// attempted even when an earlier phase fails; physical reports survive.
-    pub async fn finish(self, result: Result<ProjectBatchReport>) -> Result<ProjectBatchReport> {
-        self.finalize(result, false).await
-    }
-
-    /// Record successful recovery only when the supplied operation succeeded.
-    pub async fn finish_recovery(self, result: Result<ProjectBatchReport>) -> Result<ProjectBatchReport> {
-        self.finalize(result, true).await
-    }
-
-    async fn finalize(self, result: Result<ProjectBatchReport>, recovery: bool) -> Result<ProjectBatchReport> {
+    ///
+    /// Programming never completes recovery; only synchronization does.
+    pub(crate) async fn finish(self, result: Result<ProjectBatchReport>) -> Result<ProjectBatchReport> {
         let mut outcome = capture(result);
         let mut failures = reconcile_serials(&self.session, &self.bus, &mut outcome).await;
-        failures.extend(self.close(recovery && outcome.is_ok()).await);
+        failures.extend(self.close(false).await);
         finish_result(outcome, failures)
     }
 
@@ -186,23 +151,6 @@ impl ProjectOperation {
             failures.push(ProjectFinalizationFailure::Compact(error));
         }
         failures
-    }
-}
-
-impl ProjectCommissioningSession {
-    /// Finalize an operation using a caller-owned bus. The bus stays connected;
-    /// its sequence capability retains writer exclusion until it is dropped.
-    pub async fn finish_programming(
-        self,
-        bus: &KnxBus,
-        result: Result<ProjectBatchReport>,
-    ) -> Result<ProjectBatchReport> {
-        let mut outcome = capture(result);
-        let mut failures = reconcile_serials(&self, bus, &mut outcome).await;
-        if let Err(error) = self.finish() {
-            failures.push(ProjectFinalizationFailure::Compact(error));
-        }
-        finish_result(outcome, failures)
     }
 }
 

@@ -1191,10 +1191,11 @@ Structure (concrete owners with a private bus driver):
   diagnostics, conformance and compatibility consumers.
 - `project/` - one evaluation path on borrowing `ProjectPlanner`, per-device options on
   `ProgrammingBatchPlan`, and execution/persistence on the lock-owning
-  `ProjectCommissioningSession`. `ProjectOperationRequest` drives selected and
-  affected queues; `ProjectOperation` owns bus lifetime, serial reconciliation
-  and finalization. Reports retain physical effects and typed cleanup failures.
-  Progress callbacks are observational.
+  `ProjectCommissioningSession`. `ProjectProgramming` owns its inputs and plan and
+  is the only public batch execution path; `ProjectOperation` owns bus lifetime,
+  serial reconciliation and finalization. Reports retain physical effects and
+  typed cleanup failures. Both the commissioner and the project batch report
+  through `CommissioningObserver`, whose events are observational.
   Status inputs and snapshots bind cached results to exact input revisions.
   `KeyringImportPlan` shares validated import policy across the CLI and TUI.
 

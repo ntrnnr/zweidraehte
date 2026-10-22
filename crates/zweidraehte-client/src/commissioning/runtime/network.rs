@@ -10,7 +10,7 @@ use crate::commissioning::procedure::WritePolicy;
 use crate::commissioning::report::{AddressAssignment, CommissioningEvent, CommissioningStage};
 use crate::commissioning::runtime::ExecutionSession;
 use crate::commissioning::runtime::commissioner::{
-    CommissioningCancellation, OPEN_MEDIUM_COLLECTION_WINDOW, SERIAL_DOMAIN_READ_ATTEMPT_WINDOW,
+    CommissioningObserver, DeviceObservation, OPEN_MEDIUM_COLLECTION_WINDOW, SERIAL_DOMAIN_READ_ATTEMPT_WINDOW,
     SERIAL_DOMAIN_WRITE_SETTLE,
 };
 use crate::commissioning::runtime::credentials::ManagementAccess;
@@ -29,24 +29,23 @@ impl ExecutionSession<'_> {
     /// reference download does; a device that already has it on receives
     /// nothing. The tables follow in the download, so a failure after the
     /// switch leaves group communication uncertain.
-    pub(super) async fn execute_security_mode<F: FnMut(CommissioningEvent)>(
+    pub(super) async fn execute_security_mode(
         &mut self,
         plan: &CompiledProgram,
-        cancellation: &CommissioningCancellation,
-        event: &mut F,
+        observer: &mut impl CommissioningObserver,
     ) -> CommissioningResult<()> {
         if !plan.network().enable_data_security_before_download {
             return Ok(());
         }
-        cancellation.check()?;
-        event(CommissioningEvent::Stage(CommissioningStage::BootstrappingSecurity));
+        observer.checkpoint()?;
+        observer.emit(CommissioningEvent::Stage(CommissioningStage::BootstrappingSecurity));
         self.connect().await?;
         let result = async {
             let mode = crate::commissioning::runtime::prepare::profile::read_data_security_mode(self).await?;
             if mode != crate::commissioning::input::security::ObservedDataSecurity::Enabled {
                 self.enable_data_security().await?;
                 self.effects.record_sections([ProgrammingSection::GroupCommunication]);
-                event(CommissioningEvent::ProgrammingSectionsMutated {
+                observer.emit(CommissioningEvent::ProgrammingSectionsMutated {
                     sections: vec![ProgrammingSection::GroupCommunication],
                 });
             }
@@ -56,12 +55,11 @@ impl ExecutionSession<'_> {
         self.finish(result).await
     }
 
-    pub(super) async fn execute_network<F: FnMut(CommissioningEvent)>(
+    pub(super) async fn execute_network(
         &mut self,
         plan: &CompiledProgram,
         evidence: &PreparedEvidence,
-        cancellation: &CommissioningCancellation,
-        event: &mut F,
+        observer: &mut impl CommissioningObserver,
     ) -> CommissioningResult<()> {
         let network = *plan.network();
         let target = plan.observed_target();
@@ -70,8 +68,8 @@ impl ExecutionSession<'_> {
         let mut uncertain_section = None;
         let result = async {
             if network.assign_domain {
-                cancellation.check()?;
-                event(CommissioningEvent::Stage(CommissioningStage::ConfiguringNetwork));
+                observer.checkpoint()?;
+                observer.emit(CommissioningEvent::Stage(CommissioningStage::ConfiguringNetwork));
                 let serial = match plan.target() {
                     TargetSelection::SerialNumber(serial) => Some(*serial),
                     _ => None,
@@ -81,20 +79,20 @@ impl ExecutionSession<'_> {
                 domain_configuration_changed = self.configure_open_medium_domain(plan, serial).await?;
                 if domain_configuration_changed {
                     self.effects.record_sections([ProgrammingSection::Configuration]);
-                    event(CommissioningEvent::ProgrammingSectionsMutated {
+                    observer.emit(CommissioningEvent::ProgrammingSectionsMutated {
                         sections: vec![ProgrammingSection::Configuration],
                     });
                 }
                 uncertain_section = None;
             }
             if network.assign_address {
-                cancellation.check()?;
-                event(CommissioningEvent::Stage(CommissioningStage::AssigningAddress));
+                observer.checkpoint()?;
+                observer.emit(CommissioningEvent::Stage(CommissioningStage::AssigningAddress));
                 self.images.forget_device();
                 let assignment = self.assign_address(plan, &mut cleanup_armed).await?;
                 self.target = assignment.current;
                 self.effects.confirm_address(assignment);
-                event(CommissioningEvent::AddressAssigned {
+                observer.emit(CommissioningEvent::AddressAssigned {
                     previous: assignment.previous,
                     current: self.target,
                     serial_number: target.serial_number,
@@ -118,10 +116,10 @@ impl ExecutionSession<'_> {
             if !self.effects.network_configuration_performed() {
                 return Ok(());
             }
-            cancellation.check()?;
+            observer.checkpoint()?;
             self.connect().await?;
             if network.bootstrap_tool_key {
-                event(CommissioningEvent::Stage(CommissioningStage::BootstrappingSecurity));
+                observer.emit(CommissioningEvent::Stage(CommissioningStage::BootstrappingSecurity));
                 uncertain_section = Some(ProgrammingSection::GroupCommunication);
                 if network.enable_data_security {
                     self.enable_data_security().await?;
@@ -132,13 +130,13 @@ impl ExecutionSession<'_> {
                 self.advance_sending_sequence(target.serial_number).await?;
                 self.restart_device(plan.network_restart_kind()).await?;
                 self.effects.record_sections([ProgrammingSection::GroupCommunication]);
-                event(CommissioningEvent::ProgrammingSectionsMutated {
+                observer.emit(CommissioningEvent::ProgrammingSectionsMutated {
                     sections: vec![ProgrammingSection::GroupCommunication],
                 });
                 uncertain_section = None;
             } else {
                 if !network.assign_domain {
-                    event(CommissioningEvent::Stage(CommissioningStage::ConfiguringNetwork));
+                    observer.emit(CommissioningEvent::Stage(CommissioningStage::ConfiguringNetwork));
                 }
                 if network.advance_sending_sequence {
                     self.advance_sending_sequence(target.serial_number).await?;
@@ -153,7 +151,7 @@ impl ExecutionSession<'_> {
             if self.mutated() {
                 if let Some(section) = uncertain_section {
                     self.effects.record_sections([section]);
-                    event(CommissioningEvent::ProgrammingSectionsMutated { sections: vec![section] });
+                    observer.emit(CommissioningEvent::ProgrammingSectionsMutated { sections: vec![section] });
                 }
             }
             let cleanup = if cleanup_armed || (network.programming_button_cleanup && self.mutated()) {
@@ -475,14 +473,11 @@ impl ExecutionSession<'_> {
 }
 
 impl ExecutionSession<'_> {
-    pub(in crate::commissioning) async fn finish_complete_unload<F>(
+    pub(in crate::commissioning) async fn finish_complete_unload(
         &mut self,
         plan: &CompiledProgram,
-        event: &mut F,
-    ) -> Result<(), Diagnostic>
-    where
-        F: FnMut(CommissioningEvent),
-    {
+        observer: &mut impl CommissioningObserver,
+    ) -> Result<(), Diagnostic> {
         let default_address = IndividualAddress::from([0xFF, 0xFF]);
         if !self.effects.cleared_sections().contains(&ProgrammingSection::Address) {
             let serial_number = plan
@@ -507,7 +502,7 @@ impl ExecutionSession<'_> {
             };
             self.network_write_result("resetting the legacy device individual address", written)?;
             self.effects.record_sections([ProgrammingSection::Address, ProgrammingSection::Configuration]);
-            event(CommissioningEvent::ProgrammingSectionsMutated {
+            observer.emit(CommissioningEvent::ProgrammingSectionsMutated {
                 sections: vec![ProgrammingSection::Address, ProgrammingSection::Configuration],
             });
         }

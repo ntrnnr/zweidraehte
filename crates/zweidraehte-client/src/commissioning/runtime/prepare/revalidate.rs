@@ -3,7 +3,7 @@ use crate::commissioning::error::Diagnostic;
 use crate::commissioning::procedure::LoadControlCause;
 use crate::commissioning::runtime::ExecutionSession;
 use crate::commissioning::runtime::TransferContext;
-use crate::commissioning::runtime::commissioner::CommissioningCancellation;
+use crate::commissioning::runtime::commissioner::CommissioningObserver;
 use crate::commissioning::runtime::prepared::{BoundRead, ReadExpectation};
 
 /// Capture once, then require the same bytes or absence before mutation.
@@ -11,13 +11,13 @@ use crate::commissioning::runtime::prepared::{BoundRead, ReadExpectation};
 pub(in crate::commissioning) async fn read_bound_evidence(
     session: &mut ExecutionSession<'_>,
     reads: &mut [BoundRead],
-    cancellation: &CommissioningCancellation,
+    observer: &impl CommissioningObserver,
 ) -> std::result::Result<(), Diagnostic> {
     if reads.is_empty() {
         return Ok(());
     }
     let cancelled = || {
-        if cancellation.is_cancelled() {
+        if observer.cancelled() {
             Err(Diagnostic::new("commissioning was cancelled during evidence validation"))
         } else {
             Ok(())

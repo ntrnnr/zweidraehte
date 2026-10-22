@@ -5,7 +5,9 @@ use crate::commissioning::input::facts::{ObservedTarget, ProgrammingFacts};
 use crate::commissioning::input::security::DesiredDataSecurity;
 use crate::commissioning::input::{ProgrammingInput, TargetSelection};
 use crate::commissioning::report::{CommissioningEvent, CommissioningStage};
-use crate::commissioning::runtime::commissioner::{Commissioner, CommissioningCancellation, PreparationOptions};
+use crate::commissioning::runtime::commissioner::{
+    Commissioner, CommissioningObserver, DeviceObservation, PreparationOptions,
+};
 use crate::commissioning::runtime::policy::{
     requested_topology_network_configuration, validate_apdu_requirements, validate_credential_inputs,
     validate_differential_inputs, validate_options,
@@ -17,12 +19,14 @@ impl Commissioner<'_> {
     /// Observe the target and bind this input for execution. Live observations
     /// replace supplied target facts; cancellation or failed preflight returns
     /// an error before configuration writes begin.
-    pub async fn prepare<F: FnMut(CommissioningEvent)>(
+    ///
+    /// The observer receives events and is polled for cancellation; it is
+    /// never asked to approve, because the caller holds the prepared program.
+    pub async fn prepare(
         &self,
         mut input: ProgrammingInput,
-        options: PreparationOptions<'_>,
-        cancellation: &CommissioningCancellation,
-        mut event: F,
+        options: PreparationOptions,
+        observer: &mut impl CommissioningObserver,
     ) -> crate::commissioning::Result<PreparedProgram> {
         async {
             let PreparationOptions { access, variant_hint, differential_policy, deployment } = options;
@@ -38,19 +42,20 @@ impl Commissioner<'_> {
             // Exact resources and controls are validated when selected below.
             let master_data = std::sync::Arc::clone(bound_master_data(product)?);
             validate_for_live_commissioning(&master_data)?;
+            let deployment = deployment.as_ref();
             validate_differential_inputs(input.intent, differential_policy, deployment.is_some())?;
             validate_options(&self.options, device.max_apdu())?;
             validate_credential_inputs(input.device.key_material())?;
-            cancellation.check()?;
+            observer.checkpoint()?;
 
-            event(CommissioningEvent::Stage(CommissioningStage::DiscoveringTarget));
+            observer.emit(CommissioningEvent::Stage(CommissioningStage::DiscoveringTarget));
             let open_medium =
                 device.topology().domain_address.is_some() && requested_topology_network_configuration(input.intent);
-            let mut target = self.acquire_target(&input.options.target, open_medium, cancellation).await?;
+            let mut target = self.acquire_target(&input.options.target, open_medium, &*observer).await?;
             let mut session = self.select_management_session(target, input.device.key_material(), &access).await?;
 
-            cancellation.check()?;
-            event(CommissioningEvent::Stage(CommissioningStage::IdentifyingProfile));
+            observer.checkpoint()?;
+            observer.emit(CommissioningEvent::Stage(CommissioningStage::IdentifyingProfile));
             let ProfileObservation { profile, target_max_apdu, data_security } = self
                 .observe_profile(
                     &master_data,
@@ -63,14 +68,14 @@ impl Commissioner<'_> {
                 )
                 .await?;
 
-            event(CommissioningEvent::TargetDiscovered {
+            observer.emit(CommissioningEvent::TargetDiscovered {
                 address: target.address,
                 serial_number: target.serial_number,
             });
 
             let credential = session.selected_credential();
-            cancellation.check()?;
-            event(CommissioningEvent::Stage(CommissioningStage::CompilingPlan));
+            observer.checkpoint()?;
+            observer.emit(CommissioningEvent::Stage(CommissioningStage::CompilingPlan));
             input.facts = ProgrammingFacts {
                 target: Some(ObservedTarget {
                     previous_address: target.address,
@@ -92,15 +97,7 @@ impl Commissioner<'_> {
             let execution_address = self.preflight_network_program(&plan, &input, target).await?;
 
             let (partial_installed_state, baseline_known, differential) = self
-                .bind_installation_evidence(
-                    &plan,
-                    &mut session,
-                    &input,
-                    differential_policy,
-                    deployment,
-                    cancellation,
-                    &mut event,
-                )
+                .bind_installation_evidence(&plan, &mut session, &input, differential_policy, deployment, observer)
                 .await?;
 
             validate_apdu_requirements(

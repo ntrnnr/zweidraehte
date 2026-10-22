@@ -1019,10 +1019,10 @@ written from the image; they stay with `PreparedProgram` and have redacted
 debug output.
 
 ```rust
-let prepared = commissioner.prepare(input, options, &cancellation, on_event).await?;
+let prepared = commissioner.prepare(input, options, &mut observer).await?;
 show_preview(prepared.plan());
 
-let report = commissioner.execute(prepared, &cancellation, on_event).await?;
+let report = commissioner.execute(prepared, &mut observer).await?;
 ```
 
 `PreparedProgram` cannot be assembled by a caller from unrelated

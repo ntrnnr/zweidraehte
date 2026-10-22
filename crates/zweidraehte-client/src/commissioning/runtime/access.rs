@@ -64,7 +64,7 @@ impl<'a> Commissioner<'a> {
             .bus
             .acquire_management(
                 target.address,
-                ManagementCredentials::new(target.serial_number, material.tool_key(), material.fdsk()),
+                ManagementCredentials::from_parts(target.serial_number, material.tool_key(), material.fdsk()),
                 plaintext,
                 false,
             )

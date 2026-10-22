@@ -32,13 +32,14 @@ clap = { workspace = true, optional = true }
 zweidraehte-project = { version = "0.1.0", path = "../zweidraehte-project", default-features = false, optional = true }
 base64 = { workspace = true, optional = true }
 zweidraehte-util = { version = "0.1.0", path = "../zweidraehte-util", default-features = false, features = ["secrets"] }
+time = { version = "0.3.47", features = ["formatting"], optional = true }
 
 [features]
 default = []
 usb = ["dep:async-hid", "dep:futures-lite", "zweidraehte-proto/usb-hid"]
 commissioning = ["dep:zweidraehte-ets-files", "dep:zweidraehte-project", "dep:base64", "dep:sha2"]
 keyring = ["dep:zweidraehte-ets-files", "zweidraehte-ets-files/knxkeys"]
-project = ["commissioning", "keyring", "zweidraehte-project/storage", "zweidraehte-ets-files/archives"]
+project = ["commissioning", "keyring", "zweidraehte-project/storage", "zweidraehte-ets-files/archives", "dep:time"]
 javascript = ["commissioning", "zweidraehte-ets-files/javascript"]
 
 # The shared bus-target CLI vocabulary (`cli::TargetArgs`), so every

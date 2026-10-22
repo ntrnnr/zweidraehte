@@ -9,9 +9,10 @@ fn partial_scopes_merge_only_with_the_same_complete_input_revision() {
     let fixture = secure_fixture();
     let receiver = ProjectDeviceId("receiver".into());
     let sender = ProjectDeviceId("sender".into());
-    let planner =
-        ProjectPlanner::new(&fixture.project, Some(&fixture.state), &fixture.products, None, Some(&fixture.keyring))
-            .with_master_data(&fixture.catalogs);
+    let planner = ProjectPlanner::new(&fixture.project, &fixture.products)
+        .with_state(&fixture.state)
+        .with_keyring(&fixture.keyring)
+        .with_master_data(&fixture.catalogs);
     let mut first = planner.programming_snapshot_for(&BTreeSet::from([receiver.clone()])).expect("receiver status");
     let second = planner.programming_snapshot_for(&BTreeSet::from([sender.clone()])).expect("sender status");
     assert_eq!(first.revision(), second.revision());
@@ -22,7 +23,9 @@ fn partial_scopes_merge_only_with_the_same_complete_input_revision() {
     // state_id and format version deliberately stay fixed.
     let mut changed = fixture.state.clone();
     changed.client_next += 1;
-    let newer = ProjectPlanner::new(&fixture.project, Some(&changed), &fixture.products, None, Some(&fixture.keyring))
+    let newer = ProjectPlanner::new(&fixture.project, &fixture.products)
+        .with_state(&changed)
+        .with_keyring(&fixture.keyring)
         .with_master_data(&fixture.catalogs)
         .programming_snapshot_for(&BTreeSet::from([receiver.clone()]))
         .expect("new durable evidence");
@@ -42,7 +45,8 @@ fn snapshot_retains_the_catalog_resolution_diagnostic() {
         .expect("inspectable empty catalog");
     let catalogs = ProjectMasterData::with_installation(catalog);
     let scope = fixture.project.devices.keys().cloned().collect();
-    let error = ProjectPlanner::new(&fixture.project, None, &fixture.products, None, Some(&fixture.keyring))
+    let error = ProjectPlanner::new(&fixture.project, &fixture.products)
+        .with_keyring(&fixture.keyring)
         .with_master_data(&catalogs)
         .programming_snapshot_for(&scope)
         .expect_err("catalog cannot resolve the device mask");
@@ -62,7 +66,8 @@ fn revision_tracks_drafts_catalog_bytes_and_redacted_keyring_credentials() {
     let mut fixture = secure_fixture();
     let scope = fixture.project.devices.keys().cloned().collect();
     let snapshot = |project: &AuthoredProject, catalogs: &ProjectMasterData, keyring: &Keyring| {
-        ProjectPlanner::new(project, None, &fixture.products, None, Some(keyring))
+        ProjectPlanner::new(project, &fixture.products)
+            .with_keyring(keyring)
             .with_master_data(catalogs)
             .programming_snapshot_for(&scope)
             .expect("snapshot")
@@ -99,13 +104,11 @@ fn request(path: &Path) -> ProjectStatusRequest<'_> {
 fn acquisition_is_read_only_and_checks_changes_during_loading_and_before_delivery() {
     let (directory, path) = empty_project();
     let mut cache = ProjectStatusCache::default();
-    let inputs =
-        ProjectStatusInputs::load(request(&path), &mut cache, || Ok(None), |_, _, _| {}).expect("read-only inputs");
+    let inputs = cache.load(request(&path), || Ok(None), |_, _, _| {}).expect("read-only inputs");
     let snapshot = inputs.snapshot().expect("empty snapshot");
     assert!(!directory.path().join(".zweidraehte").exists());
-    let changed = ProjectStatusInputs::load(
+    let changed = cache.load(
         request(&path),
-        &mut cache,
         || {
             std::fs::write(&path, "# changed while loading\n").expect("external change");
             Ok(None)
@@ -125,10 +128,7 @@ fn draft_base_key_changes_and_partial_operation_evidence_invalidate_status() {
     let mut store = ProjectStore::open(&path).expect("project");
     store = store.initialize().expect("state");
     let mut cache = ProjectStatusCache::default();
-    let first = ProjectStatusInputs::load(request(&path), &mut cache, || Ok(None), |_, _, _| {})
-        .expect("inputs")
-        .snapshot()
-        .expect("snapshot");
+    let first = cache.load(request(&path), || Ok(None), |_, _, _| {}).expect("inputs").snapshot().expect("snapshot");
     let mut writer = store.into_writer().expect("key writer");
     writer
         .keys_mut()
@@ -137,7 +137,8 @@ fn draft_base_key_changes_and_partial_operation_evidence_invalidate_status() {
         .expect("key edit");
     let store = writer.into_store();
     assert!(first.verify_current().is_err());
-    let second = ProjectStatusInputs::load(request(&path), &mut cache, || Ok(None), |_, _, _| {})
+    let second = cache
+        .load(request(&path), || Ok(None), |_, _, _| {})
         .expect("changed key inputs")
         .snapshot()
         .expect("changed key snapshot");
@@ -146,7 +147,8 @@ fn draft_base_key_changes_and_partial_operation_evidence_invalidate_status() {
     let session = super::super::ProjectCommissioningSession::begin(store).expect("writer");
     session.observe_device_outgoing("00FA:00000001".into(), 500).expect("persist partial observation");
     session.finish().expect("compact");
-    let third = ProjectStatusInputs::load(request(&path), &mut cache, || Ok(None), |_, _, _| {})
+    let third = cache
+        .load(request(&path), || Ok(None), |_, _, _| {})
         .expect("evidence inputs")
         .snapshot()
         .expect("evidence snapshot");
@@ -156,15 +158,12 @@ fn draft_base_key_changes_and_partial_operation_evidence_invalidate_status() {
         ProjectStore::open(&path).expect("saved project").authored().reparse("# unsaved intent\n").expect("draft");
     let mut accepted = request(&path);
     accepted.draft = Some((&draft, "# status test\n"));
-    let inputs = ProjectStatusInputs::load(accepted, &mut cache, || Ok(None), |_, _, _| {}).expect("unsaved intent");
+    let inputs = cache.load(accepted, || Ok(None), |_, _, _| {}).expect("unsaved intent");
     assert_ne!(third.revision(), inputs.snapshot().expect("draft status").revision());
     assert_eq!(inputs.store().authored().source(), "# status test\n", "acquisition never saves a draft");
     let mut request = request(&path);
     request.draft = Some((&draft, "# obsolete saved source\n"));
-    assert!(matches!(
-        ProjectStatusInputs::load(request, &mut cache, || Ok(None), |_, _, _| {}),
-        Err(Error::StatusInputsChanged)
-    ));
+    assert!(matches!(cache.load(request, || Ok(None), |_, _, _| {}), Err(Error::StatusInputsChanged)));
 }
 
 #[test]
@@ -176,7 +175,8 @@ fn same_state_identity_and_version_do_not_hide_changed_observations() {
     let products = BTreeMap::new();
     let scope = BTreeSet::new();
     let snapshot = |state| {
-        ProjectPlanner::new(&project, Some(state), &products, None, None)
+        ProjectPlanner::new(&project, &products)
+            .with_state(state)
             .programming_snapshot_for(&scope)
             .expect("empty revision")
     };

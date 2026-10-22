@@ -4,7 +4,7 @@ use crate::commissioning::compiler::program::CompiledProgram;
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::error::DiagnosticResult as Result;
 use crate::commissioning::runtime::ExecutionSession;
-use crate::commissioning::runtime::commissioner::CommissioningCancellation;
+use crate::commissioning::runtime::commissioner::CommissioningObserver;
 use crate::commissioning::runtime::prepare::revalidate::read_bound_evidence;
 use crate::commissioning::runtime::prepared::PreparedEvidence;
 
@@ -13,7 +13,7 @@ impl ExecutionSession<'_> {
         &mut self,
         plan: &CompiledProgram,
         evidence: &mut PreparedEvidence,
-        cancellation: &CommissioningCancellation,
+        observer: &impl CommissioningObserver,
     ) -> Result<()> {
         let target = plan.observed_target();
         self.revalidate_binding(target.previous_address, plan, evidence, true).await?;
@@ -41,7 +41,7 @@ impl ExecutionSession<'_> {
             )));
         }
 
-        read_bound_evidence(self, &mut evidence.reads, cancellation).await?;
+        read_bound_evidence(self, &mut evidence.reads, observer).await?;
 
         Ok(())
     }

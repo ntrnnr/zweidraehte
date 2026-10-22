@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 use zweidraehte_client::project::{
-    BatchSelection, ProjectBatchReport, ProjectInputRequest, ProjectInputSources, ProjectOperationInputs,
-    ProjectOperationRequest, ProjectSetupRequirement, Result as ProjectResult, SerialAddressingSupport,
+    BatchSelection, ProgrammingPolicy, ProjectBatchReport, ProjectInputRequest, ProjectInputSources,
+    ProjectOperationInputs, ProjectSetupRequirement, Result as ProjectResult, SerialAddressingSupport,
 };
 
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -13,9 +13,9 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use crate::error_message;
 use zweidraehte_client::cli::SecurityArgs;
 use zweidraehte_client::commissioning::{
-    CommissionerOptions, CommissioningCancellation, CommissioningEvent, CommissioningIntent, CommissioningStage,
-    CompiledProgram, DifferentialFallback, DifferentialPolicy, DownloadMode, ProgramSections, ProgrammingModePolling,
-    TargetSelection, UnloadMode,
+    CommissionerOptions, CommissioningEvent, CommissioningIntent, CommissioningObserver, CommissioningStage,
+    CommissioningVeto, CompiledProgram, DifferentialFallback, DifferentialPolicy, DownloadMode, PreparedProgram,
+    ProgramSections, ProgrammingModePolling, TargetSelection, UnloadMode,
 };
 use zweidraehte_client::{BusTarget, IndividualAddress};
 use zweidraehte_project::{ProjectDeviceId, ProjectStore};
@@ -178,7 +178,7 @@ async fn run(mut job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<DownloadO
     }
 
     let selection = programming_batch_selection(job.affected_only);
-    let mut inputs = ProjectOperationInputs::load(
+    let inputs = ProjectOperationInputs::load(
         store,
         ProjectInputRequest {
             selected: &selected,
@@ -193,10 +193,11 @@ async fn run(mut job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<DownloadO
     )
     .map_err(|error| format!("loading project programming inputs: {}", error_message(&error)))?;
     let product_scope = inputs.product_scope().clone();
-    let mut plan = inputs.plan().map_err(|error| format!("planning project download: {}", error_message(&error)))?;
+    let mut programming =
+        inputs.into_programming().map_err(|error| format!("planning project download: {}", error_message(&error)))?;
     if job.operation == ProgrammingOperation::Partial
         && !job.affected_only
-        && plan.devices().iter().all(|device| device.status().is_complete())
+        && programming.plan().devices().iter().all(|device| device.status().is_complete())
     {
         return Ok(DownloadOutcome {
             project_path: job.project_path,
@@ -205,7 +206,7 @@ async fn run(mut job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<DownloadO
             status_scope: std::collections::BTreeSet::new(),
         });
     }
-    if plan.devices().is_empty() {
+    if programming.plan().devices().is_empty() {
         return Ok(DownloadOutcome {
             project_path: job.project_path,
             summary: "No affected devices".into(),
@@ -214,7 +215,7 @@ async fn run(mut job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<DownloadO
         });
     }
 
-    let requirements = inputs.requirements(&plan);
+    let requirements = programming.requirements();
     if job.operation == ProgrammingOperation::Application
         && let Some(ProjectSetupRequirement::GenerateToolKey { device }) = requirements
             .iter()
@@ -226,13 +227,17 @@ async fn run(mut job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<DownloadO
         return Err("project keys/state require recovery; use knx-loader recover-state".into());
     }
 
-    let differential_policy = if job.operation == ProgrammingOperation::Partial {
+    let mut policy = ProgrammingPolicy::default();
+    policy.differential = if job.operation == ProgrammingOperation::Partial {
         DifferentialPolicy::FallBackToUndifferenced
     } else {
         DifferentialPolicy::Disabled
     };
-    plan.configure(CommissionerOptions::default(), true, differential_policy);
+    // Overwriting a known IA retains the device's Security Mode and Tool Key.
+    policy.generate_missing_tool_keys = job.operation != ProgrammingOperation::OverwriteIndividualAddress;
+    programming.set_policy(policy);
 
+    let plan = programming.plan();
     let address_targets = plan
         .devices()
         .iter()
@@ -271,7 +276,8 @@ async fn run(mut job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<DownloadO
                 job.overwrite_current_address.ok_or_else(|| "overwrite IA requires the current address".to_string())?;
             let device =
                 address_targets.first().ok_or_else(|| "overwrite IA requires one address target".to_string())?;
-            plan.set_target(device, TargetSelection::KnownPreviousAddress(current))
+            programming
+                .set_target(device, TargetSelection::KnownPreviousAddress(current))
                 .map_err(|error| error.to_string())?;
         }
         _ if interactive_assignment => {
@@ -279,7 +285,7 @@ async fn run(mut job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<DownloadO
                 assignment_target.as_ref().expect("interactive assignment has a target");
             let selection =
                 await_assignment_target(&job.target, *serial_capable, *serial_number, &mut job.control, tx).await?;
-            plan.set_target(device, selection.target).map_err(|error| error.to_string())?;
+            programming.set_target(device, selection.target).map_err(|error| error.to_string())?;
         }
         _ if needs_programming_button && (job.affected_only || address_targets.len() != 1) => {
             return Err(
@@ -288,38 +294,12 @@ async fn run(mut job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<DownloadO
         }
         _ => {}
     }
-    if inputs.state_requirement() == Some(ProjectSetupRequirement::InitializeProject) {
-        inputs.initialize().map_err(|error| format!("initializing project state: {error}"))?;
+    if programming.inputs().state_requirement() == Some(ProjectSetupRequirement::InitializeProject) {
+        programming.initialize().map_err(|error| format!("initializing project state: {error}"))?;
     }
-    let session = inputs.begin_session().map_err(|error| format!("opening project programming session: {error}"))?;
-    let request = ProjectOperationRequest::new(plan);
-    let request = if job.operation == ProgrammingOperation::OverwriteIndividualAddress {
-        request
-    } else {
-        request.generate_missing_tool_keys()
-    };
-    let cancellation = CommissioningCancellation::default();
-    let mut progress = |_: &ProjectDeviceId, event| forward_commissioning_event(event, tx);
     stage("Connecting to the bus");
-    let execution = request
-        .execute(
-            session,
-            |security| job.target.connect_with_security(security),
-            inputs.programming_inputs(),
-            &cancellation,
-            &mut progress,
-            |device| {
-                let plan = device.commissioning().plan();
-                stage(&format!(
-                    "{}: {} ({} steps)",
-                    device.id(),
-                    commissioning_plan_label(plan),
-                    plan.procedure().map_or(0, |procedure| procedure.steps.len())
-                ));
-                Ok(())
-            },
-        )
-        .await;
+    let execution =
+        programming.execute(|security| job.target.connect_with_security(security), &mut WorkerProgress { tx }).await;
     let completed = execution
         .as_ref()
         .map(|report| report.devices.iter().map(|device| device.id.to_string()).collect::<Vec<_>>().join(", "))
@@ -523,40 +503,45 @@ async fn run_unload(job: UnloadJob, tx: &Sender<DownloadMsg>) -> Result<Download
     )
     .map_err(|error| format!("loading project unload inputs: {}", error_message(&error)))?;
     let product_scope = inputs.product_scope().clone();
-    let mut plan = inputs.plan().map_err(|error| format!("resolving project device: {}", error_message(&error)))?;
-    if plan.devices().len() != 1 {
+    let mut programming =
+        inputs.into_programming().map_err(|error| format!("resolving project device: {}", error_message(&error)))?;
+    if programming.plan().devices().len() != 1 {
         return Err("project unload did not resolve exactly one device".into());
     }
-    plan.configure(CommissionerOptions::default(), true, DifferentialPolicy::Disabled);
-    let session = inputs.begin_session().map_err(|error| format!("opening project programming session: {error}"))?;
-    let cancellation = CommissioningCancellation::default();
-    let mut progress = |_: &ProjectDeviceId, event| forward_commissioning_event(event, tx);
+    let mut policy = ProgrammingPolicy::default();
+    policy.differential = DifferentialPolicy::Disabled;
+    programming.set_policy(policy);
     stage("Connecting to the bus");
-    let execution = ProjectOperationRequest::new(plan)
-        .execute(
-            session,
-            |security| job.target.connect_with_security(security),
-            inputs.programming_inputs(),
-            &cancellation,
-            &mut progress,
-            |device| {
-                let plan = device.commissioning().plan();
-                stage(&format!(
-                    "{}: {} ({} steps)",
-                    device.id(),
-                    commissioning_plan_label(plan),
-                    plan.procedure().map_or(0, |procedure| procedure.steps.len())
-                ));
-                Ok(())
-            },
-        )
-        .await;
+    let execution =
+        programming.execute(|security| job.target.connect_with_security(security), &mut WorkerProgress { tx }).await;
     Ok(DownloadOutcome {
         project_path: job.project_path,
         summary: format!("Unloaded {} from {}", job.scope.label().to_lowercase(), job.device),
         execution,
         status_scope: product_scope,
     })
+}
+
+/// Forwards progress to the UI thread and announces each prepared device.
+struct WorkerProgress<'a> {
+    tx: &'a Sender<DownloadMsg>,
+}
+
+impl CommissioningObserver<ProjectDeviceId> for WorkerProgress<'_> {
+    fn event(&mut self, _device: &ProjectDeviceId, event: CommissioningEvent) {
+        forward_commissioning_event(event, self.tx);
+    }
+
+    fn approve(&mut self, device: &ProjectDeviceId, prepared: &PreparedProgram) -> Result<(), CommissioningVeto> {
+        let plan = prepared.plan();
+        let label = format!(
+            "{device}: {} ({} steps)",
+            commissioning_plan_label(plan),
+            plan.procedure().map_or(0, |procedure| procedure.steps.len())
+        );
+        let _ = self.tx.send(DownloadMsg::Task(label, 0, 0));
+        Ok(())
+    }
 }
 
 fn forward_commissioning_event(event: CommissioningEvent, tx: &Sender<DownloadMsg>) {

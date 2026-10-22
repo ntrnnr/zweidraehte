@@ -2,7 +2,7 @@ use super::*;
 use crate::commissioning::catalog_testing::*;
 use crate::commissioning::{DifferentialPolicy, DownloadMode, ProgrammingModePolling, UnloadMode};
 use crate::project::tests::secure_fixture;
-use crate::project::{ProjectStatusCache, ProjectStatusInputs, ProjectStatusRequest, SerialAddressingSupport};
+use crate::project::{ProjectStatusCache, ProjectStatusRequest, SerialAddressingSupport};
 use std::fs;
 use zweidraehte_project::ProjectStoreError;
 
@@ -34,7 +34,7 @@ fn secure_inputs(
     fs::write(&path, fixture.project.source()).expect("source");
     let store = ProjectStore::open(&path).expect("reader").initialize().expect("initialize");
     let selected = vec![ProjectDeviceId("receiver".into())];
-    let scope = ProjectPlanner::product_scope(store.authored(), &selected, selection, intent);
+    let scope = crate::project::product_scope(store.authored(), &selected, selection, intent);
     // Reuse semantic product fixtures; their package-reader contract is tested
     // by ETS-files. Filesystem acquisition itself is exercised independently.
     let inputs = ProjectOperationInputs {
@@ -163,19 +163,19 @@ fn operation_and_status_loading_share_read_only_empty_scope_policy() {
     let (directory, inputs) = empty_project();
     let unused = directory.path().join("unused-master.xml");
     let mut cache = ProjectStatusCache::default();
-    let status = ProjectStatusInputs::load(
-        ProjectStatusRequest {
-            project_path: inputs.store().project_path(),
-            draft: None,
-            scope: None,
-            master_data: Some(&unused),
-            keyring_path: None,
-        },
-        &mut cache,
-        || Ok(None),
-        |_, _, _| {},
-    )
-    .expect("empty status");
+    let status = cache
+        .load(
+            ProjectStatusRequest {
+                project_path: inputs.store().project_path(),
+                draft: None,
+                scope: None,
+                master_data: Some(&unused),
+                keyring_path: None,
+            },
+            || Ok(None),
+            |_, _, _| {},
+        )
+        .expect("empty status");
     assert!(inputs.plan().expect("plan").devices().is_empty());
     assert!(status.snapshot().expect("snapshot").scope().is_empty());
     assert!(!directory.path().join(".zweidraehte").exists());
@@ -223,7 +223,10 @@ fn explicit_previous_address_survives_reconfiguration_and_removes_physical_requi
     assert!(inputs.requirements(&plan).contains(&ProjectSetupRequirement::PhysicalTarget { device: id.clone() }));
     let previous = crate::IndividualAddress::new(1, 1, 42);
     plan.set_target(&id, TargetSelection::KnownPreviousAddress(previous)).expect("previous address");
-    plan.configure(Default::default(), true, DifferentialPolicy::Disabled);
+    plan.set_policy(crate::project::ProgrammingPolicy {
+        differential: DifferentialPolicy::Disabled,
+        ..Default::default()
+    });
     assert_eq!(
         plan.device(&id).expect("device").commissioning().target,
         TargetSelection::KnownPreviousAddress(previous)

@@ -50,6 +50,10 @@ pub enum Error {
     #[error(transparent)]
     Commissioning(#[from] crate::commissioning::CommissioningError),
 
+    /// The observer refused a prepared device before its first write.
+    #[error("the prepared program was not approved: {0}")]
+    Vetoed(crate::commissioning::CommissioningVeto),
+
     #[error("the shared project store lock is poisoned")]
     ProjectStorePoisoned,
 

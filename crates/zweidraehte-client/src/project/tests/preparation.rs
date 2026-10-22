@@ -1,5 +1,5 @@
 use super::*;
-use crate::commissioning::CommissioningCancellation;
+use crate::commissioning::{CommissioningCancellation, CommissioningObserver};
 use crate::project::persistence::tests::{PERSISTENCE_PRODUCT_XML, persistence_fixture};
 use crate::{BusResult, ConnectorInfo, KnxBus, KnxConnector};
 use std::sync::{
@@ -39,7 +39,7 @@ async fn cancellation_before_preparation_sends_no_sender_probe() {
                 ResolvedKeyMaterial::default().with_serial_number([0, 0xFA, 0, 0, 0, 2]).with_tool_key([0x44; 16]),
             ),
         }],
-        commissioner_options: Default::default(),
+        policy: Default::default(),
         skip_current: false,
     };
     let sent = Arc::new(AtomicUsize::new(0));
@@ -47,9 +47,9 @@ async fn cancellation_before_preparation_sends_no_sender_probe() {
         assigned_address: crate::IndividualAddress::new(1, 1, 250),
         max_apdu: 254,
     });
-    let cancellation = CommissioningCancellation::default();
+    let mut cancellation = CommissioningCancellation::default();
     cancellation.cancel();
-    assert!(plan.prepare(&bus, &cancellation).await.is_err());
+    assert!(plan.prepare(&bus, &mut cancellation).await.is_err());
     assert_eq!(sent.load(Ordering::Relaxed), 0, "cancelled preparation must not contact a sender");
     bus.disconnect().await.expect("test bus closes");
 }
@@ -62,7 +62,7 @@ async fn queued_programming_persists_before_next_preflight_and_retains_reports()
     use zweidraehte_proto::messages::apdu::device::DeviceDescriptorResponse;
     use zweidraehte_proto::messages::knx::{ApciCode, KnxMessageBuffer, Tpci};
 
-    for failure in [None, Some("preparation"), Some("cancellation"), Some("journal")] {
+    for failure in [None, Some("preparation"), Some("veto"), Some("cancellation"), Some("journal")] {
         let directory = tempfile::tempdir().expect("project directory");
         let path = directory.path().join("project.knx");
         let devices = [("first", 10), ("second", 11)]
@@ -91,10 +91,11 @@ async fn queued_programming_persists_before_next_preflight_and_retains_reports()
         let product = ProjectProduct::new(selected);
         let products = store.authored().devices.keys().map(|id| (id.clone(), product.clone())).collect();
         let catalogs = ProjectMasterData::default();
-        let mut initial = ProjectPlanner::new(store.authored(), store.state(), &products, None, None)
+        let mut initial = ProjectPlanner::new(store.authored(), &products)
+            .with_state(store.state().expect("initialized state"))
             .plan_commissioning(&[], BatchSelection::All, CommissioningIntent::Download(DownloadMode::Full))
             .expect("static queue validates");
-        initial.configure(Default::default(), true, DifferentialPolicy::Disabled);
+        initial.set_policy(ProgrammingPolicy { differential: DifferentialPolicy::Disabled, ..Default::default() });
         let second = ProjectDeviceId("second".into());
         initial
             .set_target(&second, TargetSelection::KnownPreviousAddress(crate::IndividualAddress::new(1, 1, 11)))
@@ -163,13 +164,24 @@ async fn queued_programming_persists_before_next_preflight_and_retains_reports()
             }
         };
         let client = async {
-            let mut progress = |id: &ProjectDeviceId, event| {
-                if id.0 == "first" && matches!(event, CommissioningEvent::Stage(CommissioningStage::Complete)) {
-                    if failure == Some("cancellation") {
-                        cancellation.cancel();
+            /// Injects the selected failure once the first device completes.
+            struct QueueObserver<'a> {
+                failure: Option<&'static str>,
+                cancellation: &'a CommissioningCancellation,
+                store: Arc<std::sync::Mutex<zweidraehte_project::ProjectWriter>>,
+                second: &'a ProjectDeviceId,
+            }
+
+            impl CommissioningObserver<ProjectDeviceId> for QueueObserver<'_> {
+                fn event(&mut self, id: &ProjectDeviceId, event: CommissioningEvent) {
+                    if id.0 != "first" || !matches!(event, CommissioningEvent::Stage(CommissioningStage::Complete)) {
+                        return;
                     }
-                    if failure == Some("journal") {
-                        let owner = observer.clone();
+                    if self.failure == Some("cancellation") {
+                        self.cancellation.cancel();
+                    }
+                    if self.failure == Some("journal") {
+                        let owner = self.store.clone();
                         let _ = std::thread::spawn(move || {
                             let _guard = owner.lock().expect("lock");
                             panic!("injected journal lock failure");
@@ -177,25 +189,36 @@ async fn queued_programming_persists_before_next_preflight_and_retains_reports()
                         .join();
                     }
                 }
-            };
-            let result = super::super::operation::ProjectOperationRequest::new(initial)
-                .execute(
-                    session,
-                    |_| async { Ok(bus) },
-                    ProjectProgrammingInputs { products: &products, master_data: &catalogs, keyring: None },
-                    &cancellation,
-                    &mut progress,
-                    |device| {
-                        if device.id() == &second {
-                            assert!(matches!(
-                                device.planned().commissioning().target,
-                                TargetSelection::KnownPreviousAddress(_)
-                            ));
+
+                fn approve(
+                    &mut self,
+                    id: &ProjectDeviceId,
+                    prepared: &crate::commissioning::PreparedProgram,
+                ) -> core::result::Result<(), crate::commissioning::CommissioningVeto> {
+                    if id == self.second {
+                        assert!(matches!(prepared.plan().target(), TargetSelection::KnownPreviousAddress(_)));
+                        if self.failure == Some("veto") {
+                            return Err(crate::commissioning::CommissioningVeto::new("operator declined"));
                         }
-                        Ok(())
-                    },
-                )
-                .await;
+                    }
+                    Ok(())
+                }
+
+                fn cancelled(&self) -> bool {
+                    self.cancellation.is_cancelled()
+                }
+            }
+
+            let mut queue_observer =
+                QueueObserver { failure, cancellation: &cancellation, store: observer.clone(), second: &second };
+            let result = super::super::operation::execute_batch(
+                session,
+                initial,
+                |_| async { Ok(bus) },
+                ProjectProgrammingInputs { products: &products, master_data: &catalogs, keyring: None },
+                &mut queue_observer,
+            )
+            .await;
             match (failure, result) {
                 (None, Ok(report)) => assert_eq!(report.devices.len(), 2),
                 (Some(mode), Err(Error::ProjectBatch(error))) => {
@@ -211,6 +234,7 @@ async fn queued_programming_persists_before_next_preflight_and_retains_reports()
                             ProjectBatchFailureStage::Preparation
                         }
                     );
+                    assert_eq!(mode == "veto", matches!(error.source.as_deref(), Some(Error::Vetoed(_))));
                 }
                 (_, other) => panic!("unexpected queue result: {other:?}"),
             }
@@ -220,6 +244,6 @@ async fn queued_programming_persists_before_next_preflight_and_retains_reports()
         })
         .await
         .expect("queue fixture completes");
-        assert_eq!(saw_second, failure.is_none() || failure == Some("preparation"));
+        assert_eq!(saw_second, matches!(failure, None | Some("preparation" | "veto")));
     }
 }

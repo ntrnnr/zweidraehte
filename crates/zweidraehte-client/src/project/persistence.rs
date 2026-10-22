@@ -22,6 +22,17 @@ use zweidraehte_proto::address::GroupAddress;
 
 use super::session::LockedProjectStore;
 use super::{PlannedProjectDevice, credential_commitments, set_credential_commitments};
+/// Header of an exported ETS keyring.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyringExport {
+    pub project_name: String,
+    /// The exporting tool and its version.
+    pub created_by: String,
+    /// Written with whole-second precision. The keyring derives its
+    /// encryption IV from this text, so the format is fixed here.
+    pub created: time::OffsetDateTime,
+}
+
 /// Build the ETS keyring representation of a project's active security
 /// material and forward-only device sequence observations.
 ///
@@ -33,10 +44,15 @@ pub fn build_project_keyring(
     project: &AuthoredProject,
     state: &MutableProjectState,
     keys: &dyn KeyMaterialSource,
-    project_name: impl Into<String>,
-    created_by: impl Into<String>,
-    created: impl Into<String>,
+    export: KeyringExport,
 ) -> Result<Keyring> {
+    let KeyringExport { project_name, created_by, created } = export;
+    let created = created
+        .replace_nanosecond(0)
+        .expect("zero nanoseconds are always in range")
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|error| Error::DeviceConfiguration(format!("keyring creation time is not RFC 3339: {error}")))?;
+
     // A live SIAT read may be newer than the direct observation of its
     // sender. ETS has one sequence value per device, so export the greatest
     // last-valid value learned through any project-state path.
@@ -164,7 +180,7 @@ pub fn build_project_keyring(
     }
     devices.sort_by_key(|device| u16::from_be_bytes(device.individual_address.0));
 
-    Ok(Keyring::new(project_name.into(), created_by.into(), created.into())
+    Ok(Keyring::new(project_name, created_by, created)
         .with_backbone(backbone)
         .with_group_keys(group_keys)
         .with_devices(devices))

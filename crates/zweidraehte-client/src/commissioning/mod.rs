@@ -55,7 +55,8 @@ pub use crate::commissioning::input::CompileOptions;
 pub use crate::commissioning::report::{AddressAssignment, CommissioningSectionOutcome, ExecutionReport};
 pub use crate::commissioning::report::{CommissioningEvent, CommissioningStage, ProcedureReport};
 pub use crate::commissioning::runtime::commissioner::{
-    Commissioner, CommissionerOptions, CommissioningCancellation, PreparationOptions,
+    Commissioner, CommissionerOptions, CommissioningCancellation, CommissioningObserver, CommissioningVeto,
+    PreparationOptions,
 };
 pub use catalog::profile::{
     AssociationTableEntrySize, ImageRequirement, ManagementModel, MaskIdentity, ObjectSelector, Occurrence,

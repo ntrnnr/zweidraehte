@@ -2,9 +2,8 @@
 
 use crate::commissioning::{AssociationTableEntrySize, ImageRequirement};
 use crate::commissioning::{
-    CommissionerOptions, CommissioningIntent, CompileError, CompileOptions, CompiledProgram, DifferentialPolicy,
-    DownloadMode, ProfileSelection, ProgramSections, ProgrammingInput, ProgrammingModePolling, ResolvedProfile,
-    TargetSelection,
+    CommissioningIntent, CompileError, CompileOptions, CompiledProgram, DifferentialPolicy, DownloadMode,
+    ProfileSelection, ProgramSections, ProgrammingInput, ProgrammingModePolling, ResolvedProfile, TargetSelection,
 };
 use crate::configuration::{GroupObjectProtection, MaterializedDevice, ResolvedKeyMaterial};
 use crate::security::Keyring;
@@ -29,6 +28,7 @@ mod keys;
 mod management;
 mod master_data;
 mod operation;
+mod programming;
 mod revision;
 mod status;
 mod target;
@@ -37,10 +37,12 @@ pub use inputs::{ProjectInputRequest, ProjectInputSources, ProjectOperationInput
 pub use keyring::{KeyringImportPlan, KeyringImportSummary};
 pub use keys::resolve_project_key_material;
 pub use management::{
-    ProjectDeviceSynchronization, ProjectManagementFailure, ProjectManagementResult, ProjectManagementTarget,
-    ProjectMemoryReadReport, ProjectMemoryReadout, ProjectSynchronization, ProjectSynchronizationReport,
+    ManagementSources, MemoryReadOptions, ProjectDeviceSynchronization, ProjectManagementFailure,
+    ProjectManagementResult, ProjectManagementTarget, ProjectMemoryReadReport, ProjectMemoryReadout,
+    ProjectSynchronization, ProjectSynchronizationReport,
 };
-pub use operation::{ProjectFinalizationFailure, ProjectOperation, ProjectOperationRequest};
+pub use operation::{ProjectFinalizationFailure, ProjectOperation};
+pub use programming::{ProgrammingPolicy, ProjectProgramming};
 pub use status::{ProgrammingSnapshot, ProjectStatusCache, ProjectStatusInputs, ProjectStatusRequest, StatusRevision};
 pub use target::SerialAddressingSupport;
 
@@ -67,49 +69,46 @@ pub enum BatchSelection {
 /// their effective object flags can populate SIAT and consumer invalidation.
 /// Project-wide operations necessarily inspect every active device before
 /// deciding their physical target set.
-impl ProjectPlanner<'_> {
-    pub fn product_scope(
-        project: &AuthoredProject,
-        selected: &[ProjectDeviceId],
-        selection: BatchSelection,
-        intent: CommissioningIntent,
-    ) -> BTreeSet<ProjectDeviceId> {
-        if selection != BatchSelection::Selected {
-            return project.devices.values().filter(|device| device.active).map(|device| device.id.clone()).collect();
-        }
-
-        let mut scope = selected.iter().cloned().collect::<BTreeSet<_>>();
-        if !intent.download_mode().is_some() {
-            return scope;
-        }
-
-        let secured_nets = selected
-            .iter()
-            .filter_map(|id| project.devices.get(id))
-            .flat_map(|device| device.objects.values())
-            .flat_map(|object| object.memberships.iter())
-            .filter(|membership| {
-                project
-                    .effective_net_security(&membership.net)
-                    .is_some_and(|policy| policy != ProjectSecurityPolicy::Plain)
-            })
-            .map(|membership| membership.net.clone())
-            .collect::<BTreeSet<_>>();
-
-        scope.extend(
-            project
-                .devices
-                .values()
-                .filter(|device| device.active)
-                .filter(|device| {
-                    device.objects.values().any(|object| {
-                        object.memberships.iter().any(|membership| secured_nets.contains(&membership.net))
-                    })
-                })
-                .map(|device| device.id.clone()),
-        );
-        scope
+pub(super) fn product_scope(
+    project: &AuthoredProject,
+    selected: &[ProjectDeviceId],
+    selection: BatchSelection,
+    intent: CommissioningIntent,
+) -> BTreeSet<ProjectDeviceId> {
+    if selection != BatchSelection::Selected {
+        return project.devices.values().filter(|device| device.active).map(|device| device.id.clone()).collect();
     }
+
+    let mut scope = selected.iter().cloned().collect::<BTreeSet<_>>();
+    if !intent.download_mode().is_some() {
+        return scope;
+    }
+
+    let secured_nets = selected
+        .iter()
+        .filter_map(|id| project.devices.get(id))
+        .flat_map(|device| device.objects.values())
+        .flat_map(|object| object.memberships.iter())
+        .filter(|membership| {
+            project.effective_net_security(&membership.net).is_some_and(|policy| policy != ProjectSecurityPolicy::Plain)
+        })
+        .map(|membership| membership.net.clone())
+        .collect::<BTreeSet<_>>();
+
+    scope.extend(
+        project
+            .devices
+            .values()
+            .filter(|device| device.active)
+            .filter(|device| {
+                device
+                    .objects
+                    .values()
+                    .any(|object| object.memberships.iter().any(|membership| secured_nets.contains(&membership.net)))
+            })
+            .map(|device| device.id.clone()),
+    );
+    scope
 }
 
 /// Point at which a project batch stopped.
@@ -329,23 +328,21 @@ pub struct ProgrammingBatchPlan {
     impact: ProgrammingImpact,
     devices: Vec<PlannedProjectDevice>,
     siat_senders: Vec<ManagedSiatSender>,
-    commissioner_options: CommissionerOptions,
+    policy: ProgrammingPolicy,
     skip_current: bool,
 }
 
 impl ProgrammingBatchPlan {
-    /// Derive the owning credentials and safest unambiguous target for each
-    /// planned device. Frontends only need to replace entries when the user
-    /// explicitly chose a previous address or programming-button discovery.
-    /// Configure access and transfer policy for the already evaluated intent.
+    /// Apply access and transfer policy to the already evaluated intent, and
+    /// derive the safest unambiguous target for each planned device: its
+    /// serial number when known, otherwise programming-button discovery for
+    /// address assignment or its existing address. Explicit
+    /// [`set_target`](Self::set_target) choices survive.
+    ///
     /// Changing semantic intent requires a new `plan_commissioning` call.
-    pub fn configure(
-        &mut self,
-        commissioner: CommissionerOptions,
-        allow_plaintext: bool,
-        differential_policy: DifferentialPolicy,
-    ) {
-        self.commissioner_options = commissioner;
+    pub(crate) fn set_policy(&mut self, policy: ProgrammingPolicy) {
+        let ProgrammingPolicy { allow_plaintext, differential: differential_policy, .. } = policy;
+        self.policy = policy;
         for planned in &mut self.devices {
             let mut intent = match planned.evaluated_intent {
                 CommissioningIntent::AssignAddressAndDownload(mode @ DownloadMode::Automatic)
@@ -387,9 +384,12 @@ impl ProgrammingBatchPlan {
     pub fn impact(&self) -> &ProgrammingImpact {
         &self.impact
     }
+    pub fn policy(&self) -> ProgrammingPolicy {
+        self.policy
+    }
 
     /// Override physical target acquisition without changing evaluated scope.
-    pub fn set_target(&mut self, id: &ProjectDeviceId, target: TargetSelection) -> Result<()> {
+    pub(crate) fn set_target(&mut self, id: &ProjectDeviceId, target: TargetSelection) -> Result<()> {
         let device = self
             .devices
             .iter_mut()
@@ -445,14 +445,61 @@ pub struct ProjectPlanner<'a> {
 }
 
 impl<'a> ProjectPlanner<'a> {
-    pub fn new(
+    /// Plan `project` with its loaded `products` and nothing else: no durable
+    /// state, no project keys, no imported keyring, and only Master Data bound
+    /// into the product packages. Add each source that exists.
+    ///
+    /// ```
+    /// # use std::collections::BTreeMap;
+    /// # use zweidraehte_client::project::{ProjectPlanner, ProjectProduct};
+    /// # use zweidraehte_client::security::Keyring;
+    /// # use zweidraehte_project::{AuthoredProject, KeyMaterialSource, MutableProjectState, ProjectDeviceId};
+    /// fn installation_planner<'a>(
+    ///     project: &'a AuthoredProject,
+    ///     products: &'a BTreeMap<ProjectDeviceId, ProjectProduct>,
+    ///     state: &'a MutableProjectState,
+    ///     project_keys: &'a dyn KeyMaterialSource,
+    ///     ets_keyring: &'a Keyring,
+    /// ) -> ProjectPlanner<'a> {
+    ///     ProjectPlanner::new(project, products).with_state(state).with_keys(project_keys).with_keyring(ets_keyring)
+    /// }
+    /// ```
+    pub fn new(project: &'a AuthoredProject, products: &'a BTreeMap<ProjectDeviceId, ProjectProduct>) -> Self {
+        Self { project, state: None, products, keys: None, keyring: None, master_data: None }
+    }
+
+    /// The planner for a project store's durable state and keys, as every
+    /// store-backed input acquisition builds it.
+    pub(super) fn for_store(
         project: &'a AuthoredProject,
-        state: Option<&'a MutableProjectState>,
+        store: &'a zweidraehte_project::ProjectStore,
         products: &'a BTreeMap<ProjectDeviceId, ProjectProduct>,
-        keys: Option<&'a dyn KeyMaterialSource>,
         keyring: Option<&'a Keyring>,
     ) -> Self {
-        Self { project, state, products, keys, keyring, master_data: None }
+        Self {
+            state: store.state(),
+            keys: store.keys().map(|keys| keys as &dyn KeyMaterialSource),
+            keyring,
+            ..Self::new(project, products)
+        }
+    }
+
+    /// Durable programming state: deployments and observed sequence numbers.
+    pub fn with_state(mut self, state: &'a MutableProjectState) -> Self {
+        self.state = Some(state);
+        self
+    }
+
+    /// The project's own key store.
+    pub fn with_keys(mut self, keys: &'a dyn KeyMaterialSource) -> Self {
+        self.keys = Some(keys);
+        self
+    }
+
+    /// An imported ETS keyring, consulted after the project's own keys.
+    pub fn with_keyring(mut self, keyring: &'a Keyring) -> Self {
+        self.keyring = Some(keyring);
+        self
     }
 
     /// Compile unbound products against this selected installation document.
@@ -476,12 +523,8 @@ impl ProjectPlanner<'_> {
 
     pub fn programming_view_for(&self, devices: &BTreeSet<ProjectDeviceId>) -> Result<ProgrammingView> {
         let intent = CommissioningIntent::Download(DownloadMode::Automatic);
-        let scope = Self::product_scope(
-            self.project,
-            &devices.iter().cloned().collect::<Vec<_>>(),
-            BatchSelection::Selected,
-            intent,
-        );
+        let scope =
+            product_scope(self.project, &devices.iter().cloned().collect::<Vec<_>>(), BatchSelection::Selected, intent);
         let mut evaluated = self.evaluate(&scope, intent)?;
         evaluated.retain(|id, _| devices.contains(id));
         Ok(ProgrammingView::from_evaluated(self.project, self.state, &evaluated, &[]))
@@ -511,7 +554,7 @@ impl ProjectPlanner<'_> {
         // Secure application downloads retain the peer closure whose product
         // defaults are required for SIAT; unrelated active products must not
         // veto or delay a named operation.
-        let included = ProjectPlanner::product_scope(project, selected, selection, intent);
+        let included = product_scope(project, selected, selection, intent);
 
         let mut evaluated = self.evaluate(&included, intent)?;
         let selected = match selection {
@@ -589,11 +632,11 @@ impl ProjectPlanner<'_> {
             impact,
             devices: planned,
             siat_senders,
-            commissioner_options: Default::default(),
+            policy: ProgrammingPolicy::default(),
             skip_current: selection == BatchSelection::AllStale
                 && intent.download_mode() == Some(DownloadMode::Automatic),
         };
-        plan.configure(Default::default(), true, DifferentialPolicy::FallBackToUndifferenced);
+        plan.set_policy(ProgrammingPolicy::default());
         Ok(plan)
     }
 }
@@ -1190,11 +1233,11 @@ mod product;
 mod sequence;
 mod session;
 
-pub use persistence::build_project_keyring;
+pub use persistence::{KeyringExport, build_project_keyring};
 pub use product::{EvaluatedProjectDevice, ProjectProduct};
 pub use sequence::ProjectSeqStore;
+pub(crate) use session::ProjectProgrammingInputs;
 pub use session::{
-    PreparedProjectBatch, PreparedProjectDevice, ProjectBatchReport, ProjectCommissioningSession,
+    PreparedProjectSecurity, ProjectBatchFailure, ProjectBatchReport, ProjectCommissioningSession,
     ProjectDeviceCommissioningOptions, ProjectDeviceCommissioningReport,
 };
-pub use session::{PreparedProjectSecurity, ProjectBatchFailure, ProjectProgrammingInputs};

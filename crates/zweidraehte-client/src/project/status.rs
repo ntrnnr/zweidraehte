@@ -13,7 +13,7 @@ use crate::security::Keyring;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use zweidraehte_project::{AuthoredProject, KeyMaterialSource, ProjectDeviceId, ProjectStore};
+use zweidraehte_project::{AuthoredProject, ProjectDeviceId, ProjectStore};
 
 /// Identifies the actual immutable inputs, including credentials and evidence.
 /// Only a digest is retained; neither source text nor key bytes are exposed.
@@ -116,16 +116,17 @@ impl std::fmt::Debug for ProjectStatusInputs {
     }
 }
 
-impl ProjectStatusInputs {
-    /// Load/decrypt once between content checks. The loader may instead return
-    /// a caller-owned immutable keyring; passwords and CLI policy stay outside.
-    /// Changed inputs return `StatusInputsChanged`; callers may request a retry.
+impl ProjectStatusCache {
+    /// Load/decrypt once between content checks, reusing parsed packages from
+    /// earlier loads. The loader may instead return a caller-owned immutable
+    /// keyring; passwords and CLI policy stay outside. Changed inputs return
+    /// `StatusInputsChanged`; callers may request a retry.
     pub fn load(
+        &mut self,
         request: ProjectStatusRequest<'_>,
-        cache: &mut ProjectStatusCache,
         load_keyring: impl FnOnce() -> Result<Option<Keyring>>,
         progress: impl FnMut(&ProjectDeviceId, usize, usize),
-    ) -> Result<Self> {
+    ) -> Result<ProjectStatusInputs> {
         let mut files = FileRevision::capture(
             ProjectStore::input_files(request.project_path).chain(request.keyring_path.map(Path::to_path_buf)),
         )?;
@@ -139,13 +140,13 @@ impl ProjectStatusInputs {
         let scope = request.scope.cloned().unwrap_or_else(|| {
             authored.devices.values().filter(|device| device.active).map(|device| device.id.clone()).collect()
         });
-        let product_scope = ProjectPlanner::product_scope(
+        let product_scope = super::product_scope(
             &authored,
             &scope.iter().cloned().collect::<Vec<_>>(),
             BatchSelection::Selected,
             CommissioningIntent::Download(DownloadMode::Automatic),
         );
-        let resources = cache.resources.load(
+        let resources = self.resources.load(
             &authored,
             &product_scope,
             request.master_data,
@@ -154,9 +155,11 @@ impl ProjectStatusInputs {
             progress,
         )?;
         files.verify(|| Error::StatusInputsChanged)?;
-        Ok(Self { store, authored, resources, keyring, scope, files })
+        Ok(ProjectStatusInputs { store, authored, resources, keyring, scope, files })
     }
+}
 
+impl ProjectStatusInputs {
     /// The captured durable store. Its authored source is the saved base;
     /// `planner()` and `snapshot()` evaluate the supplied draft when present.
     pub fn store(&self) -> &ProjectStore {
@@ -169,14 +172,8 @@ impl ProjectStatusInputs {
         &self.resources.master_data
     }
     pub fn planner(&self) -> ProjectPlanner<'_> {
-        ProjectPlanner::new(
-            &self.authored,
-            self.store.state(),
-            &self.resources.products,
-            self.store.keys().map(|keys| keys as &dyn KeyMaterialSource),
-            self.keyring.as_ref(),
-        )
-        .with_master_data(&self.resources.master_data)
+        ProjectPlanner::for_store(&self.authored, &self.store, &self.resources.products, self.keyring.as_ref())
+            .with_master_data(&self.resources.master_data)
     }
 
     pub fn snapshot(&self) -> Result<ProgrammingSnapshot> {

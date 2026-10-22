@@ -6,7 +6,7 @@ use crate::commissioning::error::Diagnostic;
 use crate::commissioning::error::DiagnosticResult as Result;
 use crate::commissioning::input::{ProgrammingModePolling, TargetSelection};
 use crate::commissioning::runtime::commissioner::{
-    Commissioner, CommissioningCancellation, OPEN_MEDIUM_COLLECTION_WINDOW,
+    Commissioner, CommissioningObserver, DeviceObservation, OPEN_MEDIUM_COLLECTION_WINDOW,
 };
 use crate::commissioning::runtime::policy::{unique_domain_target, unique_target};
 use zweidraehte_proto::address::IndividualAddress;
@@ -17,7 +17,7 @@ impl Commissioner<'_> {
         &self,
         selection: &TargetSelection,
         open_medium: bool,
-        cancellation: &CommissioningCancellation,
+        observer: &impl CommissioningObserver,
     ) -> Result<AcquiredTarget> {
         let network = self.bus.network_management();
 
@@ -32,7 +32,7 @@ impl Commissioner<'_> {
                 Ok(AcquiredTarget { address, serial_number: Some(*serial_number) })
             }
             TargetSelection::ProgrammingButton(polling) => {
-                let addresses = self.poll_programming_mode(*polling, open_medium, cancellation).await?;
+                let addresses = self.poll_programming_mode(*polling, open_medium, observer).await?;
                 let address = unique_target(addresses, "physical programming mode")?;
                 let devices =
                     network.read_programming_mode_devices(self.options.scan_window).await.map_err(|error| {
@@ -67,7 +67,7 @@ impl Commissioner<'_> {
         &self,
         polling: ProgrammingModePolling,
         open_medium: bool,
-        cancellation: &CommissioningCancellation,
+        observer: &impl CommissioningObserver,
     ) -> Result<Vec<IndividualAddress>> {
         if polling.wait_when_none_found && polling.timeout.is_zero() {
             return Err(Diagnostic::preparation("programming-mode polling timeout must not be zero"));
@@ -78,7 +78,7 @@ impl Commissioner<'_> {
 
         let scan = async {
             loop {
-                cancellation.check()?;
+                observer.checkpoint()?;
                 let network = self.bus.network_management();
                 let found = if open_medium {
                     network.read_open_medium_individual_addresses(OPEN_MEDIUM_COLLECTION_WINDOW).await

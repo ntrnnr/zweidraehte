@@ -119,8 +119,14 @@ fn keyring_import_persists_project_keys_and_forward_sequence_observations() {
     assert_eq!(state.devices["00FA:00000001"].outgoing_next, 124);
     assert_eq!(state.sender_floors[&SenderIdentity::UnmanagedAddress("1.1.250".into())], 456);
 
-    let exported = super::super::build_project_keyring(store.authored(), state, keys, "test", "test", "test")
-        .expect("project keyring exports");
+    let export = super::super::KeyringExport {
+        project_name: "test".into(),
+        created_by: "test".into(),
+        created: time::OffsetDateTime::UNIX_EPOCH + time::Duration::nanoseconds(1),
+    };
+    let exported =
+        super::super::build_project_keyring(store.authored(), state, keys, export).expect("project keyring exports");
+    assert_eq!(exported.created, "1970-01-01T00:00:00Z", "the IV-bearing timestamp has whole-second RFC 3339 form");
     assert_eq!(exported.group_key(1), Some(&group_key));
     assert_eq!(exported.group_key(2), Some(&second_group_key));
     assert_eq!(

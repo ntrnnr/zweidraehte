@@ -11,23 +11,22 @@ use crate::commissioning::image::{ImageLocation, SparseDeviceImage, fingerprint_
 use crate::commissioning::input::ProgrammingInput;
 use crate::commissioning::report::{CommissioningEvent, CommissioningStage};
 use crate::commissioning::runtime::ExecutionSession;
-use crate::commissioning::runtime::commissioner::{Commissioner, CommissioningCancellation};
+use crate::commissioning::runtime::commissioner::{Commissioner, CommissioningObserver, DeviceObservation};
 use crate::commissioning::runtime::policy::{differential_fallback, verified_undifferenced_fallback};
 use crate::commissioning::runtime::prepared::{BoundRead, ReadExpectation};
 use std::collections::BTreeSet;
 
 impl Commissioner<'_> {
-    pub(in crate::commissioning) async fn bind_installation_evidence<F: FnMut(CommissioningEvent)>(
+    pub(in crate::commissioning) async fn bind_installation_evidence(
         &self,
         plan: &CompiledProgram,
         session: &mut ExecutionSession<'_>,
         input: &ProgrammingInput,
         differential_policy: DifferentialPolicy,
         deployment: Option<&DeploymentRecord>,
-        cancellation: &CommissioningCancellation,
-        event: &mut F,
+        observer: &mut impl CommissioningObserver,
     ) -> Result<(Vec<BoundRead>, Option<SparseDeviceImage>, DifferentialDecision)> {
-        event(CommissioningEvent::Stage(CommissioningStage::ValidatingDifferential));
+        observer.emit(CommissioningEvent::Stage(CommissioningStage::ValidatingDifferential));
         // Reject unusable local history before asking the device for stamps.
         let (baseline, differential) = prepare_baseline(plan, differential_policy, deployment)?;
         let mut reads = partial_installed_state_requirements(plan, input.device.product())?;
@@ -35,7 +34,7 @@ impl Commissioner<'_> {
         if let Some(baseline) = baseline {
             reads.extend(baseline_stamp_reads(plan, baseline)?);
         }
-        read_bound_evidence(session, &mut reads, cancellation).await?;
+        read_bound_evidence(session, &mut reads, observer).await?;
         let (differential, known) = if let Some(baseline) = baseline {
             finish_baseline(
                 plan,
@@ -49,10 +48,10 @@ impl Commissioner<'_> {
         };
         match &differential {
             DifferentialDecision::FellBackToUndifferenced { reason } => {
-                event(CommissioningEvent::DifferentialFallback(*reason))
+                observer.emit(CommissioningEvent::DifferentialFallback(*reason))
             }
             DifferentialDecision::VerifiedUndifferenced { .. } => {
-                event(CommissioningEvent::DifferentialFallback(DifferentialFallback::NoUsefulDifference))
+                observer.emit(CommissioningEvent::DifferentialFallback(DifferentialFallback::NoUsefulDifference))
             }
             _ => {}
         }

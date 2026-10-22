@@ -2,7 +2,7 @@
 
 use crate::KnxBus;
 use crate::commissioning::{
-    Commissioner, CommissionerOptions, CommissioningCancellation, CommissioningEvent, CommissioningIntent,
+    Commissioner, CommissioningEvent, CommissioningIntent, CommissioningObserver, CommissioningVeto,
     DifferentialPolicy, ExecutionReport, ManagementAccessOptions, PreparationOptions, PreparedProgram,
     ProgrammingInput, TargetSelection,
 };
@@ -17,11 +17,12 @@ use super::keyring::KeyringImportPlan;
 use super::revision::FileRevision;
 use super::sequence::ProjectSeqStore;
 
+use super::operation::ensure_not_cancelled;
 use super::persistence::{
     commissioning_deployment_from_project, intent_with_baseline, record_programming_failure, record_success,
 };
 use super::{
-    PlannedProjectDevice, ProgrammingBatchPlan, ProgrammingImpact, ProjectBatchFailureStage, accept_zero_siat_sequence,
+    PlannedProjectDevice, ProgrammingBatchPlan, ProgrammingPolicy, ProjectBatchFailureStage, accept_zero_siat_sequence,
 };
 /// Per-device policy which cannot be inferred from project topology alone.
 #[derive(Clone)]
@@ -32,38 +33,51 @@ pub struct ProjectDeviceCommissioningOptions {
     pub differential_policy: DifferentialPolicy,
 }
 
-pub struct PreparedProjectDevice {
+/// One device's commissioning prepared against the live bus, retained with
+/// the exact materialized input it was compiled from.
+pub(crate) struct PreparedProjectDevice {
     planned: PlannedProjectDevice,
     commissioning: PreparedProgram,
 }
 
 impl PreparedProjectDevice {
-    pub fn id(&self) -> &ProjectDeviceId {
+    pub(crate) fn id(&self) -> &ProjectDeviceId {
         &self.planned.id
     }
 
-    pub fn planned(&self) -> &PlannedProjectDevice {
-        &self.planned
-    }
-
-    pub fn commissioning(&self) -> &PreparedProgram {
+    pub(crate) fn commissioning(&self) -> &PreparedProgram {
         &self.commissioning
     }
 }
 
-pub struct PreparedProjectBatch {
-    impact: ProgrammingImpact,
+pub(crate) struct PreparedProjectBatch {
     devices: Vec<PreparedProjectDevice>,
-    commissioner_options: CommissionerOptions,
+    policy: ProgrammingPolicy,
 }
 
 impl PreparedProjectBatch {
-    pub fn impact(&self) -> &ProgrammingImpact {
-        &self.impact
+    pub(crate) fn devices(&self) -> &[PreparedProjectDevice] {
+        &self.devices
+    }
+}
+
+/// Scopes a project observer to one device for the single-device commissioner.
+struct DeviceObserver<'a, Observer: ?Sized> {
+    device: &'a ProjectDeviceId,
+    project: &'a mut Observer,
+}
+
+impl<Observer: CommissioningObserver<ProjectDeviceId> + ?Sized> CommissioningObserver for DeviceObserver<'_, Observer> {
+    fn event(&mut self, _device: &(), event: CommissioningEvent) {
+        self.project.event(self.device, event);
     }
 
-    pub fn devices(&self) -> &[PreparedProjectDevice] {
-        &self.devices
+    fn approve(&mut self, _device: &(), prepared: &PreparedProgram) -> core::result::Result<(), CommissioningVeto> {
+        self.project.approve(self.device, prepared)
+    }
+
+    fn cancelled(&self) -> bool {
+        self.project.cancelled()
     }
 }
 
@@ -161,7 +175,7 @@ impl ProjectCommissioningSession {
     }
 
     /// Persist generated keys under the same writer exclusion as programming.
-    pub fn materialize_tool_keys(&self, plan: &mut ProgrammingBatchPlan) -> Result<usize> {
+    pub(crate) fn materialize_tool_keys(&self, plan: &mut ProgrammingBatchPlan) -> Result<usize> {
         let mut store = self.store.lock().map_err(|_| Error::ProjectStorePoisoned)?;
         let mut keys = store.keys_mut().ok_or(zweidraehte_project::ProjectStoreError::NotInitialized)?;
         plan.materialize_tool_keys(&mut keys)
@@ -214,7 +228,7 @@ impl ProjectCommissioningSession {
 
 impl ProgrammingBatchPlan {
     /// Generate every missing tool key and persist it before a bus is opened.
-    pub fn materialize_tool_keys(&mut self, keys: &mut ProjectKeys<'_>) -> Result<usize> {
+    pub(crate) fn materialize_tool_keys(&mut self, keys: &mut ProjectKeys<'_>) -> Result<usize> {
         let mut generated = 0;
         for device in &mut self.devices {
             if !device.device.key_material().needs_tool_key_generation() {
@@ -227,27 +241,14 @@ impl ProgrammingBatchPlan {
         Ok(generated)
     }
 
-    /// Typed no-progress preparation convenience for library callers which do
-    /// not need to expose programming-button discovery in a frontend.
-    pub async fn prepare(self, bus: &KnxBus, cancellation: &CommissioningCancellation) -> Result<PreparedProjectBatch> {
-        let mut progress = |_: &ProjectDeviceId, _: CommissioningEvent| {};
-
-        self.prepare_with_progress(bus, cancellation, &mut progress).await
-    }
-
     /// Run complete read-only discovery and compilation while forwarding the
     /// generic events which make target polling visible and cancellable.
-    pub async fn prepare_with_progress<F>(
+    pub(crate) async fn prepare(
         self,
         bus: &KnxBus,
-        cancellation: &CommissioningCancellation,
-        progress: &mut F,
-    ) -> Result<PreparedProjectBatch>
-    where
-        F: FnMut(&ProjectDeviceId, CommissioningEvent) + Send,
-    {
-        let ProgrammingBatchPlan { impact, devices: mut planned_devices, siat_senders, commissioner_options, .. } =
-            self;
+        observer: &mut impl CommissioningObserver<ProjectDeviceId>,
+    ) -> Result<PreparedProjectBatch> {
+        let ProgrammingBatchPlan { devices: mut planned_devices, siat_senders, policy, .. } = self;
 
         // Missing or obsolete image history cannot authorize a partial run.
         // Resolve this before opening even the read-only sender connections.
@@ -280,7 +281,7 @@ impl ProgrammingBatchPlan {
         // folding them into a vaguely named counter.
         let mut remote_next_sequences = BTreeMap::new();
         for sender in siat_senders.iter().filter(|sender| sender.query) {
-            cancellation.check().map_err(crate::commissioning::CommissioningError::before_execution)?;
+            ensure_not_cancelled(observer)?;
             let key_material = match &sender.probe_key_material {
                 Some(key_material) => key_material.clone(),
                 None => planned_devices
@@ -343,8 +344,8 @@ impl ProgrammingBatchPlan {
         let mut devices = Vec::with_capacity(planned_devices.len());
 
         for mut planned in planned_devices {
-            cancellation.check().map_err(crate::commissioning::CommissioningError::before_execution)?;
-            let commissioner = Commissioner::new(bus).with_options(commissioner_options);
+            ensure_not_cancelled(observer)?;
+            let commissioner = Commissioner::new(bus).with_options(policy.commissioner);
 
             let ProjectDeviceCommissioningOptions { intent, target, allow_plaintext, differential_policy } =
                 planned.commissioning.clone();
@@ -353,12 +354,11 @@ impl ProgrammingBatchPlan {
             let credentials = commissioning_credentials(allow_plaintext);
             let mut preparation = PreparationOptions::new(credentials);
             preparation.differential_policy = differential_policy;
-            preparation.deployment = deployment.as_ref();
+            preparation.deployment = deployment;
             let input = ProgrammingInput::new(planned.device.clone(), intent, planned.compile_options(intent, target));
 
-            let id = planned.id.clone();
-            let mut device_progress = |event| progress(&id, event);
-            let commissioning = commissioner.prepare(input, preparation, cancellation, &mut device_progress).await?;
+            let mut device = DeviceObserver { device: &planned.id, project: &mut *observer };
+            let commissioning = commissioner.prepare(input, preparation, &mut device).await?;
             if let Some(sections) = commissioning.plan().program_sections() {
                 planned.automatic_sections = sections;
             }
@@ -370,7 +370,7 @@ impl ProgrammingBatchPlan {
             devices.push(PreparedProjectDevice { planned, commissioning });
         }
 
-        Ok(PreparedProjectBatch { impact, devices, commissioner_options })
+        Ok(PreparedProjectBatch { devices, policy })
     }
 }
 
@@ -379,36 +379,28 @@ impl ProjectCommissioningSession {
     /// outcome. Inputs are loaded before this call; no store guard crosses I/O.
     /// The observer may inspect/veto a prepared target before it is executed.
     /// Later failures retain all earlier physical reports in `ProjectBatch`.
-    pub async fn program_queued<F, P>(
+    pub(crate) async fn program_queued(
         &self,
         bus: &KnxBus,
         initial: ProgrammingBatchPlan,
         inputs: ProjectProgrammingInputs<'_>,
-        cancellation: &CommissioningCancellation,
-        progress: &mut F,
-        mut prepared: P,
-    ) -> Result<ProjectBatchReport>
-    where
-        F: FnMut(&ProjectDeviceId, CommissioningEvent) + Send,
-        P: FnMut(&PreparedProjectDevice) -> Result<()> + Send,
-    {
+        observer: &mut impl CommissioningObserver<ProjectDeviceId>,
+    ) -> Result<ProjectBatchReport> {
         let mut reports = Vec::new();
         // The caller's plan may predate this locked session or use different
         // loaded inputs. Validate the complete queue before its first write;
         // later per-target evaluation incorporates newly persisted evidence.
         for original in &initial.devices {
-            cancellation.check().map_err(crate::commissioning::CommissioningError::before_execution).map_err(
-                |source| {
-                    project_batch_error(
-                        original.id.0.clone(),
-                        ProjectBatchFailureStage::Preparation,
-                        Vec::new(),
-                        source.into(),
-                        Vec::new(),
-                    )
-                },
-            )?;
-            self.replan_queued_device(original, &inputs, initial.commissioner_options).map_err(|source| {
+            ensure_not_cancelled(observer).map_err(|source| {
+                project_batch_error(
+                    original.id.0.clone(),
+                    ProjectBatchFailureStage::Preparation,
+                    Vec::new(),
+                    source,
+                    Vec::new(),
+                )
+            })?;
+            self.replan_queued_device(original, &inputs, initial.policy).map_err(|source| {
                 project_batch_error(
                     original.id.0.clone(),
                     ProjectBatchFailureStage::Preparation,
@@ -421,14 +413,14 @@ impl ProjectCommissioningSession {
         for original in initial.devices {
             let id = original.id.clone();
             let prepare = async {
-                cancellation.check().map_err(crate::commissioning::CommissioningError::before_execution)?;
-                let plan = self.replan_queued_device(&original, &inputs, initial.commissioner_options)?;
+                ensure_not_cancelled(observer)?;
+                let plan = self.replan_queued_device(&original, &inputs, initial.policy)?;
                 if initial.skip_current && plan.devices.iter().all(|device| device.status.is_complete()) {
                     return Ok(None);
                 }
-                let batch = plan.prepare_with_progress(bus, cancellation, progress).await?;
+                let batch = plan.prepare(bus, observer).await?;
                 for device in batch.devices() {
-                    prepared(device)?;
+                    observer.approve(device.id(), device.commissioning()).map_err(Error::Vetoed)?;
                 }
                 Ok(Some(batch))
             }
@@ -446,7 +438,7 @@ impl ProjectCommissioningSession {
                     ));
                 }
             };
-            match self.execute(bus, batch, cancellation, progress).await {
+            match self.execute(bus, batch, observer).await {
                 Ok(batch) => reports.extend(batch.devices),
                 Err(Error::ProjectBatch(mut failure)) => {
                     reports.append(&mut failure.report.devices);
@@ -472,27 +464,17 @@ impl ProjectCommissioningSession {
         &self,
         original: &PlannedProjectDevice,
         inputs: &ProjectProgrammingInputs<'_>,
-        commissioner_options: CommissionerOptions,
+        policy: ProgrammingPolicy,
     ) -> Result<ProgrammingBatchPlan> {
         self.inspect(|store| {
-            let mut plan = super::ProjectPlanner::new(
-                store.authored(),
-                store.state(),
-                inputs.products,
-                store.keys().map(|keys| keys as &dyn zweidraehte_project::KeyMaterialSource),
-                inputs.keyring,
-            )
-            .with_master_data(inputs.master_data)
-            .plan_commissioning(
-                &[original.id.clone()],
-                super::BatchSelection::Selected,
-                original.evaluated_intent,
-            )?;
-            plan.configure(
-                commissioner_options,
-                original.commissioning.allow_plaintext,
-                original.commissioning.differential_policy,
-            );
+            let mut plan = super::ProjectPlanner::for_store(store.authored(), store, inputs.products, inputs.keyring)
+                .with_master_data(inputs.master_data)
+                .plan_commissioning(
+                    std::slice::from_ref(&original.id),
+                    super::BatchSelection::Selected,
+                    original.evaluated_intent,
+                )?;
+            plan.set_policy(policy);
             if let Some(target) = &original.target_override {
                 plan.set_target(&original.id, target.clone())?;
             }
@@ -502,25 +484,21 @@ impl ProjectCommissioningSession {
 
     /// Execute the immutable prepared batch with frontend-owned cancellation.
     /// The same event vocabulary is used during preparation and mutation.
-    pub async fn execute<F>(
+    pub(crate) async fn execute(
         &self,
         bus: &KnxBus,
         batch: PreparedProjectBatch,
-        cancellation: &CommissioningCancellation,
-        progress: &mut F,
-    ) -> Result<ProjectBatchReport>
-    where
-        F: FnMut(&ProjectDeviceId, CommissioningEvent) + Send,
-    {
-        let PreparedProjectBatch { impact: _, devices, commissioner_options } = batch;
+        observer: &mut impl CommissioningObserver<ProjectDeviceId>,
+    ) -> Result<ProjectBatchReport> {
+        let PreparedProjectBatch { devices, policy } = batch;
         let mut reports = Vec::with_capacity(devices.len());
 
         for device in devices {
             let PreparedProjectDevice { planned, commissioning } = device;
-            let commissioner = Commissioner::new(bus).with_options(commissioner_options);
+            let commissioner = Commissioner::new(bus).with_options(policy.commissioner);
             let id = planned.id.clone();
-            let mut device_progress = |event| progress(&id, event);
-            match commissioner.execute(commissioning, cancellation, &mut device_progress).await {
+            let mut device = DeviceObserver { device: &id, project: &mut *observer };
+            match commissioner.execute(commissioning, &mut device).await {
                 Ok(report) => {
                     let persistence =
                         record_success(&self.store, &planned, &report, report.effects().affected_sections());
@@ -554,10 +532,10 @@ impl ProjectCommissioningSession {
 }
 
 /// Static project inputs acquired before any queue mutation begins.
-pub struct ProjectProgrammingInputs<'a> {
-    pub products: &'a BTreeMap<ProjectDeviceId, super::ProjectProduct>,
-    pub master_data: &'a super::ProjectMasterData,
-    pub keyring: Option<&'a Keyring>,
+pub(crate) struct ProjectProgrammingInputs<'a> {
+    pub(crate) products: &'a BTreeMap<ProjectDeviceId, super::ProjectProduct>,
+    pub(crate) master_data: &'a super::ProjectMasterData,
+    pub(crate) keyring: Option<&'a Keyring>,
 }
 
 #[cfg(test)]
@@ -579,15 +557,16 @@ mod queue_tests {
         let mut store = ProjectStore::open(path).expect("project opens");
         store = store.initialize().expect("state initializes");
         let receiver = ProjectDeviceId("receiver".into());
-        let mut plan =
-            ProjectPlanner::new(store.authored(), store.state(), &fixture.products, None, Some(&fixture.keyring))
-                .with_master_data(&fixture.catalogs)
-                .plan_commissioning(
-                    std::slice::from_ref(&receiver),
-                    BatchSelection::Selected,
-                    CommissioningIntent::Download(DownloadMode::Full),
-                )
-                .expect("imported FDSK permits key generation");
+        let mut plan = ProjectPlanner::new(store.authored(), &fixture.products)
+            .with_state(store.state().expect("initialized state"))
+            .with_keyring(&fixture.keyring)
+            .with_master_data(&fixture.catalogs)
+            .plan_commissioning(
+                std::slice::from_ref(&receiver),
+                BatchSelection::Selected,
+                CommissioningIntent::Download(DownloadMode::Full),
+            )
+            .expect("imported FDSK permits key generation");
         let session = ProjectCommissioningSession::begin(store).expect("project writer");
 
         assert_eq!(session.materialize_tool_keys(&mut plan).expect("tool key persists"), 1);
@@ -622,15 +601,16 @@ mod queue_tests {
         let mut store = ProjectStore::open(path).expect("project opens");
         store = store.initialize().expect("state initializes");
         let receiver = ProjectDeviceId("receiver".into());
-        let initial =
-            ProjectPlanner::new(store.authored(), store.state(), &fixture.products, None, Some(&fixture.keyring))
-                .with_master_data(&fixture.catalogs)
-                .plan_commissioning(
-                    &[receiver.clone()],
-                    BatchSelection::Selected,
-                    CommissioningIntent::Download(DownloadMode::Full),
-                )
-                .expect("initial receiver plan");
+        let initial = ProjectPlanner::new(store.authored(), &fixture.products)
+            .with_state(store.state().expect("initialized state"))
+            .with_keyring(&fixture.keyring)
+            .with_master_data(&fixture.catalogs)
+            .plan_commissioning(
+                std::slice::from_ref(&receiver),
+                BatchSelection::Selected,
+                CommissioningIntent::Download(DownloadMode::Full),
+            )
+            .expect("initial receiver plan");
         let original = initial.device(&receiver).expect("receiver");
         let session = ProjectCommissioningSession::begin(store).expect("writer owns state");
 

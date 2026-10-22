@@ -9,7 +9,9 @@
 use crate::bus::KnxBus;
 use crate::commissioning::catalog::profile::VariantHint;
 use crate::commissioning::evidence::{DeploymentRecord, DifferentialPolicy};
+use crate::commissioning::report::CommissioningEvent;
 use crate::commissioning::runtime::credentials::ManagementAccessOptions;
+use crate::commissioning::runtime::prepared::PreparedProgram;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -53,7 +55,97 @@ impl Default for CommissionerOptions {
     }
 }
 
+// ================================================================================
+// Observation
+// ================================================================================
+
+/// Watches commissioning, approves prepared programs, and requests cancellation.
+///
+/// One device and a project batch share this contract. `Subject` names what
+/// the commissioning concerns: the [`Commissioner`] works on one anonymous
+/// device (`()`), while a project batch passes each device's project
+/// identity. Every method has a default, so `&mut ()` observes nothing and
+/// [`CommissioningCancellation`] only cancels.
+///
+/// ```
+/// use zweidraehte_client::commissioning::{
+///     CommissioningEvent, CommissioningObserver, CommissioningVeto, PreparedProgram,
+/// };
+///
+/// /// Logs every event and refuses any program that would assign an address.
+/// struct ReadOnlyGuard(Vec<CommissioningEvent>);
+///
+/// impl CommissioningObserver for ReadOnlyGuard {
+///     fn event(&mut self, _device: &(), event: CommissioningEvent) {
+///         self.0.push(event);
+///     }
+///
+///     fn approve(&mut self, _device: &(), prepared: &PreparedProgram) -> Result<(), CommissioningVeto> {
+///         if prepared.plan().intent().mutates_address() {
+///             return Err(CommissioningVeto::new("address assignment is not allowed here"));
+///         }
+///         Ok(())
+///     }
+/// }
+/// ```
+pub trait CommissioningObserver<Subject: ?Sized = ()> {
+    /// Progress during preparation and execution. Observation only: the
+    /// commissioning continues regardless of what the observer does.
+    fn event(&mut self, _subject: &Subject, _event: CommissioningEvent) {}
+
+    /// Inspect a prepared program before its first configuration write.
+    /// Called by one-call operations that own the gap between preparation
+    /// and execution; callers of [`Commissioner::prepare`] and
+    /// [`Commissioner::execute`] hold that gap themselves and are never asked.
+    fn approve(&mut self, _subject: &Subject, _prepared: &PreparedProgram) -> Result<(), CommissioningVeto> {
+        Ok(())
+    }
+
+    /// Polled at every step boundary. Cancellation is cooperative: a running
+    /// step completes and mandatory cleanup still runs.
+    fn cancelled(&self) -> bool {
+        false
+    }
+}
+
+/// Observes nothing, approves everything, and never cancels.
+impl<Subject: ?Sized> CommissioningObserver<Subject> for () {}
+
+impl<Subject: ?Sized, Observer: CommissioningObserver<Subject> + ?Sized> CommissioningObserver<Subject>
+    for &mut Observer
+{
+    fn event(&mut self, subject: &Subject, event: CommissioningEvent) {
+        (**self).event(subject, event);
+    }
+
+    fn approve(&mut self, subject: &Subject, prepared: &PreparedProgram) -> Result<(), CommissioningVeto> {
+        (**self).approve(subject, prepared)
+    }
+
+    fn cancelled(&self) -> bool {
+        (**self).cancelled()
+    }
+}
+
+/// An observer's refusal of a prepared program. Nothing was written.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct CommissioningVeto(Box<dyn std::error::Error + Send + Sync>);
+
+impl CommissioningVeto {
+    pub fn new(reason: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
+        Self(reason.into())
+    }
+
+    pub fn into_inner(self) -> Box<dyn std::error::Error + Send + Sync> {
+        self.0
+    }
+}
+
 /// Cooperative cancellation shared by frontends and the executor.
+///
+/// As an observer it only cancels. Frontends that also report progress
+/// keep a clone and answer [`CommissioningObserver::cancelled`] from it.
 #[derive(Debug, Clone, Default)]
 pub struct CommissioningCancellation(Arc<AtomicBool>);
 
@@ -67,16 +159,44 @@ impl CommissioningCancellation {
     }
 }
 
+impl<Subject: ?Sized> CommissioningObserver<Subject> for CommissioningCancellation {
+    fn cancelled(&self) -> bool {
+        self.is_cancelled()
+    }
+}
+
+/// Shorthands for the runtime, which always observes one anonymous device.
+pub(crate) trait DeviceObservation: CommissioningObserver {
+    fn emit(&mut self, event: CommissioningEvent) {
+        self.event(&(), event);
+    }
+
+    fn checkpoint(&self) -> crate::commissioning::error::DiagnosticResult<()> {
+        if self.cancelled() {
+            Err(crate::commissioning::Diagnostic::new("commissioning was cancelled"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl<Observer: CommissioningObserver + ?Sized> DeviceObservation for Observer {}
+
+// ================================================================================
+// Options
+// ================================================================================
+
 /// Live access and installed evidence, separate from the desired programming input.
 #[derive(Debug)]
-pub struct PreparationOptions<'a> {
+pub struct PreparationOptions {
     pub access: ManagementAccessOptions,
     pub variant_hint: VariantHint,
     pub differential_policy: DifferentialPolicy,
-    pub deployment: Option<&'a DeploymentRecord>,
+    /// The previous deployment of this device, required by differential policies.
+    pub deployment: Option<DeploymentRecord>,
 }
 
-impl PreparationOptions<'_> {
+impl PreparationOptions {
     pub fn new(access: ManagementAccessOptions) -> Self {
         Self {
             access,
@@ -104,13 +224,11 @@ impl<'a> Commissioner<'a> {
     }
 }
 
-impl CommissioningCancellation {
-    pub(crate) fn check(&self) -> crate::commissioning::error::DiagnosticResult<()> {
-        if self.is_cancelled() {
-            Err(crate::commissioning::Diagnostic::new("commissioning was cancelled"))
-        } else {
-            Ok(())
-        }
+/// Unit tests record every event in order.
+#[cfg(test)]
+impl CommissioningObserver for Vec<CommissioningEvent> {
+    fn event(&mut self, _device: &(), event: CommissioningEvent) {
+        self.push(event);
     }
 }
 

@@ -112,7 +112,7 @@ impl core::fmt::Debug for ResolvedKeyMaterial {
 
 impl ResolvedKeyMaterial {
     pub fn management_credentials(&self) -> ManagementCredentials<'_> {
-        ManagementCredentials::new(self.serial_number, self.tool_key(), self.fdsk())
+        ManagementCredentials::from_parts(self.serial_number, self.tool_key(), self.fdsk())
     }
 
     /// Credential an offline compile assumes: the first one live acquisition

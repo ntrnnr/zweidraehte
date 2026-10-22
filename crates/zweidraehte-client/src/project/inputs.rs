@@ -4,14 +4,14 @@ use super::product::ProductCache;
 use super::revision::{FileRevision, file_digest};
 use super::{
     BatchSelection, ProgrammingBatchPlan, ProjectCommissioningSession, ProjectMasterData, ProjectPlanner,
-    ProjectProduct, ProjectProgrammingInputs,
+    ProjectProduct, ProjectProgramming, ProjectProgrammingInputs,
 };
 use crate::commissioning::{CommissioningIntent, TargetSelection};
 use crate::project::error::{Error, Result};
 use crate::security::Keyring;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use zweidraehte_project::{AuthoredProject, KeyMaterialSource, NetId, ProjectDeviceId, ProjectStore};
+use zweidraehte_project::{AuthoredProject, NetId, ProjectDeviceId, ProjectStore};
 
 /// Explicit file sources. A fallback catalog cannot replace a package's own
 /// Master Data; keyring passwords and interaction belong to the caller.
@@ -160,8 +160,7 @@ impl ProjectOperationInputs {
         }
         let store = current;
         let keyring = load_keyring()?;
-        let scope =
-            ProjectPlanner::product_scope(store.authored(), request.selected, request.selection, request.intent);
+        let scope = super::product_scope(store.authored(), request.selected, request.selection, request.intent);
         let resources = ProjectResourceCache::default().load(
             store.authored(),
             &scope,
@@ -191,7 +190,7 @@ impl ProjectOperationInputs {
         &self.scope
     }
 
-    pub fn programming_inputs(&self) -> ProjectProgrammingInputs<'_> {
+    pub(crate) fn programming_inputs(&self) -> ProjectProgrammingInputs<'_> {
         ProjectProgrammingInputs {
             products: &self.resources.products,
             master_data: &self.resources.master_data,
@@ -202,21 +201,22 @@ impl ProjectOperationInputs {
     /// Borrow the same inputs for additional inspection. Unlike [`Self::plan`],
     /// the borrowed planner performs no filesystem revision checks.
     pub fn planner(&self) -> ProjectPlanner<'_> {
-        ProjectPlanner::new(
-            self.store.authored(),
-            self.store.state(),
-            &self.resources.products,
-            self.store.keys().map(|keys| keys as &dyn KeyMaterialSource),
-            self.keyring.as_ref(),
-        )
-        .with_master_data(&self.resources.master_data)
+        ProjectPlanner::for_store(self.store.authored(), &self.store, &self.resources.products, self.keyring.as_ref())
+            .with_master_data(&self.resources.master_data)
     }
 
     /// Evaluate this request and recheck its files before returning the plan.
-    pub fn plan(&self) -> Result<ProgrammingBatchPlan> {
+    pub(crate) fn plan(&self) -> Result<ProgrammingBatchPlan> {
         let plan = self.planner().plan_commissioning(&self.selected, self.selection, self.intent)?;
         self.verify_unchanged()?;
         Ok(plan)
+    }
+
+    /// Evaluate this request and bind the plan to these exact inputs, so it
+    /// cannot execute against products or keys loaded for another request.
+    pub fn into_programming(self) -> Result<ProjectProgramming> {
+        let plan = self.plan()?;
+        Ok(ProjectProgramming::new(self, plan))
     }
 
     pub fn state_requirement(&self) -> Option<ProjectSetupRequirement> {
@@ -228,7 +228,7 @@ impl ProjectOperationInputs {
     }
 
     /// Inspect the configured plan, including any explicit target overrides.
-    pub fn requirements(&self, plan: &ProgrammingBatchPlan) -> Vec<ProjectSetupRequirement> {
+    pub(crate) fn requirements(&self, plan: &ProgrammingBatchPlan) -> Vec<ProjectSetupRequirement> {
         let mut requirements: Vec<_> = self.state_requirement().into_iter().collect();
         for device in plan.devices() {
             if device.needs_tool_key_generation() {
@@ -254,7 +254,7 @@ impl ProjectOperationInputs {
 
     /// Retain writer exclusion after checking setup and input revisions.
     /// Initialization and recovery remain explicit caller decisions.
-    pub fn begin_session(&self) -> Result<ProjectCommissioningSession> {
+    pub(crate) fn begin_session(&self) -> Result<ProjectCommissioningSession> {
         if let Some(requirement) = self.state_requirement() {
             return Err(requirement.into());
         }

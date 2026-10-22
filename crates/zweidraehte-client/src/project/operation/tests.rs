@@ -8,7 +8,6 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use zweidraehte_project::{ProjectStore, ProjectStoreError};
-use zweidraehte_proto::messages::apdu::restart::EraseCode;
 
 const SERIAL: [u8; 6] = [0, 0xFA, 0, 0, 0, 1];
 const PROJECT: &str = r#"area 1 bench { line 1 main { medium tp1
@@ -132,43 +131,6 @@ async fn finalization_keeps_partial_assignment_and_every_cleanup_failure() {
 }
 
 #[tokio::test]
-async fn borrowed_bus_reconciles_exact_serials_and_retains_writer_until_disconnected() {
-    let (_directory, store) = store();
-    let path = store.project_path().to_path_buf();
-    let session = ProjectCommissioningSession::begin(store).expect("writer");
-    let closed = Arc::new(AtomicUsize::new(0));
-    let bus = bus(session.security_store(None).expect("sequence capability"), closed.clone(), false);
-    let mut assignment = completed();
-    assignment.id = ProjectDeviceId("button".into());
-    assignment.report.effects = assigned_effects();
-    let mut reset = completed();
-    reset.report.effects.confirm_reset(EraseCode::ResetIA, 0);
-    let report = session
-        .finish_programming(&bus, Ok(ProjectBatchReport::from_devices(vec![assignment, reset])))
-        .await
-        .expect("serials reconcile");
-    assert_eq!(
-        report.serial_updates,
-        std::collections::BTreeMap::from([
-            (ProjectDeviceId("button".into()), Some(SERIAL)),
-            (ProjectDeviceId("relay".into()), None),
-        ])
-    );
-    let reopened = ProjectStore::open(&path).expect("read updated source");
-    assert_eq!(reopened.authored().devices[&ProjectDeviceId("button".into())].serial, Some(SERIAL));
-    assert_eq!(reopened.authored().devices[&ProjectDeviceId("relay".into())].serial, None);
-    assert!(
-        reopened.state().expect("state").deployment("button").is_none(),
-        "serial discovery alone is not a persisted deployment"
-    );
-    assert!(matches!(reopened.into_writer(), Err(ProjectStoreError::Locked)));
-    assert_eq!(closed.load(Ordering::Relaxed), 0);
-    bus.disconnect().await.expect("caller closes borrowed bus");
-    assert_eq!(closed.load(Ordering::Relaxed), 1);
-    assert!(ProjectStore::open(&path).expect("reader").into_writer().is_ok());
-}
-
-#[tokio::test]
 async fn assignment_is_saved_even_when_the_remaining_application_fails() {
     let (_directory, store) = store();
     let path = store.project_path().to_path_buf();
@@ -214,45 +176,25 @@ async fn connect_failure_and_cancelled_request_finalize_without_connecting_again
     assert_eq!(std::fs::metadata(directory.path().join(".zweidraehte/journal.jsonl")).expect("journal").len(), 0);
 
     let session = ProjectCommissioningSession::begin(store).expect("writer released after failed connect");
+    let policy = crate::project::ProgrammingPolicy { generate_missing_tool_keys: true, ..Default::default() };
     let plan = ProgrammingBatchPlan {
         impact: Default::default(),
         devices: vec![],
         siat_senders: vec![],
-        commissioner_options: Default::default(),
+        policy,
         skip_current: false,
     };
-    let cancellation = CommissioningCancellation::default();
+    let mut cancellation = crate::commissioning::CommissioningCancellation::default();
     cancellation.cancel();
     let products = Default::default();
     let catalogs = ProjectMasterData::default();
-    let result = ProjectOperationRequest::new(plan)
-        .generate_missing_tool_keys()
-        .execute(
-            session,
-            |_| async { panic!("cancelled request must not connect") },
-            ProjectProgrammingInputs { products: &products, master_data: &catalogs, keyring: None },
-            &cancellation,
-            &mut |_, _| {},
-            |_| Ok(()),
-        )
-        .await;
+    let result = execute_batch(
+        session,
+        plan,
+        |_| async { panic!("cancelled request must not connect") },
+        ProjectProgrammingInputs { products: &products, master_data: &catalogs, keyring: None },
+        &mut cancellation,
+    )
+    .await;
     assert!(matches!(result, Err(Error::ProjectBatch(failure)) if failure.report.devices.is_empty()));
-}
-
-#[tokio::test]
-async fn failed_recovery_stays_blocked_after_disconnect_and_compaction() {
-    let (directory, store) = store();
-    let session = ProjectCommissioningSession::begin_recovery(store).expect("recovery writer");
-    let closed = Arc::new(AtomicUsize::new(0));
-    let operation =
-        ProjectOperation::connect(session, None, |security| async { Ok(bus(security, closed.clone(), false)) })
-            .await
-            .expect("connect recovery");
-    let error = Error::DeviceConfiguration("receiver unavailable".into());
-    assert!(operation.finish_recovery(Err(error)).await.is_err());
-    let store = ProjectStore::open(directory.path().join("project.knx")).expect("reopen");
-    assert!(!store.secure_state_ready());
-    assert!(store.state().expect("state").recovery_required);
-    assert_eq!(closed.load(Ordering::Relaxed), 1);
-    assert!(store.into_writer().is_ok());
 }

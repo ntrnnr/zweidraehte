@@ -367,7 +367,7 @@ async fn successful_secure_sync_selects_fdsk_without_probing_dd0() {
         let disconnect = mock.recv().await;
         assert_eq!(KnxMessageBuffer::from_buffer(disconnect.as_slice()).get_tpci(), Some(Tpci::Disconnect));
     });
-    let keys = ManagementCredentials::new(Some(SERIAL), None, Some(&FDSK));
+    let keys = ManagementCredentials::for_serial(SERIAL).with_fdsk(&FDSK);
 
     let (connection, access) =
         bus.connect_management(device_ia(), keys, false).await.expect("verified FDSK opens management access");
@@ -902,7 +902,7 @@ async fn credential_fallback_synchronizes_tool_key_then_fdsk() {
         mock
     });
 
-    let keys = ManagementCredentials::new(Some(SERIAL), Some(&STALE_TOOL_KEY), Some(&FDSK));
+    let keys = ManagementCredentials::for_serial(SERIAL).with_tool_key(&STALE_TOOL_KEY).with_fdsk(&FDSK);
     let (connection, access) =
         bus.connect_management(device_ia(), keys, false).await.expect("FDSK fallback opens management access");
     assert_eq!(access, ManagementCredential::Fdsk);

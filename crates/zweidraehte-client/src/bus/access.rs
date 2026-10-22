@@ -22,7 +22,40 @@ pub struct ManagementCredentials<'a> {
 }
 
 impl<'a> ManagementCredentials<'a> {
-    pub fn new(serial_number: Option<[u8; 6]>, tool_key: Option<&'a [u8; 16]>, fdsk: Option<&'a [u8; 16]>) -> Self {
+    /// No secure credential: only plaintext access remains, where permitted.
+    pub fn plaintext() -> Self {
+        Self { serial_number: None, tool_key: None, fdsk: None }
+    }
+
+    /// Credentials for the device with this serial number. Secure session
+    /// establishment needs it; add the device's keys with
+    /// [`with_tool_key`](Self::with_tool_key) and [`with_fdsk`](Self::with_fdsk).
+    ///
+    /// ```
+    /// # use zweidraehte_client::ManagementCredentials;
+    /// # let (serial_number, tool_key, factory_key) = ([0x00, 0xFA, 0, 0, 0, 1], [0x11; 16], [0x22; 16]);
+    /// let credentials = ManagementCredentials::for_serial(serial_number).with_tool_key(&tool_key).with_fdsk(&factory_key);
+    /// ```
+    pub fn for_serial(serial_number: [u8; 6]) -> Self {
+        Self { serial_number: Some(serial_number), ..Self::plaintext() }
+    }
+
+    /// The installed Tool Key, tried first.
+    pub fn with_tool_key(self, tool_key: &'a [u8; 16]) -> Self {
+        Self { tool_key: Some(tool_key), ..self }
+    }
+
+    /// The factory default setup key, tried when the Tool Key is absent or rejected.
+    pub fn with_fdsk(self, fdsk: &'a [u8; 16]) -> Self {
+        Self { fdsk: Some(fdsk), ..self }
+    }
+
+    /// Resolved key material, where each part may be missing.
+    pub(crate) fn from_parts(
+        serial_number: Option<[u8; 6]>,
+        tool_key: Option<&'a [u8; 16]>,
+        fdsk: Option<&'a [u8; 16]>,
+    ) -> Self {
         Self { serial_number, tool_key, fdsk }
     }
 

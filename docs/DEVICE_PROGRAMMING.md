@@ -816,15 +816,13 @@ values are valid. Verified decisions capture the exact prepared set again.
 candidates after the load, presence-probe them, and persist every required plus
 present optional stamp for the next download.
 
-`ProgrammingBatchPlan::prepare` prepares every device in the deterministic
-batch before the first mutation. Construct each planner from a short-lived
-snapshot; queued devices are replanned after preceding results are persisted. A
+Construct each planner from a short-lived snapshot; queued devices are
+replanned after preceding results are persisted. A
 `ProjectCommissioningSession` owns the project store and lock through journal
 updates and final compaction, so a frontend cannot release the lock early.
-CLI and TUI use `ProjectCommissioningSession::program_queued`: it replans each
-stable target from the latest persisted state, prepares it, executes it, and
-records its result before proceeding. Explicit prepared batches remain available
-to callers needing all preflight before the first mutation. Retained writable
+CLI and TUI use `ProjectProgramming::execute`: it replans each stable target
+from the latest persisted state, prepares it, lets the observer approve it,
+executes it, and records its result before proceeding. Retained writable
 security adapters keep the same lock alive after the session is finished or dropped.
 The journal fsyncs and applies one factual `RecordCommissioningOutcome` per
 physical result. If persisting that outcome fails, the batch retains the

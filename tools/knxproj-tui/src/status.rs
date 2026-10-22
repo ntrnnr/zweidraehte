@@ -4,7 +4,7 @@ use crate::error_message;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use zweidraehte_client::cli::SecurityArgs;
-use zweidraehte_client::project::{ProgrammingSnapshot, ProjectStatusCache, ProjectStatusInputs, ProjectStatusRequest};
+use zweidraehte_client::project::{ProgrammingSnapshot, ProjectStatusCache, ProjectStatusRequest};
 use zweidraehte_project::AuthoredProject;
 
 pub(crate) struct StatusRefreshJob {
@@ -41,20 +41,21 @@ fn calculate(job: &mut StatusRefreshJob, tx: &Sender<StatusRefreshMsg>) -> Resul
         master_data: job.master_data.as_deref(),
         keyring_path: job.security.as_ref().and_then(SecurityArgs::keyring_path),
     };
-    let inputs = ProjectStatusInputs::load(
-        request,
-        &mut job.cache,
-        || job.security.as_ref().map_or(Ok(None), SecurityArgs::load_keyring).map_err(Into::into),
-        |id, completed, total| {
-            let _ = tx.send(StatusRefreshMsg::Progress {
-                generation: job.generation,
-                label: format!("Loading product for {id}"),
-                completed,
-                total: total + 1,
-            });
-        },
-    )
-    .map_err(|error| error_message(&error))?;
+    let inputs = job
+        .cache
+        .load(
+            request,
+            || job.security.as_ref().map_or(Ok(None), SecurityArgs::load_keyring).map_err(Into::into),
+            |id, completed, total| {
+                let _ = tx.send(StatusRefreshMsg::Progress {
+                    generation: job.generation,
+                    label: format!("Loading product for {id}"),
+                    completed,
+                    total: total + 1,
+                });
+            },
+        )
+        .map_err(|error| error_message(&error))?;
     let _ = tx.send(StatusRefreshMsg::Progress {
         generation: job.generation,
         label: "Comparing desired and programmed data".into(),
