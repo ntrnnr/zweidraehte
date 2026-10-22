@@ -374,7 +374,7 @@ pub(super) fn programming_input(
         intent,
         options,
     )
-    .facts(ProgrammingFacts { target: Some(network), data_security: ObservedDataSecurity::Disabled })
+    .with_facts(ProgrammingFacts { target: Some(network), data_security: ObservedDataSecurity::Disabled })
 }
 
 pub(super) fn compile_options(_restart_kind: RestartKind) -> CompileOptions {

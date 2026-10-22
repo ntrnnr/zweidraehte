@@ -10,8 +10,6 @@ use crate::commissioning::compiler::selection::RecipeSet;
 #[cfg(test)]
 use crate::commissioning::compiler::selection::{ProcedureApplicability, ProcedureRequest};
 use crate::commissioning::error::CompileError;
-#[cfg(test)]
-use crate::commissioning::input::security::DesiredDataSecurity;
 /// Contribution name of the generated IP service-family security controls.
 /// Operand binding removes them as dormant on explicitly plain management.
 pub(in crate::commissioning) const IP_SECURE_CONFIGURATION_CONTRIBUTION: &str = "standard-ip-secure-configuration";
@@ -183,14 +181,8 @@ fn fixture_input(
     crate::commissioning::ProgrammingInput::new(
         device,
         CommissioningIntent::Download(DownloadMode::Full),
-        CompileOptions {
-            target: TargetSelection::ExistingAddress(configuration.individual_address()),
-            automatic_sections: None,
-            progress_messages_by_reference: Default::default(),
-            progress_messages_by_id: Default::default(),
-        },
+        CompileOptions::new(TargetSelection::ExistingAddress(configuration.individual_address())),
     )
-    .data_security(DesiredDataSecurity::Enabled)
 }
 
 #[cfg(test)]

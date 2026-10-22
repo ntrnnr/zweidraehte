@@ -164,7 +164,7 @@ impl<'a> ProgramCompiler<'a> {
             let mut requirements = self.profile.image_requirements()?;
             if input.device().product().supports_data_secure()
                 && input.desired_data_security() == DesiredDataSecurity::Disabled
-                && input.observed_facts().data_security == ObservedDataSecurity::Unknown
+                && input.facts().data_security == ObservedDataSecurity::Unknown
             {
                 requirements.push(ImageRequirement::DataSecurityMode);
             }

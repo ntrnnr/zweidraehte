@@ -64,12 +64,7 @@ fn image_input(
         } else {
             CommissioningIntent::Download(DownloadMode::Full)
         },
-        CompileOptions {
-            target: TargetSelection::ExistingAddress(configuration.individual_address()),
-            automatic_sections: None,
-            progress_messages_by_reference: Default::default(),
-            progress_messages_by_id: Default::default(),
-        },
+        CompileOptions::new(TargetSelection::ExistingAddress(configuration.individual_address())),
     )
 }
 

@@ -29,7 +29,7 @@ fn plain_management_binds_public_ip_settings_with_dormant_security_controls() {
     use crate::bus::access::ManagementCredential;
     use crate::commissioning::input::ProgramSections;
     use crate::commissioning::{
-        CommissioningIntent, DesiredDataSecurity, DownloadMode, ObservedDataSecurity, ObservedTarget, ProgrammingFacts,
+        CommissioningIntent, DownloadMode, ObservedDataSecurity, ObservedTarget, ProgrammingFacts,
     };
 
     let product = product(true);
@@ -53,8 +53,7 @@ fn plain_management_binds_public_ip_settings_with_dormant_security_controls() {
         credential: ManagementCredential::Plaintext,
     };
     let mut input = super::super::fixture_input(&product, &configuration, None, None)
-        .data_security(DesiredDataSecurity::Disabled)
-        .facts(ProgrammingFacts { target: Some(target), data_security: ObservedDataSecurity::Disabled });
+        .with_facts(ProgrammingFacts { target: Some(target), data_security: ObservedDataSecurity::Disabled });
     input.intent = CommissioningIntent::Download(DownloadMode::Partial(ProgramSections::CONFIGURATION));
     let mut compiler = super::super::fixture_compiler(&input, &profile);
     compiler.select_controls().expect("configuration-only source");
@@ -94,7 +93,7 @@ fn configuration_only_ip_controls_frame_the_selected_empty_source_and_restart() 
     use crate::commissioning::compiler::selection::RecipeSet;
     use crate::commissioning::input::ProgramSections;
     use crate::commissioning::procedure::ProcedureSourceId;
-    use crate::commissioning::{CommissioningIntent, DesiredDataSecurity, DownloadMode, RestartKind};
+    use crate::commissioning::{CommissioningIntent, DownloadMode, RestartKind};
 
     // Native configuration-only compilation starts with no application source.
     // Its IP task requests a restart, then final session correction frames the
@@ -116,8 +115,7 @@ fn configuration_only_ip_controls_frame_the_selected_empty_source_and_restart() 
         let configuration = configuration(&product, intent);
         prepare_classic_ip_profile(&mut profile, &product, configuration.topology().ip.as_ref())
             .expect("standard OT11 facts resolve");
-        let mut input = super::super::fixture_input(&product, &configuration, None, None)
-            .data_security(DesiredDataSecurity::Disabled);
+        let mut input = super::super::fixture_input(&product, &configuration, None, None);
         input.intent = CommissioningIntent::Download(DownloadMode::Partial(ProgramSections::CONFIGURATION));
         let mut compiler = super::super::fixture_compiler(&input, &profile);
         compiler.select_controls().expect("configuration-only source selection resolves");
@@ -155,7 +153,7 @@ fn generated_ip_controls_keep_their_own_guards_under_keyed_source_selection() {
     use crate::commissioning::compiler::selection::RecipeSet;
     use crate::commissioning::input::ProgramSections;
     use crate::commissioning::{
-        CommissioningIntent, DesiredDataSecurity, DownloadMode, ObservedDataSecurity, ObservedTarget, ProgrammingFacts,
+        CommissioningIntent, DownloadMode, ObservedDataSecurity, ObservedTarget, ProgrammingFacts,
     };
 
     let product = product(true);
@@ -181,8 +179,7 @@ fn generated_ip_controls_keep_their_own_guards_under_keyed_source_selection() {
         let target =
             ObservedTarget { previous_address: configuration.individual_address(), serial_number: None, credential };
         let mut input = super::super::fixture_input(&product, &configuration, None, None)
-            .data_security(DesiredDataSecurity::Disabled)
-            .facts(ProgrammingFacts { target: Some(target), data_security: ObservedDataSecurity::Disabled });
+            .with_facts(ProgrammingFacts { target: Some(target), data_security: ObservedDataSecurity::Disabled });
         input.intent = CommissioningIntent::Download(DownloadMode::Partial(ProgramSections::CONFIGURATION));
         let mut compiler = super::super::fixture_compiler(&input, &profile);
         compiler.select_controls().expect("configuration source selection resolves");
@@ -216,7 +213,7 @@ fn generated_ip_controls_keep_their_own_guards_under_keyed_source_selection() {
 #[test]
 fn authored_ip_property_writes_take_the_configured_feature_image() {
     use crate::bus::access::ManagementCredential;
-    use crate::commissioning::{DesiredDataSecurity, ObservedDataSecurity, ObservedTarget, ProgrammingFacts};
+    use crate::commissioning::{ObservedDataSecurity, ObservedTarget, ProgrammingFacts};
 
     let procedures = r#"<LoadProcedures><LoadProcedure>
         <LdCtrlConnect /><LdCtrlWriteProp ObjType="11" PropId="76" Verify="false" /><LdCtrlDisconnect />
@@ -236,8 +233,7 @@ fn authored_ip_property_writes_take_the_configured_feature_image() {
         credential: ManagementCredential::Plaintext,
     };
     let input = super::super::fixture_input(&product, &configuration, None, None)
-        .data_security(DesiredDataSecurity::Disabled)
-        .facts(ProgrammingFacts { target: Some(target), data_security: ObservedDataSecurity::Disabled });
+        .with_facts(ProgrammingFacts { target: Some(target), data_security: ObservedDataSecurity::Disabled });
     let mut compiler = super::super::fixture_compiler(&input, &profile);
     compiler.select_controls().expect("product procedure selection");
     compiler.build_image().expect("IP feature image");

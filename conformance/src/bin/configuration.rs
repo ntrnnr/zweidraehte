@@ -28,7 +28,6 @@
 //! the client library on the other side uses real spec timers, so a
 //! time-scaled DUT would disconnect mid-procedure.
 
-use std::collections::BTreeMap;
 use std::env;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -121,12 +120,9 @@ async fn commission_operation_with_sections(
         ..CommissionerOptions::default()
     });
     let expected_target = target.clone();
-    let input = ProgrammingInput::new(device, intent, CompileOptions {
-        target,
-        automatic_sections,
-        progress_messages_by_reference: BTreeMap::new(),
-        progress_messages_by_id: BTreeMap::new(),
-    });
+    let mut compile_options = CompileOptions::new(target);
+    compile_options.automatic_sections = automatic_sections;
+    let input = ProgrammingInput::new(device, intent, compile_options);
     let options = PreparationOptions::new(ManagementAccessOptions::new().allow_plaintext(allow_plaintext));
     let cancellation = CommissioningCancellation::default();
 

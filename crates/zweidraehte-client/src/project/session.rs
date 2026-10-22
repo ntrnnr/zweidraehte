@@ -3,8 +3,8 @@
 use crate::KnxBus;
 use crate::commissioning::{
     Commissioner, CommissionerOptions, CommissioningCancellation, CommissioningEvent, CommissioningIntent,
-    CompileOptions, DifferentialPolicy, DownloadMode, ExecutionReport, ManagementAccessOptions, PreparationOptions,
-    PreparedProgram, ProgrammingInput, TargetSelection,
+    DifferentialPolicy, ExecutionReport, ManagementAccessOptions, PreparationOptions, PreparedProgram,
+    ProgrammingInput, TargetSelection,
 };
 use crate::configuration::ResolvedKeyMaterial;
 use crate::project::error::{Error, Result};
@@ -354,14 +354,7 @@ impl ProgrammingBatchPlan {
             let mut preparation = PreparationOptions::new(credentials);
             preparation.differential_policy = differential_policy;
             preparation.deployment = deployment.as_ref();
-            let automatic_sections =
-                (intent.download_mode() == Some(DownloadMode::Automatic)).then(|| planned.automatic_program_sections());
-            let input = ProgrammingInput::new(planned.device.clone(), intent, CompileOptions {
-                target,
-                automatic_sections,
-                progress_messages_by_reference: BTreeMap::new(),
-                progress_messages_by_id: BTreeMap::new(),
-            });
+            let input = ProgrammingInput::new(planned.device.clone(), intent, planned.compile_options(intent, target));
 
             let id = planned.id.clone();
             let mut device_progress = |event| progress(&id, event);
@@ -570,6 +563,7 @@ pub struct ProjectProgrammingInputs<'a> {
 #[cfg(test)]
 mod queue_tests {
     use super::*;
+    use crate::commissioning::DownloadMode;
     use crate::project::{BatchSelection, ProjectPlanner};
 
     #[test]

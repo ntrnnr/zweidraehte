@@ -24,7 +24,6 @@ use zweidraehte_client::commissioning::{
     DifferentialFallback, DifferentialPolicy, DownloadMode, ImageSpace, ProfileSelection, ProgrammingModePolling,
     TargetSelection, UnloadMode,
 };
-use zweidraehte_client::commissioning::{CompileOptions, ManagementCredential, ObservedTarget, ProgrammingFacts};
 use zweidraehte_client::{BusTarget, MaskVersion};
 use zweidraehte_ets_files::archive::{
     PackageCatalogLeaf, PackageCatalogOnlyReason, PackageInstantiation, PackageInstantiationBlock, PackageStore,
@@ -1531,43 +1530,9 @@ fn compile_offline(
         .device()
         .resolve_profile(&ProfileSelection::discovered(device_mask.unwrap_or(product_mask).as_u16()))
         .context("while attempting to resolve the exact offline programming profile")?;
-    let automatic_sections = matches!(
-        intent,
-        CommissioningIntent::Download(DownloadMode::Automatic)
-            | CommissioningIntent::AssignAddressAndDownload(DownloadMode::Automatic)
-    )
-    .then(|| planned.automatic_program_sections());
-    // An offline preview selects a credential scenario from the available
-    // keys. Live preparation independently authenticates the actual target.
-    // Desired application security never determines management access.
-    let keys = planned.device().key_material();
-    let credential = if keys.tool_key().is_some() {
-        ManagementCredential::ToolKey
-    } else if keys.fdsk().is_some() {
-        ManagementCredential::Fdsk
-    } else {
-        ManagementCredential::Plaintext
-    };
-    let facts = ProgrammingFacts {
-        target: Some(ObservedTarget {
-            previous_address: planned.device().individual_address(),
-            serial_number: planned.serial_number(),
-            credential,
-        }),
-        data_security: planned.observed_data_security(),
-    };
-
-    let options = CompileOptions {
-        target: TargetSelection::ExistingAddress(planned.device().individual_address()),
-        automatic_sections,
-        progress_messages_by_reference: BTreeMap::new(),
-        progress_messages_by_id: BTreeMap::new(),
-    };
-
-    let plan = planned
-        .compile_preview(&profile, intent, options, facts)
-        .context("while attempting to compile the commissioning plan")?;
-    Ok(plan)
+    // The planned device derives the automatic section set, an offline
+    // credential and its last recorded security mode itself.
+    planned.compile_preview(&profile, intent).context("while attempting to compile the commissioning plan")
 }
 
 fn print_compiled(planned: &PlannedProjectDevice, compiled: &zweidraehte_client::commissioning::CompiledProgram) {

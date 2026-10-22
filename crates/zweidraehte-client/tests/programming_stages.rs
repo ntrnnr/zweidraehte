@@ -1,6 +1,5 @@
 //! Public compile and preview tests use complete product and target fixtures.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use zweidraehte_client::IndividualAddress;
 use zweidraehte_client::commissioning::ImageLocation;
@@ -75,12 +74,7 @@ fn fixture_catalog(xml: &str) -> (Arc<MasterData>, ProfileSelection, Materialize
         product.bind_master_data(Arc::clone(&catalog)).expect("fixture document binds"),
         EncodedConfiguration::default(),
     );
-    let options = CompileOptions {
-        target: TargetSelection::ExistingAddress(ADDRESS),
-        automatic_sections: None,
-        progress_messages_by_reference: BTreeMap::new(),
-        progress_messages_by_id: BTreeMap::new(),
-    };
+    let options = CompileOptions::new(TargetSelection::ExistingAddress(ADDRESS));
     (catalog, selection, device, options)
 }
 
@@ -92,11 +86,10 @@ fn management_credentials_do_not_change_authored_control_guards() {
             target: Some(ObservedTarget { credential, ..plain_facts().target.expect("fixture has target evidence") }),
             data_security: ObservedDataSecurity::Disabled,
         };
-        let input = ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options)
-            .data_security(DesiredDataSecurity::Disabled)
-            .facts(facts);
+        let input =
+            ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options).with_facts(facts);
 
-        assert_eq!(input.observed_facts(), facts);
+        assert_eq!(input.facts(), facts);
 
         input.preview(&resolve(&input, &selection)).expect("disabled application image compiles");
         let program = input.compile(&resolve(&input, &selection)).expect("selected management credential lowers");
@@ -118,7 +111,7 @@ fn management_credentials_do_not_change_authored_control_guards() {
 fn a_requested_address_does_not_implicitly_select_plaintext_management() {
     let (_catalog, selection, device, options) = fixture();
     let input = ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options);
-    assert_eq!(input.observed_facts(), ProgrammingFacts::default());
+    assert_eq!(input.facts(), ProgrammingFacts::default());
 
     let image = input.preview(&resolve(&input, &selection)).expect("image remains inspectable");
     assert!(!image.image().is_empty());
@@ -177,8 +170,8 @@ fn selected_candidate_resolves_choices_merges_and_scope_before_image() {
         value: ProcedureParameterValue::Unsigned(9),
     });
     let device = self::device(product.bind_master_data(Arc::clone(&catalog)).expect("fixture document binds"), encoded);
-    let input =
-        ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options).facts(plain_facts());
+    let input = ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options)
+        .with_facts(plain_facts());
 
     input.preview(&resolve(&input, &selection)).expect("unselected property needs no image facts");
     let program = input.compile(&resolve(&input, &selection)).expect("flat recipe binds the declared placement");
@@ -210,7 +203,7 @@ fn unload_probe_uses_selected_branch_and_declared_placement() {
     });
     let device = self::device(product.bind_master_data(Arc::clone(&catalog)).expect("fixture document binds"), encoded);
     let input = ProgrammingInput::new(device, CommissioningIntent::Unload(UnloadMode::Application), options)
-        .facts(plain_facts());
+        .with_facts(plain_facts());
 
     let imaged = input.preview(&resolve(&input, &selection)).expect("probe clips to the declared four-byte segment");
     assert_eq!(
@@ -240,7 +233,7 @@ fn unload_comparison_of_a_prior_read_requires_no_desired_image_bytes() {
     let device = fixture_catalog(&source).2;
     let selection = ProfileSelection::discovered(0x0012).with_management_style(ResourceManagementStyle::Simple);
     let input = ProgrammingInput::new(device, CommissioningIntent::Unload(UnloadMode::Application), options)
-        .facts(plain_facts());
+        .with_facts(plain_facts());
 
     let imaged = input.preview(&resolve(&input, &selection)).expect("no desired product bytes are needed");
     assert!(imaged.image().is_empty());
@@ -286,7 +279,7 @@ fn disabled_security_requires_observation_only_when_group_scope_is_selected() {
             options.automatic_sections = Some(sections);
             let input =
                 ProgrammingInput::new(device.clone(), CommissioningIntent::Download(DownloadMode::Automatic), options)
-                    .facts(ProgrammingFacts { data_security: mode, ..plain_facts() });
+                    .with_facts(ProgrammingFacts { data_security: mode, ..plain_facts() });
 
             input.preview(&resolve(&input, &selection)).expect("disabled desired security has no image writes");
 
@@ -326,8 +319,8 @@ fn plain_facts() -> ProgrammingFacts {
 #[test]
 fn preview_and_compile_share_the_desired_image() {
     let (_, selection, device, options) = fixture();
-    let input =
-        ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options).facts(plain_facts());
+    let input = ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options)
+        .with_facts(plain_facts());
     let image = input.preview(&resolve(&input, &selection)).expect("desired image compiles");
     let program = input.compile(&resolve(&input, &selection)).expect("program compiles");
     assert_eq!(image.image(), program.image());
@@ -342,7 +335,7 @@ fn one_compiler_uses_each_products_exact_document_even_with_the_same_schema() {
             .replace("<LdCtrlDisconnect />", &format!("<LdCtrlDelay MilliSeconds=\"{delay}\" /><LdCtrlDisconnect />"));
         let (catalog, selection, device, options) = fixture_catalog(&source);
         let input = ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options)
-            .facts(plain_facts());
+            .with_facts(plain_facts());
 
         let program = input.compile(&resolve(&input, &selection)).expect("product supplies its own catalog");
         assert!(program.procedure().expect("download procedure").steps.iter().any(|step| {
@@ -370,8 +363,8 @@ fn loose_input_requires_an_associated_document_before_resolution() {
 #[test]
 fn compilation_refuses_a_profile_resolved_for_another_target() {
     let (catalog, selection, device, options) = fixture();
-    let input =
-        ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options).facts(plain_facts());
+    let input = ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options)
+        .with_facts(plain_facts());
 
     // An audit profile made from Master Data alone skipped every
     // product-dependent choice, so it cannot stand in for this product's.

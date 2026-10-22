@@ -74,12 +74,7 @@ impl KeyState for Keyed {
 ///     InstallationConfiguration::new(address),
 ///     EncodedConfiguration::default(),
 /// );
-/// let options = CompileOptions {
-///     target: TargetSelection::ExistingAddress(address),
-///     automatic_sections: None,
-///     progress_messages_by_reference: Default::default(),
-///     progress_messages_by_id: Default::default(),
-/// };
+/// let options = CompileOptions::new(TargetSelection::ExistingAddress(address));
 /// // Fails: `ProgrammingInput::new` takes a `MaterializedDevice<Keyed>`; an
 /// // unkeyed device must pass through `into_keyed` first.
 /// let _ = ProgrammingInput::new(unkeyed, CommissioningIntent::Download(DownloadMode::Full), options);

@@ -278,19 +278,49 @@ impl PlannedProjectDevice {
         }
     }
 
+    /// Options for `intent` at `target`. An automatic download receives the
+    /// planner's section set; every other intent must carry none.
+    pub(crate) fn compile_options(&self, intent: CommissioningIntent, target: TargetSelection) -> CompileOptions {
+        let mut options = CompileOptions::new(target);
+        options.automatic_sections =
+            (intent.download_mode() == Some(DownloadMode::Automatic)).then(|| self.automatic_program_sections());
+        options
+    }
+
     /// Compile the same IP-Secure-aware, non-secret plan used by prepared
     /// commissioning without exposing the private credential payload.
     ///
+    /// The target is assumed at the device's own address, reached with the
+    /// credential [`ProgrammingFacts::offline_from`] selects, in the last
+    /// recorded application security mode.
+    ///
     /// `profile` must be resolved for this device, for example with
     /// `self.device().resolve_profile(..)`.
+    ///
+    /// [`ProgrammingFacts::offline_from`]: crate::commissioning::ProgrammingFacts::offline_from
     pub fn compile_preview(
+        &self,
+        profile: &ResolvedProfile,
+        intent: CommissioningIntent,
+    ) -> core::result::Result<CompiledProgram, ProjectPlanPreviewError> {
+        let options = self.compile_options(intent, TargetSelection::ExistingAddress(self.device.individual_address()));
+        let facts = crate::commissioning::ProgrammingFacts {
+            data_security: self.observed_data_security(),
+            ..crate::commissioning::ProgrammingFacts::offline_from(&self.device)
+        };
+        self.compile_preview_with(profile, intent, options, facts)
+    }
+
+    /// [`Self::compile_preview`] with caller-supplied options and facts, for
+    /// adapters that observed the target or need translated messages.
+    pub fn compile_preview_with(
         &self,
         profile: &ResolvedProfile,
         intent: CommissioningIntent,
         options: CompileOptions,
         facts: crate::commissioning::ProgrammingFacts,
     ) -> core::result::Result<CompiledProgram, ProjectPlanPreviewError> {
-        let input = crate::commissioning::ProgrammingInput::new(self.device.clone(), intent, options).facts(facts);
+        let input = crate::commissioning::ProgrammingInput::new(self.device.clone(), intent, options).with_facts(facts);
         Ok(input.compile(profile)?)
     }
 }
@@ -808,14 +838,12 @@ impl MaterializedDevice {
         let input = ProgrammingInput::new(
             self.clone(),
             CommissioningIntent::Download(DownloadMode::Automatic),
-            CompileOptions {
-                target: TargetSelection::ExistingAddress(authored.address),
-                automatic_sections: None,
-                progress_messages_by_reference: BTreeMap::new(),
-                progress_messages_by_id: BTreeMap::new(),
-            },
+            CompileOptions::new(TargetSelection::ExistingAddress(authored.address)),
         )
-        .facts(crate::commissioning::ProgrammingFacts { data_security: observed_data_security, ..Default::default() });
+        .with_facts(crate::commissioning::ProgrammingFacts {
+            data_security: observed_data_security,
+            ..Default::default()
+        });
         input
             .preview(&profile)
             .map_err(|error| Error::DeviceConfiguration(format!("could not compile `{id}` status: {error}")))

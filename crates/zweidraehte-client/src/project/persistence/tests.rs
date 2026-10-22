@@ -367,7 +367,7 @@ pub(in crate::project) fn persistence_fixture(intent: CommissioningIntent) -> (P
         progress_messages_by_reference: BTreeMap::new(),
         progress_messages_by_id: BTreeMap::new(),
     })
-    .facts(crate::commissioning::ProgrammingFacts::new(crate::commissioning::ObservedTarget {
+    .with_facts(crate::commissioning::ProgrammingFacts::new(crate::commissioning::ObservedTarget {
         previous_address: address,
         serial_number: None,
         credential: crate::commissioning::ManagementCredential::Plaintext,

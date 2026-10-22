@@ -103,7 +103,7 @@ pub(in crate::commissioning) fn programming_input(
         intent,
         options,
     )
-    .facts(ProgrammingFacts { target: Some(network_observations), data_security: ObservedDataSecurity::Disabled })
+    .with_facts(ProgrammingFacts { target: Some(network_observations), data_security: ObservedDataSecurity::Disabled })
 }
 
 pub(in crate::commissioning) fn rf_topology() -> TopologyConfiguration {

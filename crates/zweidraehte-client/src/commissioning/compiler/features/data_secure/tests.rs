@@ -32,7 +32,11 @@ fn desired_image(
     let project = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 10), Some(15));
     let security = configured.then(SecurityConfig::default);
     let configuration = project.with_com_objects(product.com_objects().to_vec());
-    let input = super::super::fixture_input(&product, &configuration, security.as_ref(), None).data_security(desired);
+    // The public input derives the desired mode from the key material, so it
+    // cannot contradict the tables. Force it here to exercise the stage's own
+    // contradiction checks.
+    let mut input = super::super::fixture_input(&product, &configuration, security.as_ref(), None);
+    input.desired_data_security = desired;
     let mut compiler = super::super::fixture_compiler(&input, &profile());
     compiler.feature_sections =
         if selected { ProgramSections::GROUP_COMMUNICATION } else { ProgramSections::PARAMETERS };
@@ -118,8 +122,7 @@ fn disabled_security_owns_flags_but_transfers_only_with_keyed_management() {
         let target =
             ObservedTarget { previous_address: configuration.individual_address(), serial_number: None, credential };
         let input = super::super::fixture_input(&product, &configuration, None, None)
-            .data_security(DesiredDataSecurity::Disabled)
-            .facts(ProgrammingFacts { target: Some(target), data_security: ObservedDataSecurity::Disabled });
+            .with_facts(ProgrammingFacts { target: Some(target), data_security: ObservedDataSecurity::Disabled });
         let mut compiler = super::super::fixture_compiler(&input, &profile);
         compiler.contribute_data_secure().expect("disabled security compiles");
         let image = compiler.image.image;
@@ -237,8 +240,7 @@ fn disabled_security_empty_effective_roster_has_no_flags() {
     let product = ProductData::from_mtxml_str(SYSTEM7_MTXML).expect("fixture parses").with_fixture_data_secure(true);
     assert!(!product.com_object_numbers().is_empty());
     let configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 10), Some(15));
-    let input =
-        super::super::fixture_input(&product, &configuration, None, None).data_security(DesiredDataSecurity::Disabled);
+    let input = super::super::fixture_input(&product, &configuration, None, None);
     let mut compiler = super::super::fixture_compiler(&input, &profile());
     compiler.contribute_data_secure().expect("empty roster has no security flags");
     assert!(compiler.image.image.is_empty());
@@ -504,12 +506,10 @@ fn security_preserves_native_source_cursor_order() {
     for enabled in [false, true] {
         let input = if enabled {
             super::super::fixture_input(&product, &keyed_configuration, Some(&security), None)
-                .data_security(DesiredDataSecurity::Enabled)
         } else {
             super::super::fixture_input(&product, &configuration, None, None)
-                .data_security(DesiredDataSecurity::Disabled)
         }
-        .facts(ProgrammingFacts { target: Some(target), data_security: ObservedDataSecurity::Disabled });
+        .with_facts(ProgrammingFacts { target: Some(target), data_security: ObservedDataSecurity::Disabled });
 
         for &(names, expected) in cases {
             let expected: Vec<&str> = expected

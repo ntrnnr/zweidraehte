@@ -4,7 +4,7 @@
 //! installation adapter. These values retain one set of application tables and
 //! lend management credentials to the bus without teaching it project policy.
 
-use crate::bus::access::ManagementCredentials;
+use crate::bus::access::{ManagementCredential, ManagementCredentials};
 use std::collections::BTreeMap;
 use std::num::NonZeroU8;
 use zweidraehte_project::KeyMetadata;
@@ -113,6 +113,21 @@ impl core::fmt::Debug for ResolvedKeyMaterial {
 impl ResolvedKeyMaterial {
     pub fn management_credentials(&self) -> ManagementCredentials<'_> {
         ManagementCredentials::new(self.serial_number, self.tool_key(), self.fdsk())
+    }
+
+    /// Credential an offline compile assumes: the first one live acquisition
+    /// would try, in Tool Key then FDSK order, else plaintext.
+    ///
+    /// Live preparation authenticates the actual target independently.
+    /// Desired application security never selects management access.
+    pub fn offline_credential(&self) -> ManagementCredential {
+        if self.tool_key.is_some() {
+            ManagementCredential::ToolKey
+        } else if self.fdsk.is_some() {
+            ManagementCredential::Fdsk
+        } else {
+            ManagementCredential::Plaintext
+        }
     }
 
     pub fn with_serial_number(mut self, serial_number: [u8; 6]) -> Self {

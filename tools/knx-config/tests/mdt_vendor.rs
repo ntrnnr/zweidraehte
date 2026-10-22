@@ -424,22 +424,19 @@ fn compile_plan(
     intent: CommissioningIntent,
     automatic_sections: Option<ProgramSections>,
 ) -> CompiledProgram {
-    let input = ProgrammingInput::new(device.clone(), intent, CompileOptions {
-        target: TargetSelection::ExistingAddress(device.individual_address()),
-        automatic_sections,
-        progress_messages_by_reference: BTreeMap::new(),
-        progress_messages_by_id: BTreeMap::new(),
-    })
-    // This compiler-only fixture models an already-disabled application and
-    // explicit plain management; it does not observe or contact vendor hardware.
-    .facts(ProgrammingFacts {
-        target: Some(ObservedTarget {
-            previous_address: device.individual_address(),
-            serial_number: None,
-            credential: ManagementCredential::Plaintext,
-        }),
-        data_security: ObservedDataSecurity::Disabled,
-    });
+    let mut options = CompileOptions::new(TargetSelection::ExistingAddress(device.individual_address()));
+    options.automatic_sections = automatic_sections;
+    let input = ProgrammingInput::new(device.clone(), intent, options)
+        // This compiler-only fixture models an already-disabled application and
+        // explicit plain management; it does not observe or contact vendor hardware.
+        .with_facts(ProgrammingFacts {
+            target: Some(ObservedTarget {
+                previous_address: device.individual_address(),
+                serial_number: None,
+                credential: ManagementCredential::Plaintext,
+            }),
+            data_security: ObservedDataSecurity::Disabled,
+        });
     // A fixed-width System B table declares its own row width; record it as
     // the observation a live target would supply.
     let declared = match profile

@@ -37,6 +37,11 @@ impl ProgrammingInput {
         ProgramCompiler::new(self, profile)?.compile()
     }
 
+    /// Desired Data Secure has one owner: the device's resolved key material.
+    /// Application tables enable it and their absence disables it, for every
+    /// intent that replaces group communication; other intents preserve the
+    /// device's current mode. Callers express "disabled" by resolving no
+    /// application tables, never by overriding a derived mode.
     pub fn new(device: MaterializedDevice, intent: CommissioningIntent, options: CompileOptions) -> Self {
         let desired_data_security = {
             let updates_security = intent.updates_group_communication();
@@ -62,19 +67,14 @@ impl ProgrammingInput {
     pub fn options(&self) -> &CompileOptions {
         &self.options
     }
-    pub fn observed_facts(&self) -> ProgrammingFacts {
+    pub fn facts(&self) -> ProgrammingFacts {
         self.facts
     }
     pub fn desired_data_security(&self) -> DesiredDataSecurity {
         self.desired_data_security
     }
 
-    pub fn data_security(mut self, desired: DesiredDataSecurity) -> Self {
-        self.desired_data_security = desired;
-        self
-    }
-
-    pub fn facts(mut self, facts: ProgrammingFacts) -> Self {
+    pub fn with_facts(mut self, facts: ProgrammingFacts) -> Self {
         self.facts = facts;
         self
     }
@@ -84,7 +84,11 @@ pub(crate) mod facts;
 pub(crate) mod security;
 /// Inputs that cannot be inferred from product or Master Data without
 /// reintroducing policy guesses into offline compilation.
+///
+/// A value bag: start from [`CompileOptions::new`] and assign the fields
+/// that differ.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CompileOptions {
     pub target: TargetSelection,
 
@@ -96,4 +100,17 @@ pub struct CompileOptions {
     /// falls back to the application's own untranslated message.
     pub progress_messages_by_reference: BTreeMap<String, String>,
     pub progress_messages_by_id: BTreeMap<u32, String>,
+}
+
+impl CompileOptions {
+    /// Options for `target` with no automatic section set and no translated
+    /// progress messages.
+    pub fn new(target: TargetSelection) -> Self {
+        Self {
+            target,
+            automatic_sections: None,
+            progress_messages_by_reference: BTreeMap::new(),
+            progress_messages_by_id: BTreeMap::new(),
+        }
+    }
 }

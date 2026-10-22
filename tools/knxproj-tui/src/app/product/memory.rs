@@ -3,7 +3,6 @@
 
 use super::ProductEditor;
 use crate::app::ProjectContext;
-use std::collections::BTreeMap;
 use zweidraehte_client::commissioning::{
     CommissioningIntent, CompileOptions, DownloadMode, ImageLocation, ImageRequirement, ImageSpace, NativeImageRegion,
     ObjectSelector, Occurrence, ProfileSelection, ProgramImage, ProgrammingInput, TargetSelection,
@@ -328,13 +327,11 @@ impl ProductEditor {
             ResolvedKeyMaterial::default().with_serial_number(serial)
         });
         let device = resolved.into_keyed(keys);
-        let input =
-            ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Automatic), CompileOptions {
-                target: TargetSelection::ExistingAddress(address),
-                automatic_sections: None,
-                progress_messages_by_reference: BTreeMap::new(),
-                progress_messages_by_id: BTreeMap::new(),
-            });
+        let input = ProgrammingInput::new(
+            device,
+            CommissioningIntent::Download(DownloadMode::Automatic),
+            CompileOptions::new(TargetSelection::ExistingAddress(address)),
+        );
         let profile = input
             .device()
             .resolve_profile(&ProfileSelection::discovered(mask.as_u16()))

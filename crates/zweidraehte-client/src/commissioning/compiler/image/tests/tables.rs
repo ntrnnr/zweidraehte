@@ -15,7 +15,8 @@ fn dynamic_bcu1_tables_relocate_and_release_unused_seed_ownership() {
         let mut segments = product.segments().to_vec();
         segments[0].data[80] = 2;
         let product = product.with_fixture_segments(segments);
-        let input = image_input(&product, &configuration, false).data_security(DesiredDataSecurity::Preserve);
+        let mut input = image_input(&product, &configuration, false);
+        input.desired_data_security = DesiredDataSecurity::Preserve;
         let mut context = image_context(&input, &profile, None);
         context.feature_sections = ProgramSections::empty();
         context.build_image().expect("dynamic table image compiles");
