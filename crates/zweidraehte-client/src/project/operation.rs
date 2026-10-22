@@ -8,6 +8,7 @@ use super::{
     ProgrammingBatchPlan, ProjectBatchFailure, ProjectBatchFailureStage, ProjectBatchReport,
     ProjectCommissioningSession, ProjectProgrammingInputs,
 };
+use crate::PropertyAddress;
 use crate::commissioning::{
     CommissioningError, CommissioningObserver, Diagnostic, ExecutionEffects, LearnedTarget, MutationStatus,
 };
@@ -247,8 +248,7 @@ async fn reconcile_serials(
     for target in report.learned_targets.values_mut().filter(|target| target.serial_number.is_none()) {
         // This is optional identity discovery after confirmed assignment. Some
         // legacy devices do not expose a serial; their confirmed address remains.
-        if let Ok(value) =
-            bus.network_management().property_read(target.address, 0, crate::pid::SERIAL_NUMBER, 1, 1).await
+        if let Ok(value) = bus.network_management().property_read(target.address, serial_number_property(), 1, 1).await
         {
             target.serial_number = value.try_into().ok().filter(|serial| *serial != [0; 6]);
         }
@@ -316,4 +316,9 @@ pub(super) fn finish_result(outcome: Outcome, failures: Vec<ProjectFinalizationF
             Err(Error::ProjectBatch(failure))
         }
     }
+}
+
+/// `PID_SERIAL_NUMBER` of the device object.
+fn serial_number_property() -> PropertyAddress {
+    PropertyAddress::indexed(0, crate::pid::SERIAL_NUMBER).expect("PID_SERIAL_NUMBER fits one octet")
 }

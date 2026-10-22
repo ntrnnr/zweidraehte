@@ -19,8 +19,6 @@
 use std::net::SocketAddrV4;
 use std::path::{Path, PathBuf};
 
-use zweidraehte_proto::dpt::KNXSerialNumber;
-
 use crate::security::{Keyring, KnxKeysError};
 use crate::{BusTarget, IndividualAddress, UsbSelector};
 
@@ -142,21 +140,9 @@ pub fn parse_hex_vec(s: &str) -> Result<Vec<u8>, String> {
     if !s.len().is_multiple_of(2) {
         return Err("odd number of hex chars".into());
     }
-    if !s.is_ascii() {
-        return Err(format!("'{s}': not hex"));
-    }
     (0..s.len() / 2)
         .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).map_err(|_| format!("'{s}': not hex")))
         .collect()
-}
-
-/// A KNX serial number for display: the 2-byte manufacturer part,
-/// then the 4-byte number, e.g. `00C5:0011AABB`.
-pub fn format_serial(serial: &[u8]) -> String {
-    let Ok(bytes) = <[u8; 6]>::try_from(serial) else {
-        return serial.iter().map(|b| format!("{b:02X}")).collect();
-    };
-    KNXSerialNumber::from(bytes).to_string()
 }
 
 /// Parse exactly `N` hex-encoded bytes.

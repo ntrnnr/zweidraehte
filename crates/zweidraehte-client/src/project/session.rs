@@ -307,11 +307,7 @@ impl ProgrammingBatchPlan {
             // preparation instead of silently weakening every receiver's
             // replay floor.
             let queried = bus
-                .connect_management_synchronized(
-                    sender.address,
-                    key_material.management_credentials().tool_key_only(),
-                    false,
-                )
+                .connect_management_synchronized(sender.address, key_material.management_keys().tool_key_only(), false)
                 .await;
             let (connection, _) = match queried {
                 Ok(opened) => opened,

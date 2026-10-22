@@ -17,7 +17,7 @@ use zweidraehte_client::commissioning::{
     CommissioningVeto, CompiledProgram, DifferentialFallback, DifferentialPolicy, DownloadMode, PreparedProgram,
     ProgramSections, ProgrammingModePolling, TargetSelection, UnloadMode,
 };
-use zweidraehte_client::{BusTarget, IndividualAddress};
+use zweidraehte_client::{BusTarget, IndividualAddress, KnxBus};
 use zweidraehte_project::{ProjectDeviceId, ProjectStore};
 
 const PROGRAMMING_MODE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -298,8 +298,9 @@ async fn run(mut job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<DownloadO
         programming.initialize().map_err(|error| format!("initializing project state: {error}"))?;
     }
     stage("Connecting to the bus");
-    let execution =
-        programming.execute(|security| job.target.connect_with_security(security), &mut WorkerProgress { tx }).await;
+    let execution = programming
+        .execute(|security| KnxBus::builder().with_security(security).connect(&job.target), &mut WorkerProgress { tx })
+        .await;
     let completed = execution
         .as_ref()
         .map(|report| report.devices.iter().map(|device| device.id.to_string()).collect::<Vec<_>>().join(", "))
@@ -331,7 +332,7 @@ async fn await_assignment_target(
     tx: &Sender<DownloadMsg>,
 ) -> Result<AssignmentSelection, String> {
     let _ = tx.send(DownloadMsg::Task("Connecting for individual-address assignment".into(), 0, 0));
-    let bus = target.connect().await.map_err(|error| format!("connecting for IA assignment: {error}"))?;
+    let bus = KnxBus::connect(target).await.map_err(|error| format!("connecting for IA assignment: {error}"))?;
     let management = bus.network_management();
     let scan_window = CommissionerOptions::default().scan_window;
 
@@ -346,7 +347,7 @@ async fn await_assignment_target(
                     break decision;
                 }
             }
-            found = management.read_individual_addresses_with_wait(scan_window, Some(PROGRAMMING_MODE_TIMEOUT)) => {
+            found = management.await_programming_mode(scan_window, PROGRAMMING_MODE_TIMEOUT) => {
                 let found = match found {
                     Ok(found) => found,
                     Err(error) => break Err(format!("polling physical programming mode: {error}")),
@@ -512,8 +513,9 @@ async fn run_unload(job: UnloadJob, tx: &Sender<DownloadMsg>) -> Result<Download
     policy.differential = DifferentialPolicy::Disabled;
     programming.set_policy(policy);
     stage("Connecting to the bus");
-    let execution =
-        programming.execute(|security| job.target.connect_with_security(security), &mut WorkerProgress { tx }).await;
+    let execution = programming
+        .execute(|security| KnxBus::builder().with_security(security).connect(&job.target), &mut WorkerProgress { tx })
+        .await;
     Ok(DownloadOutcome {
         project_path: job.project_path,
         summary: format!("Unloaded {} from {}", job.scope.label().to_lowercase(), job.device),

@@ -9,11 +9,13 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::Path;
-use zweidraehte_client::commissioning::{ManagementCredential, ObservedDataSecurity};
+use zweidraehte_client::ManagementCredential;
+use zweidraehte_client::commissioning::ObservedDataSecurity;
 use zweidraehte_client::commissioning::{ObservedTarget, ProgrammingFacts};
 
 use knx_config::load;
-use zweidraehte_client::commissioning::inspection::{MemoryAddress, PropertyAddress};
+use zweidraehte_client::PropertyAddress;
+use zweidraehte_client::commissioning::inspection::MemoryAddress;
 
 use std::sync::Arc;
 use zweidraehte_client::commissioning::inspection::{

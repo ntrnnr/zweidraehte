@@ -69,7 +69,11 @@ pub(crate) struct ModuleProcedureFragment {
 }
 
 impl RecipeSet {
-    pub(super) fn require_restart(&mut self, kind: crate::commissioning::RestartKind, section: ProgrammingSection) {
+    pub(super) fn require_restart(
+        &mut self,
+        kind: crate::commissioning::inspection::RestartKind,
+        section: ProgrammingSection,
+    ) {
         if let RecipeSet::Exact { procedure, .. } = self {
             procedure.require_feature_restart(kind, section);
         }
@@ -194,8 +198,8 @@ fn fixture_compiler<'a>(
         input,
         profile: profile.clone(),
         image: ProgramImage::new(input.device.product()),
-        standard_memory_service: crate::commissioning::StandardMemoryService::Classic,
-        restart_kind: crate::commissioning::RestartKind::Basic,
+        standard_memory_service: crate::commissioning::inspection::StandardMemoryService::Classic,
+        restart_kind: crate::commissioning::inspection::RestartKind::Basic,
         unload_required_ranges: Vec::new(),
         feature_sections: ProgramSections::all(),
         recipes: RecipeSet::Exact {

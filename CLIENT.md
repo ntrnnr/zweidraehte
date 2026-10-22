@@ -56,11 +56,22 @@ Tunnel-specific state lives beside the IP connector.
 
 `connector::BusTarget` (also exported at the crate root) holds an endpoint before
 it is opened. It is available without `cli`: use `BusTarget::Ip(address)` in a
-bus-only build, or `BusTarget::Usb(selector)` with `usb`. Both accept a prepared
-`SecurityStore` through `connect_with_security`; `connect` uses an empty store.
-Neither method reads CLI arguments, environment variables or credential files.
-The existing direct `KnxBus` constructors remain useful when no endpoint value
-needs to be stored, and custom connectors still use `with_connector*`.
+bus-only build, or `BusTarget::Usb(selector)` with `usb`. Open it with
+`KnxBus::builder().with_security(store).connect(&target)`, or with
+`KnxBus::connect(&target)` for an empty store. Nothing on this path reads CLI
+arguments, environment variables or credential files. `KnxBus::connect_ip` is
+the one-line shortcut, and custom connectors use the builder's `attach`.
+
+Device and network management take typed addresses instead of one method per
+variant. `DeviceConnection::memory_read` and `memory_write` take a
+`MemorySpace` (`Standard`, `Extended`, `User`, `FilterTable`, `Router`), and
+writes take a `WriteCheck` (`Acknowledged`, `DeviceVerify` for Verify Mode
+echoes, `ReadBack`). Property services take a `PropertyAddress`; its
+`Indexed` or `Extended` addressing selects the standard or AN163 service.
+`NetworkManagement` selects devices with an `AddressTarget`
+(`ProgrammingMode`, `OpenMediumProgrammingMode`, `Serial`), and its
+state-changing serial writes take a `Protection` (`Plain` or `Secure`).
+Combinations no service provides return `BusError::Unsupported`.
 
 `cli::TargetArgs` and `OptionalTargetArgs` only translate arguments into this
 value. Import `zweidraehte_client::BusTarget` instead of the former
@@ -333,7 +344,7 @@ Product errors pass through configuration and client adapters by value; the
 ETS owner boxes only the rare, large AP2 conflict payload. Error messages and
 typed causes are preserved.
 
-Raw management accepts a borrowed `ManagementCredentials` view. Obtain it from
+Raw management accepts a borrowed `ManagementKeys` view. Obtain it from
 `ResolvedKeyMaterial::management_credentials()` or assemble it from serial,
 Tool Key and FDSK references. `configuration` owns `ResolvedKeyMaterial`,
 `ResolvedIpSecureConfiguration` and application security values; `project` owns
@@ -608,7 +619,7 @@ JavaScript, USB or clap dependencies.
 
 | Feature | Adds |
 | --- | --- |
-| `usb` | USB HID connector and `KnxBus::connect_usb*`. |
+| `usb` | USB HID connector and `BusTarget::Usb`. |
 | `commissioning` | Product lowering, compilation and live commissioning; ETS product/Master Data and shared project values, without project parsing or storage. |
 | `keyring` | ETS `.knxkeys` import, including `SecurityStore::import_keyring`; no commissioning or project dependency. |
 | `project` | Project planning, status, execution and persistence; includes `commissioning`, `keyring`, project storage and ETS archives. |

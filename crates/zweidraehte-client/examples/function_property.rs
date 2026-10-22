@@ -19,7 +19,8 @@ mod common;
 
 use clap::Parser;
 use common::TargetArgs;
-use zweidraehte_client::IndividualAddress;
+use zweidraehte_client::PropertyAddress;
+use zweidraehte_client::{IndividualAddress, KnxBus};
 
 /// Send a connectionless A_FunctionPropertyCommand to a device.
 #[derive(Parser)]
@@ -56,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Connect to the bus
     // ========================================================================
 
-    let bus = config.target.to_target().connect().await?;
+    let bus = KnxBus::connect(&config.target.to_target()).await?;
 
     println!("Connected. Assigned address: {}", bus.assigned_address());
 
@@ -74,7 +75,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let result = bus
         .network_management()
-        .function_property_command(config.device, config.object, config.property, &config.data)
+        .function_property_command(
+            config.device,
+            PropertyAddress::indexed(config.object, config.property)?,
+            &config.data,
+        )
         .await;
 
     match result {

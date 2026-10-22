@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use tokio::time::{Duration, Instant};
 
-use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_util::secret::SecretBytes;
 
 use super::SecureError;
@@ -137,7 +137,7 @@ pub struct SecurityStore {
     /// are wrapped, incoming plaintext is dropped (downgrade
     /// protection, same gate a device applies to its secured group
     /// objects).
-    group_keys: HashMap<u16, SecretBytes>,
+    group_keys: HashMap<GroupAddress, SecretBytes>,
     seq_store: Box<dyn SeqNumberStore>,
 }
 
@@ -197,7 +197,7 @@ impl SecurityStore {
         }
     }
 
-    pub fn get_entry(&self, ia: IndividualAddress) -> Option<&SecurityEntry> {
+    pub fn entry(&self, ia: IndividualAddress) -> Option<&SecurityEntry> {
         self.entries.get(&ia)
     }
 
@@ -300,15 +300,14 @@ impl SecurityStore {
         self.seq_store.load_device_seq(serial)
     }
 
-    /// Register or replace the group key for a raw group address.
-    pub fn set_group_key(&mut self, ga: u16, key: [u8; 16]) {
-        self.group_keys.insert(ga, key.into());
+    /// Register or replace the group key for a group address.
+    pub fn set_group_key(&mut self, group: GroupAddress, key: [u8; 16]) {
+        self.group_keys.insert(group, key.into());
     }
 
-    /// The group key for a raw group address, if that address is
-    /// secured.
-    pub fn get_group_key(&self, ga: u16) -> Option<&[u8; 16]> {
-        self.group_keys.get(&ga).map(|key| key.key16_ref().expect("group keys have fixed width"))
+    /// The group key for a group address, if that address is secured.
+    pub fn group_key(&self, group: GroupAddress) -> Option<&[u8; 16]> {
+        self.group_keys.get(&group).map(|key| key.key16_ref().expect("group keys have fixed width"))
     }
 
     /// The next sequence number accepted from group sender `ia`
@@ -384,7 +383,7 @@ mod tests {
 
         store.commit_tool_key(ia(), KEY);
 
-        let entry = store.get_entry(ia()).expect("entry survives rotation");
+        let entry = store.entry(ia()).expect("entry survives rotation");
         assert_eq!(entry.tool_key(), Some(&KEY));
         assert_eq!(entry.fdsk(), Some(&FDSK));
         assert_eq!(entry.serial(), Some(SERIAL));

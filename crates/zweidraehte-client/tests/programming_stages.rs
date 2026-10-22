@@ -2,11 +2,12 @@
 
 use std::sync::Arc;
 use zweidraehte_client::IndividualAddress;
+use zweidraehte_client::ManagementCredential;
 use zweidraehte_client::commissioning::ImageLocation;
 use zweidraehte_client::commissioning::input::{CommissioningIntent, DownloadMode, ProgrammingInput, TargetSelection};
 use zweidraehte_client::commissioning::inspection::ProcedureOperation;
 use zweidraehte_client::commissioning::{CompileErrorKind, CompileOptions, ResolvedProfile};
-use zweidraehte_client::commissioning::{DesiredDataSecurity, ManagementCredential, ObservedDataSecurity};
+use zweidraehte_client::commissioning::{DesiredDataSecurity, ObservedDataSecurity};
 use zweidraehte_client::commissioning::{ObservedTarget, ProgrammingFacts};
 use zweidraehte_client::commissioning::{ProfileSelection, ResourceManagementStyle};
 use zweidraehte_client::configuration::ResolvedKeyMaterial;

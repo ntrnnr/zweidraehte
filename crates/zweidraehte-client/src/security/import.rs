@@ -2,6 +2,7 @@
 
 use super::{DeviceSecurityMode, SecurityEntry, SecurityStore};
 use zweidraehte_ets_files::keyring::Keyring;
+use zweidraehte_proto::address::GroupAddress;
 
 impl SecurityStore {
     /// Insert a `Secure` entry for every keyring device that carries a
@@ -25,7 +26,7 @@ impl SecurityStore {
         // if a use case appears — devices themselves accept any SIAT
         // sender, so this would be stricter than the installed base.
         for (ga, key) in keyring.group_keys() {
-            self.set_group_key(ga, *key);
+            self.set_group_key(GroupAddress(ga.to_be_bytes()), *key);
         }
         let mut added = 0;
         for device in &keyring.devices {
@@ -89,9 +90,9 @@ mod tests {
         let mut store = SecurityStore::new();
         assert_eq!(store.import_keyring(&keyring).expect("keyring imports"), 2, "keyless device is skipped");
 
-        assert_eq!(store.get_group_key(0x0901), Some(&[0x42u8; 16]));
-        assert_eq!(store.get_group_key(0x1202), Some(&[0x43u8; 16]));
-        assert_eq!(store.get_group_key(0x1B03), None);
+        assert_eq!(store.group_key(GroupAddress(0x0901u16.to_be_bytes())), Some(&[0x42u8; 16]));
+        assert_eq!(store.group_key(GroupAddress(0x1202u16.to_be_bytes())), Some(&[0x43u8; 16]));
+        assert_eq!(store.group_key(GroupAddress(0x1B03u16.to_be_bytes())), None);
 
         // Sender replay floors seeded from the exported sequence
         // numbers — keyed by IA, independent of key material.
@@ -99,7 +100,7 @@ mod tests {
         assert_eq!(store.sender_seq_floor(IndividualAddress::new(1, 0, 201)), 501);
         assert_eq!(store.sender_seq_floor(IndividualAddress::new(1, 0, 7)), 1, "no seq exported");
 
-        let full = store.get_entry(IndividualAddress::new(1, 0, 203)).expect("keyed device imported");
+        let full = store.entry(IndividualAddress::new(1, 0, 203)).expect("keyed device imported");
         assert_eq!(full.mode(), DeviceSecurityMode::Secure);
         assert_eq!(full.tool_key(), Some(&KEY));
         assert_eq!(full.fdsk(), Some(&FDSK));
@@ -110,7 +111,7 @@ mod tests {
         // The keyring seq number seeded the store: table_seq = seq + 1.
         assert_eq!(store.device_sequence_floor(&SERIAL), 1001);
 
-        assert!(store.get_entry(IndividualAddress::new(1, 0, 201)).is_some());
-        assert!(store.get_entry(IndividualAddress::new(1, 0, 7)).is_none());
+        assert!(store.entry(IndividualAddress::new(1, 0, 201)).is_some());
+        assert!(store.entry(IndividualAddress::new(1, 0, 7)).is_none());
     }
 }

@@ -7,11 +7,12 @@ use super::{
     ProjectCommissioningSession, ProjectFinalizationFailure, ProjectOperation, ProjectSetupRequirement,
     SerialAddressingSupport,
 };
-use crate::bus::access::{ManagementCredential, ManagementCredentials};
+use crate::bus::access::{ManagementCredential, ManagementKeys};
 use crate::configuration::ResolvedKeyMaterial;
 use crate::project::error::{Error, Result};
 use crate::security::Keyring;
 use crate::security::channel::seq_from_bytes;
+use crate::{AddressTarget, PropertyAddress};
 use crate::{BusError, DeviceConnection, IndividualAddress, InterfaceObjectType, KnxBus};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -51,8 +52,8 @@ impl ProjectManagementTarget {
     pub fn serial_number(&self) -> Option<[u8; 6]> {
         self.keys.serial_number()
     }
-    pub fn credentials(&self) -> ManagementCredentials<'_> {
-        self.keys.management_credentials()
+    pub fn keys(&self) -> ManagementKeys<'_> {
+        self.keys.management_keys()
     }
     pub fn has_credentials(&self) -> bool {
         self.keys.tool_key().is_some() || self.keys.fdsk().is_some()
@@ -64,8 +65,10 @@ impl ProjectManagementTarget {
         let Some(serial) = self.serial_addressing.serial_target(self.serial_number()) else {
             return Ok(self.address);
         };
-        let found =
-            bus.network_management().read_individual_addresses_by_serial(&serial, Duration::from_secs(2)).await?;
+        let found = bus
+            .network_management()
+            .read_individual_addresses(AddressTarget::Serial(serial), Duration::from_secs(2))
+            .await?;
         match found.as_slice() {
             [address] => Ok(*address),
             [] => Ok(self.address),
@@ -190,7 +193,7 @@ impl ProjectOperation {
                 let address = target.locate(self.bus()).await?;
                 observed.address = Some(address);
                 let (connection, access) =
-                    self.bus().connect_management_synchronized(address, target.credentials(), false).await?;
+                    self.bus().connect_management_synchronized(address, target.keys(), false).await?;
                 observed.access = Some(access);
                 Ok::<_, Error>(connection)
             }
@@ -274,7 +277,7 @@ impl ProjectOperation {
             let address = target.locate(self.bus()).await?;
             report.address = Some(address);
             let (mut connection, access) =
-                self.bus().connect_management(address, target.credentials(), allow_plaintext).await?;
+                self.bus().connect_management(address, target.keys(), allow_plaintext).await?;
             report.access = Some(access);
             let target_max = connection.read_max_apdu(self.bus().max_apdu()).await;
             report.target_max_apdu = Some(target_max);
@@ -375,21 +378,39 @@ async fn recover_device_state(
         target.serial_number().ok_or_else(|| ProjectSetupRequirement::DeviceSerial { device: target.id.clone() })?;
     let serial = format_serial(&serial);
     let bytes = connection
-        .property_ext_read(InterfaceObjectType::Security, 1, pid::security::SEQUENCE_NUMBER_SENDING, 1, 1)
+        .property_read(
+            PropertyAddress::Extended {
+                object_type: InterfaceObjectType::Security,
+                object_instance: 1,
+                property_id: pid::security::SEQUENCE_NUMBER_SENDING,
+            },
+            1,
+            1,
+        )
         .await?;
     let next = decode_u48(&bytes)?;
     observed.outgoing_next = Some(next);
     session.observe_device_outgoing(serial.clone(), next)?;
     let count = connection
-        .property_ext_read(InterfaceObjectType::Security, 1, pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 0, 1)
+        .property_read(
+            PropertyAddress::Extended {
+                object_type: InterfaceObjectType::Security,
+                object_instance: 1,
+                property_id: pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+            },
+            0,
+            1,
+        )
         .await?;
     let count = u16::from_be_bytes(count.try_into().map_err(|_| BusError::Parse("SIAT count is not two octets"))?);
     for index in 1..=count {
         let row = connection
-            .property_ext_read(
-                InterfaceObjectType::Security,
-                1,
-                pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+            .property_read(
+                PropertyAddress::Extended {
+                    object_type: InterfaceObjectType::Security,
+                    object_instance: 1,
+                    property_id: pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+                },
                 index,
                 1,
             )

@@ -17,8 +17,8 @@ pub(in crate::commissioning) use access::{
 pub(in crate::commissioning) use identity::{unique_domain_target, unique_target};
 
 pub(in crate::commissioning) use network::{
-    open_medium_domain, requested_topology_network_configuration, system_status_with_programming_mode,
-    verify_programming_mode_address, verify_serial_address,
+    open_medium_domain, programming_mode_scan, requested_topology_network_configuration,
+    system_status_with_programming_mode, verify_programming_mode_address, verify_serial_address,
 };
 
 #[cfg(test)]

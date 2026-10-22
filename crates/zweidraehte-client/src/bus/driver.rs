@@ -15,7 +15,7 @@ use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::time::Instant;
 
-use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::crypto::ccm;
 use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
 use zweidraehte_proto::encoding::cemi::CemiMessageCode;
@@ -130,7 +130,7 @@ pub(crate) enum BusCommand {
     /// Remove a device entry before attempting plaintext management.
     RemoveDeviceSecurity { ia: IndividualAddress, tx: oneshot::Sender<()> },
     /// Register or replace the Data Secure key for one group address.
-    SetGroupKey { ga: u16, key: [u8; 16], tx: oneshot::Sender<()> },
+    SetGroupKey { group: GroupAddress, key: [u8; 16], tx: oneshot::Sender<()> },
     /// Read the durable incoming floor for one managed device.
     DeviceSequenceFloor { serial: [u8; 6], tx: oneshot::Sender<u64> },
     /// Tear the bus connection down and end the task.
@@ -345,7 +345,7 @@ impl<C: KnxConnector> BusTask<C> {
                 // Both group_write and group_read arrive on this path.
                 let msg = KnxMessageBuffer::from_buffer(frame.as_slice());
                 if let DestinationAddress::Group(ga) = msg.get_dest_addr()
-                    && let Some(&key) = self.security.get_group_key(u16::from_be_bytes(ga.0))
+                    && let Some(&key) = self.security.group_key(ga)
                 {
                     // Reserve before wrapping or forwarding. A failed
                     // persistence operation prevents transmission.
@@ -450,8 +450,8 @@ impl<C: KnxConnector> BusTask<C> {
                 let _ = tx.send(());
             }
 
-            BusCommand::SetGroupKey { ga, key, tx } => {
-                self.security.set_group_key(ga, key);
+            BusCommand::SetGroupKey { group, key, tx } => {
+                self.security.set_group_key(group, key);
                 let _ = tx.send(());
             }
 
@@ -631,7 +631,7 @@ impl<C: KnxConnector> BusTask<C> {
         match msg.get_dest_addr() {
             DestinationAddress::Group(ga) => {
                 let is_secure = decode_apci_code(internal) == Some(ApciCode::SecureService);
-                match (self.security.get_group_key(u16::from_be_bytes(ga.0)), is_secure) {
+                match (self.security.group_key(ga), is_secure) {
                     (Some(&key), true) => {
                         // Replay protection is per sender IA — the same
                         // slot a device keeps in its SIAT; the floor
@@ -1137,7 +1137,7 @@ impl<C: KnxConnector> BusTask<C> {
     /// remains a serial-addressed system broadcast outside TL.
     fn secure_sync_is_connected(&self) -> bool {
         let remote = self.tl.remote_addr;
-        !self.security.get_entry(remote).is_some_and(|entry| entry.tool_key().is_none() && entry.fdsk().is_some())
+        !self.security.entry(remote).is_some_and(|entry| entry.tool_key().is_none() && entry.fdsk().is_some())
     }
 
     async fn send_secure_sync_attempt(&mut self) -> Result<Option<zweidraehte_proto::transport::ProcessResult>> {
@@ -1166,7 +1166,7 @@ impl<C: KnxConnector> BusTask<C> {
         let remote = self.tl.remote_addr;
         let sec = self.tl_security.as_ref().expect("secure channel is set before the sync starts");
         let sequence = seq_to_bytes(self.security.client_sequence());
-        let factory_serial = self.security.get_entry(remote).and_then(|entry| {
+        let factory_serial = self.security.entry(remote).and_then(|entry| {
             (entry.tool_key().is_none() && entry.fdsk().is_some()).then_some(entry.serial()).flatten()
         });
         match factory_serial {

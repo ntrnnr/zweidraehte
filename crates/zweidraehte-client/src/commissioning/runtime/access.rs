@@ -1,6 +1,6 @@
 //! Management credential sessions and explicit security transitions.
 
-use crate::ManagementCredentials;
+use crate::ManagementKeys;
 use crate::bus::access::PlaintextAccess;
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::error::DiagnosticResult as Result;
@@ -64,7 +64,7 @@ impl<'a> Commissioner<'a> {
             .bus
             .acquire_management(
                 target.address,
-                ManagementCredentials::from_parts(target.serial_number, material.tool_key(), material.fdsk()),
+                ManagementKeys::from_parts(target.serial_number, material.tool_key(), material.fdsk()),
                 plaintext,
                 false,
             )

@@ -26,7 +26,7 @@ use zweidraehte_proto::pid;
 
 use crate::bus::driver::{BusCommand, Completion, ConnectionId};
 use crate::bus::frames;
-use crate::bus::management::{self, FunctionPropertyResult, PropertyDescription};
+use crate::bus::management::{self, FunctionPropertyResult, PropertyAddress, PropertyDescription};
 use crate::bus::{BusError as Error, BusResult as Result};
 
 /// A point-to-point transport connection to a KNX device
@@ -51,6 +51,52 @@ pub struct DeviceConnection {
 #[derive(Debug, Clone, Copy)]
 pub struct RestartAck {
     pub process_time: Duration,
+}
+
+/// A device memory address space, and the service family that reaches it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MemorySpace {
+    /// `A_Memory_*`: 16-bit memory.
+    Standard,
+    /// `A_MemoryExtended_*`: 24-bit memory whose writes return an explicit
+    /// return code.
+    Extended,
+    /// `A_UserMemory_*`: the application's 20-bit logical user memory.
+    User,
+    /// `A_FilterTable_*`: legacy coupler Filter Table memory. Requires
+    /// [`DeviceConnection::filter_table_open`] first.
+    FilterTable,
+    /// `A_RouterMemory_*`: legacy coupler Router memory.
+    Router,
+}
+
+impl MemorySpace {
+    fn family(self) -> management::MemoryFamily {
+        match self {
+            Self::Standard => management::MemoryFamily::Classic,
+            Self::Extended => management::MemoryFamily::Extended,
+            Self::User => management::MemoryFamily::User,
+            Self::FilterTable => management::MemoryFamily::Filter,
+            Self::Router => management::MemoryFamily::Router,
+        }
+    }
+}
+
+/// How a memory write is confirmed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteCheck {
+    /// The device acknowledges the transport frame; Verify Mode is off.
+    /// Per 03/05/02 §3.16 this carries no application-level confirmation.
+    Acknowledged,
+    /// `PID_DEVICE_CONTROL.VerifyMode` is active, so the device answers the
+    /// write with a response echoing the written bytes, which are compared.
+    /// BCU2 download procedures confirm this way. This is not the same
+    /// exchange as a write followed by a read.
+    DeviceVerify,
+    /// Write, then read the bytes back and compare (`DMP_MemWrite_RCoV`,
+    /// 03/05/02 §3.16.3).
+    ReadBack,
 }
 
 impl DeviceConnection {
@@ -150,115 +196,129 @@ impl DeviceConnection {
     }
 
     // ========================================================================
-    // Management services
+    // Interface-object properties
     // ========================================================================
-
-    async fn property_request(
-        &mut self,
-        apci: ApciCode,
-        obj_idx: u8,
-        prop_id: u16,
-        start_idx: u16,
-        count: u16,
-        data: &[u8],
-    ) -> Result<Vec<u8>> {
-        let property = management::ClassicProperty::new(obj_idx, prop_id, start_idx, count)?;
-        if apci == ApciCode::PropertyValueWrite {
-            property.validate_write(data)?;
-        }
-
-        let buf = self
-            .request(apci, PropertyValueResponse::msg_len(data.len()), |buf| {
-                PropertyValueResponse::write(buf, obj_idx, prop_id, count, start_idx, data)
-            })
-            .await?;
-        Ok(property.response(&buf)?.to_vec())
-    }
+    //
+    // Every property operation takes a [`PropertyAddress`]; its addressing
+    // selects the standard service or the AN163 extended one.
 
     /// Read a property value (`DMP_InterfaceObjectRead_R`).
-    pub async fn property_read(&mut self, obj_idx: u8, prop_id: u16, start_idx: u16, count: u16) -> Result<Vec<u8>> {
-        self.property_request(ApciCode::PropertyValueRead, obj_idx, prop_id, start_idx, count, &[]).await
+    pub async fn property_read(&mut self, property: PropertyAddress, start_idx: u16, count: u16) -> Result<Vec<u8>> {
+        match property {
+            PropertyAddress::Indexed { object_index, property_id } => {
+                let property_id = u16::from(property_id);
+                let property = management::ClassicProperty::new(object_index, property_id, start_idx, count)?;
+                let buf = self
+                    .request(ApciCode::PropertyValueRead, PropertyValueResponse::msg_len(0), |buf| {
+                        PropertyValueResponse::write(buf, object_index, property_id, count, start_idx, &[])
+                    })
+                    .await?;
+                Ok(property.response(&buf)?.to_vec())
+            }
+            PropertyAddress::Extended { object_type, object_instance, property_id } => {
+                let raw_object_type = u16::from(object_type);
+                let property =
+                    management::ExtendedProperty::new(raw_object_type, object_instance, property_id, start_idx, count)?;
+                let count = property.count();
+                let buf = self
+                    .request(ApciCode::PropertyExtValueRead, PropertyExtValueRequest::msg_len(0), |buf| {
+                        PropertyExtValueRequest::write(
+                            buf,
+                            raw_object_type,
+                            object_instance,
+                            property_id,
+                            count,
+                            start_idx,
+                            &[],
+                        )
+                    })
+                    .await?;
+                Ok(property.read_response(&buf)?.to_vec())
+            }
+        }
     }
 
-    /// Write a property value (`DMP_InterfaceObjectWrite_R`).
+    /// Write a property value (`DMP_InterfaceObjectWrite_R`) and check the
+    /// device's response: the echoed value for standard addressing, the return
+    /// code of the confirmed write for extended addressing.
     pub async fn property_write(
         &mut self,
-        obj_idx: u8,
-        prop_id: u16,
+        property: PropertyAddress,
         start_idx: u16,
         count: u16,
         data: &[u8],
     ) -> Result<()> {
-        self.property_request(ApciCode::PropertyValueWrite, obj_idx, prop_id, start_idx, count, data).await.map(|_| ())
-    }
-
-    /// Read a property through AN163 extended object addressing.
-    pub async fn property_ext_read(
-        &mut self,
-        object_type: InterfaceObjectType,
-        object_instance: u16,
-        prop_id: u16,
-        start_idx: u16,
-        count: u16,
-    ) -> Result<Vec<u8>> {
-        let raw_object_type = u16::from(object_type);
-        let property = management::ExtendedProperty::new(raw_object_type, object_instance, prop_id, start_idx, count)?;
-        let count = property.count();
-        let buf = self
-            .request(ApciCode::PropertyExtValueRead, PropertyExtValueRequest::msg_len(0), |buf| {
-                PropertyExtValueRequest::write(buf, raw_object_type, object_instance, prop_id, count, start_idx, &[])
-            })
-            .await?;
-        Ok(property.read_response(&buf)?.to_vec())
-    }
-
-    /// Write a property through AN163 extended object addressing and check
-    /// the confirmed write's return code.
-    pub async fn property_ext_write(
-        &mut self,
-        object_type: InterfaceObjectType,
-        object_instance: u16,
-        prop_id: u16,
-        start_idx: u16,
-        count: u16,
-        data: &[u8],
-    ) -> Result<()> {
-        let raw_object_type = u16::from(object_type);
-        let property = management::ExtendedProperty::new(raw_object_type, object_instance, prop_id, start_idx, count)?;
-        property.validate_write(data)?;
-        let count = property.count();
-        let buf = self
-            .request(ApciCode::PropertyExtValueWriteCon, PropertyExtValueRequest::msg_len(data.len()), |buf| {
-                PropertyExtValueRequest::write(buf, raw_object_type, object_instance, prop_id, count, start_idx, data)
-            })
-            .await?;
-        property.write_response(&buf)
+        match property {
+            PropertyAddress::Indexed { object_index, property_id } => {
+                let property_id = u16::from(property_id);
+                let property = management::ClassicProperty::new(object_index, property_id, start_idx, count)?;
+                property.validate_write(data)?;
+                let buf = self
+                    .request(ApciCode::PropertyValueWrite, PropertyValueResponse::msg_len(data.len()), |buf| {
+                        PropertyValueResponse::write(buf, object_index, property_id, count, start_idx, data)
+                    })
+                    .await?;
+                property.response(&buf).map(|_| ())
+            }
+            PropertyAddress::Extended { object_type, object_instance, property_id } => {
+                let raw_object_type = u16::from(object_type);
+                let property =
+                    management::ExtendedProperty::new(raw_object_type, object_instance, property_id, start_idx, count)?;
+                property.validate_write(data)?;
+                let count = property.count();
+                let buf = self
+                    .request(ApciCode::PropertyExtValueWriteCon, PropertyExtValueRequest::msg_len(data.len()), |buf| {
+                        PropertyExtValueRequest::write(
+                            buf,
+                            raw_object_type,
+                            object_instance,
+                            property_id,
+                            count,
+                            start_idx,
+                            data,
+                        )
+                    })
+                    .await?;
+                property.write_response(&buf)
+            }
+        }
     }
 
     /// Write an extended-addressed property without an application response.
     ///
     /// `A_PropertyExtValue_WriteUnCon` is acknowledged by the transport
     /// connection only. The remote application deliberately ignores invalid
-    /// targets, so callers that need proof must choose the confirmed service
-    /// or perform a separate read-back.
-    pub async fn property_ext_write_unconfirmed(
+    /// targets, so callers that need proof must choose
+    /// [`property_write`](Self::property_write) or perform a separate
+    /// read-back. Standard addressing has no unconfirmed write and is refused.
+    pub async fn property_write_unconfirmed(
         &mut self,
-        object_type: InterfaceObjectType,
-        object_instance: u16,
-        prop_id: u16,
+        property: PropertyAddress,
         start_idx: u16,
         count: u16,
         data: &[u8],
     ) -> Result<()> {
+        let PropertyAddress::Extended { object_type, object_instance, property_id } = property else {
+            return Err(Error::Unsupported("an unconfirmed property write needs extended addressing"));
+        };
         let raw_object_type = u16::from(object_type);
-        let property = management::ExtendedProperty::new(raw_object_type, object_instance, prop_id, start_idx, count)?;
+        let property =
+            management::ExtendedProperty::new(raw_object_type, object_instance, property_id, start_idx, count)?;
         property.validate_write(data)?;
         let count = property.count();
         self.request_no_response(
             ApciCode::PropertyExtValueWriteUnCon,
             PropertyExtValueRequest::msg_len(data.len()),
             |buf| {
-                PropertyExtValueRequest::write(buf, raw_object_type, object_instance, prop_id, count, start_idx, data)
+                PropertyExtValueRequest::write(
+                    buf,
+                    raw_object_type,
+                    object_instance,
+                    property_id,
+                    count,
+                    start_idx,
+                    data,
+                )
             },
         )
         .await
@@ -314,155 +374,110 @@ impl DeviceConnection {
         .write_response(&buf)
     }
 
-    /// Read a property description.
+    /// Read a property's description by property ID.
+    ///
+    /// A negative response zeroes the type, element count and access levels;
+    /// see [`PropertyDescription::is_absent`].
     ///
     /// There is deliberately no corresponding write API: 03/03/07 defines
     /// only `A_PropertyDescription_Read/Response`. Load-control descriptor
     /// declarations describe tool-side cached metadata rather than bus writes.
-    pub async fn property_description_read(
-        &mut self,
-        obj_idx: u8,
-        prop_id: u16,
-        prop_idx: u8,
-    ) -> Result<PropertyDescription> {
-        management::validate_property_id(prop_id)?;
+    // TODO: expose the lookup by property index (property ID 0) if a client
+    // needs to enumerate an object's properties; only the device stacks'
+    // tests exercise it today.
+    pub async fn property_description_read(&mut self, property: PropertyAddress) -> Result<PropertyDescription> {
+        match property {
+            PropertyAddress::Indexed { object_index, property_id } => {
+                let buf = self
+                    .request(ApciCode::PropertyDescriptionRead, PropertyDescriptionRead::MIN_MSG_LEN, |buf| {
+                        PropertyDescriptionRead::write(buf, object_index, u16::from(property_id), 0)
+                    })
+                    .await?;
+                let description =
+                    PropertyDescription::parse(&buf).ok_or(Error::Parse("PropertyDescriptionResponse too short"))?;
+                if buf[offsets::MSG_APCI + 2] != object_index || description.prop_id != u16::from(property_id) {
+                    return Err(Error::UnexpectedResponse);
+                }
+                Ok(description)
+            }
+            PropertyAddress::Extended { object_type, object_instance, property_id } => {
+                let raw_object_type = u16::from(object_type);
+                management::validate_extended_target(object_instance, property_id)?;
 
-        let buf = self
-            .request(ApciCode::PropertyDescriptionRead, PropertyDescriptionRead::MIN_MSG_LEN, |buf| {
-                PropertyDescriptionRead::write(buf, obj_idx, prop_id, prop_idx)
-            })
-            .await?;
-        let description =
-            PropertyDescription::parse(&buf).ok_or(Error::Parse("PropertyDescriptionResponse too short"))?;
-        if buf[offsets::MSG_APCI + 2] != obj_idx
-            || (prop_id != 0 && description.prop_id != prop_id)
-            || (prop_id == 0 && description.prop_idx != prop_idx)
-        {
-            return Err(Error::UnexpectedResponse);
+                let buf = self
+                    .request(ApciCode::PropertyExtDescriptionRead, PropertyExtDescriptionRead::MSG_LEN, |buf| {
+                        PropertyExtDescriptionRead::write(buf, raw_object_type, object_instance, property_id, 0, 0)
+                    })
+                    .await?;
+                let description = PropertyExtDescription::parse(&buf)
+                    .ok_or(Error::Parse("PropertyExtDescriptionResponse too short"))?;
+                if description.object_type != raw_object_type
+                    || description.object_instance != object_instance
+                    || description.prop_id != property_id
+                {
+                    return Err(Error::UnexpectedResponse);
+                }
+                Ok(PropertyDescription::from_extended(description))
+            }
         }
-        Ok(description)
-    }
-
-    /// Read one property's description through AN163 extended object
-    /// addressing.
-    ///
-    /// A negative response zeroes the type, element count and access
-    /// levels, as for [`Self::property_description_read`].
-    pub async fn property_ext_description_read(
-        &mut self,
-        object_type: InterfaceObjectType,
-        object_instance: u16,
-        prop_id: u16,
-    ) -> Result<PropertyExtDescription> {
-        let raw_object_type = u16::from(object_type);
-        management::validate_extended_target(object_instance, prop_id)?;
-
-        let buf = self
-            .request(ApciCode::PropertyExtDescriptionRead, PropertyExtDescriptionRead::MSG_LEN, |buf| {
-                PropertyExtDescriptionRead::write(buf, raw_object_type, object_instance, prop_id, 0, 0)
-            })
-            .await?;
-        let description =
-            PropertyExtDescription::parse(&buf).ok_or(Error::Parse("PropertyExtDescriptionResponse too short"))?;
-        if description.object_type != raw_object_type
-            || description.object_instance != object_instance
-            || description.prop_id != prop_id
-        {
-            return Err(Error::UnexpectedResponse);
-        }
-        Ok(description)
     }
 
     async fn function_property_request(
         &mut self,
-        apci: ApciCode,
-        obj_idx: u8,
-        prop_id: u16,
+        command: bool,
+        property: PropertyAddress,
         service_data: &[u8],
     ) -> Result<FunctionPropertyResult> {
-        management::validate_property_id(prop_id)?;
+        match property {
+            PropertyAddress::Indexed { object_index, property_id } => {
+                let property_id = u16::from(property_id);
+                let apci =
+                    if command { ApciCode::FunctionPropertyCommand } else { ApciCode::FunctionPropertyStateRead };
+                let buf = self
+                    .request(apci, FunctionPropertyHeader::msg_len(service_data.len()), |buf| {
+                        FunctionPropertyHeader::write(buf, object_index, property_id, service_data)
+                    })
+                    .await?;
+                FunctionPropertyResult::parse(&buf, object_index, property_id)
+            }
+            PropertyAddress::Extended { object_type, object_instance, property_id } => {
+                management::validate_extended_target(object_instance, property_id)?;
 
-        let buf = self
-            .request(apci, FunctionPropertyHeader::msg_len(service_data.len()), |buf| {
-                FunctionPropertyHeader::write(buf, obj_idx, prop_id, service_data)
-            })
-            .await?;
-        FunctionPropertyResult::parse(&buf, obj_idx, prop_id)
+                let apci =
+                    if command { ApciCode::FunctionPropertyExtCommand } else { ApciCode::FunctionPropertyExtStateRead };
+                let raw_object_type = u16::from(object_type);
+                let buf = self
+                    .request(apci, FunctionPropertyExtRequest::msg_len(service_data.len()), |buf| {
+                        FunctionPropertyExtRequest::write(
+                            buf,
+                            raw_object_type,
+                            object_instance,
+                            property_id,
+                            service_data,
+                        )
+                    })
+                    .await?;
+                FunctionPropertyResult::parse_extended(&buf, raw_object_type, object_instance, property_id)
+            }
+        }
     }
 
     /// Execute a function property command.
     pub async fn function_property_command(
         &mut self,
-        obj_idx: u8,
-        prop_id: u16,
+        property: PropertyAddress,
         service_data: &[u8],
     ) -> Result<FunctionPropertyResult> {
-        self.function_property_request(ApciCode::FunctionPropertyCommand, obj_idx, prop_id, service_data).await
+        self.function_property_request(true, property, service_data).await
     }
 
     /// Read the state of a function property.
     pub async fn function_property_state_read(
         &mut self,
-        obj_idx: u8,
-        prop_id: u16,
+        property: PropertyAddress,
         service_data: &[u8],
     ) -> Result<FunctionPropertyResult> {
-        self.function_property_request(ApciCode::FunctionPropertyStateRead, obj_idx, prop_id, service_data).await
-    }
-
-    async fn function_property_ext_request(
-        &mut self,
-        apci: ApciCode,
-        object_type: InterfaceObjectType,
-        object_instance: u16,
-        prop_id: u16,
-        service_data: &[u8],
-    ) -> Result<FunctionPropertyResult> {
-        management::validate_extended_target(object_instance, prop_id)?;
-
-        let raw_object_type = u16::from(object_type);
-        let buf = self
-            .request(apci, FunctionPropertyExtRequest::msg_len(service_data.len()), |buf| {
-                FunctionPropertyExtRequest::write(buf, raw_object_type, object_instance, prop_id, service_data)
-            })
-            .await?;
-        FunctionPropertyResult::parse_extended(&buf, raw_object_type, object_instance, prop_id)
-    }
-
-    /// Execute a function property command through AN163 extended addressing.
-    pub async fn function_property_ext_command(
-        &mut self,
-        object_type: InterfaceObjectType,
-        object_instance: u16,
-        prop_id: u16,
-        service_data: &[u8],
-    ) -> Result<FunctionPropertyResult> {
-        self.function_property_ext_request(
-            ApciCode::FunctionPropertyExtCommand,
-            object_type,
-            object_instance,
-            prop_id,
-            service_data,
-        )
-        .await
-    }
-
-    /// Read function-property state through AN163 extended addressing.
-    pub async fn function_property_ext_state_read(
-        &mut self,
-        object_type: InterfaceObjectType,
-        object_instance: u16,
-        prop_id: u16,
-        service_data: &[u8],
-    ) -> Result<FunctionPropertyResult> {
-        self.function_property_ext_request(
-            ApciCode::FunctionPropertyExtStateRead,
-            object_type,
-            object_instance,
-            prop_id,
-            service_data,
-        )
-        .await
+        self.function_property_request(false, property, service_data).await
     }
 
     /// Enable KNX Data Secure management through Security IO.
@@ -472,9 +487,12 @@ impl DeviceConnection {
     /// the object identity and function-property payload here prevents each
     /// programming entry point from spelling the protocol record itself.
     pub async fn enable_security_mode(&mut self) -> Result<()> {
-        let result = self
-            .function_property_ext_command(InterfaceObjectType::Security, 1, pid::security::SECURITY_MODE, &[0, 0, 1])
-            .await?;
+        let security_mode = PropertyAddress::Extended {
+            object_type: InterfaceObjectType::Security,
+            object_instance: 1,
+            property_id: pid::security::SECURITY_MODE,
+        };
+        let result = self.function_property_command(security_mode, &[0, 0, 1]).await?;
         if result.return_code != 0 {
             return Err(Error::DeviceError(result.return_code));
         }
@@ -504,47 +522,9 @@ impl DeviceConnection {
         Ok(response.sum)
     }
 
-    /// Read from the application's 20-bit logical user-memory space.
-    pub async fn user_memory_read(&mut self, address: u32, count: u8) -> Result<Vec<u8>> {
-        let transfer = management::MemoryTransfer::new(management::MemoryFamily::User, address, usize::from(count))?;
-
-        let buf = self
-            .request(ApciCode::UserMemoryRead, UserMemoryReadRequest::MSG_LEN, |buf| {
-                UserMemoryReadRequest::write(buf, address, count)
-            })
-            .await?;
-        Ok(transfer.read_response(&buf)?.to_vec())
-    }
-
-    /// Write to the application's 20-bit logical user-memory space.
-    ///
-    /// This variant assumes Verify Mode is inactive and resolves on T_ACK, as
-    /// defined by 03/03/07 §3.5.6.3. A caller using device auto-verify must
-    /// use a response-bearing procedure instead.
-    pub async fn user_memory_write(&mut self, address: u32, data: &[u8]) -> Result<()> {
-        management::MemoryTransfer::new(management::MemoryFamily::User, address, data.len())?;
-
-        self.request_no_response(ApciCode::UserMemoryWrite, UserMemoryWriteRequest::msg_len(data.len()), |buf| {
-            UserMemoryWriteRequest::write(buf, address, data)
-        })
-        .await
-    }
-
-    /// Write user memory while Verify Mode is active and validate the
-    /// resulting `A_UserMemory_Response`.
-    pub async fn user_memory_write_auto_verify(&mut self, address: u32, data: &[u8]) -> Result<()> {
-        let transfer = management::MemoryTransfer::new(management::MemoryFamily::User, address, data.len())?;
-
-        let buf = self
-            .request_raw(
-                ApciCode::UserMemoryWrite,
-                UserMemoryWriteRequest::msg_len(data.len()),
-                |buf| UserMemoryWriteRequest::write(buf, address, data),
-                Completion::Response(Some(ApciCode::UserMemoryResponse)),
-            )
-            .await?;
-        transfer.verify_response(&buf, data)
-    }
+    // ========================================================================
+    // Memory
+    // ========================================================================
 
     /// Select the legacy Filter Table memory access procedure.
     ///
@@ -558,190 +538,145 @@ impl DeviceConnection {
         Ok(())
     }
 
-    /// Read legacy Filter Table memory after [`filter_table_open`](Self::filter_table_open).
-    pub async fn filter_table_read(&mut self, address: u32, count: u8) -> Result<Vec<u8>> {
-        let transfer = management::MemoryTransfer::new(management::MemoryFamily::Filter, address, usize::from(count))?;
-        let address = u16::try_from(address).expect("checked coupler address");
-        if !self.filter_table_open {
+    /// Read `count` bytes at `address` in `space` (`DMP_MemRead_RCo` and its
+    /// counterparts). The address must fit the space's width.
+    pub async fn memory_read(&mut self, space: MemorySpace, address: u32, count: u8) -> Result<Vec<u8>> {
+        let transfer = management::MemoryTransfer::new(space.family(), address, usize::from(count))?;
+        if space == MemorySpace::FilterTable && !self.filter_table_open {
             return Err(Error::FilterTableNotOpen);
         }
 
-        let buf = self
-            .request(ApciCode::FilterTableRead, FilterTableReadRequest::MSG_LEN, |buf| {
-                FilterTableReadRequest::write(buf, address, count)
-            })
-            .await?;
+        let buf = match space {
+            MemorySpace::Standard => {
+                let address = u16::try_from(address).expect("checked standard memory address");
+                self.request(ApciCode::MemoryRead, MemoryReadRequest::MSG_LEN, |buf| {
+                    MemoryReadRequest::write(buf, count, address)
+                })
+                .await?
+            }
+            MemorySpace::Extended => {
+                self.request(ApciCode::MemoryExtendedRead, MemoryExtendedAccess::msg_len(0), |buf| {
+                    MemoryExtendedAccess::write(buf, count, address, &[])
+                })
+                .await?
+            }
+            MemorySpace::User => {
+                self.request(ApciCode::UserMemoryRead, UserMemoryReadRequest::MSG_LEN, |buf| {
+                    UserMemoryReadRequest::write(buf, address, count)
+                })
+                .await?
+            }
+            MemorySpace::FilterTable => {
+                let address = u16::try_from(address).expect("checked coupler address");
+                self.request(ApciCode::FilterTableRead, FilterTableReadRequest::MSG_LEN, |buf| {
+                    FilterTableReadRequest::write(buf, address, count)
+                })
+                .await?
+            }
+            MemorySpace::Router => {
+                let address = u16::try_from(address).expect("checked coupler address");
+                self.request(ApciCode::RouterMemoryRead, RouterMemoryReadRequest::MSG_LEN, |buf| {
+                    RouterMemoryReadRequest::write(buf, address, count)
+                })
+                .await?
+            }
+        };
         Ok(transfer.read_response(&buf)?.to_vec())
     }
 
-    /// Write legacy Filter Table memory after [`filter_table_open`](Self::filter_table_open).
+    /// Write `data` at `address` in `space`, confirming it as `check` says.
     ///
-    /// Legacy load procedures keep Verify Mode inactive and verify with an
-    /// explicit Filter Table read, so this resolves on the transport ACK.
-    pub async fn filter_table_write(&mut self, address: u32, data: &[u8]) -> Result<()> {
-        management::MemoryTransfer::new(management::MemoryFamily::Filter, address, data.len())?;
-        let address = u16::try_from(address).expect("checked coupler address");
-        if !self.filter_table_open {
+    /// The extended service always confirms with an explicit return code, so
+    /// it accepts [`WriteCheck::Acknowledged`] and [`WriteCheck::ReadBack`]
+    /// but refuses [`WriteCheck::DeviceVerify`]: it has no Verify Mode echo.
+    pub async fn memory_write(
+        &mut self,
+        space: MemorySpace,
+        address: u32,
+        data: &[u8],
+        check: WriteCheck,
+    ) -> Result<()> {
+        let transfer = management::MemoryTransfer::new(space.family(), address, data.len())?;
+        if space == MemorySpace::FilterTable && !self.filter_table_open {
             return Err(Error::FilterTableNotOpen);
         }
-
-        self.request_no_response(ApciCode::FilterTableWrite, FilterTableWriteRequest::msg_len(data.len()), |buf| {
-            FilterTableWriteRequest::write(buf, address, data)
-        })
-        .await
-    }
-
-    /// Write Filter Table memory while Verify Mode is active and validate
-    /// the resulting `A_FilterTable_Response`.
-    pub async fn filter_table_write_auto_verify(&mut self, address: u32, data: &[u8]) -> Result<()> {
-        let transfer = management::MemoryTransfer::new(management::MemoryFamily::Filter, address, data.len())?;
-        let wire_address = u16::try_from(address).expect("checked coupler address");
-        if !self.filter_table_open {
-            return Err(Error::FilterTableNotOpen);
+        if space == MemorySpace::Extended && check == WriteCheck::DeviceVerify {
+            return Err(Error::Unsupported("extended memory writes have no Verify Mode response"));
         }
 
-        let buf = self
-            .request_raw(
-                ApciCode::FilterTableWrite,
-                FilterTableWriteRequest::msg_len(data.len()),
-                |buf| FilterTableWriteRequest::write(buf, wire_address, data),
-                Completion::Response(Some(ApciCode::FilterTableResponse)),
-            )
-            .await?;
-        transfer.verify_response(&buf, data)
-    }
+        // Verify Mode turns each write into a response-bearing service that
+        // echoes the written bytes; without it the write resolves on T_ACK.
+        let completion = |response| {
+            if check == WriteCheck::DeviceVerify {
+                Completion::Response(Some(response))
+            } else {
+                Completion::Acknowledgement
+            }
+        };
+        let response = match space {
+            MemorySpace::Standard => {
+                let address = u16::try_from(address).expect("checked standard memory address");
+                self.request_raw(
+                    ApciCode::MemoryWrite,
+                    MemoryWriteRequest::msg_len(data.len()),
+                    |buf| MemoryWriteRequest::write(buf, address, data),
+                    completion(ApciCode::MemoryReadResponse),
+                )
+                .await?
+            }
+            MemorySpace::Extended => {
+                let count =
+                    u8::try_from(data.len()).map_err(|_| Error::Parse("extended memory write exceeds one octet"))?;
+                let buf = self
+                    .request(ApciCode::MemoryExtendedWrite, MemoryExtendedAccess::msg_len(data.len()), |buf| {
+                        MemoryExtendedAccess::write(buf, count, address, data)
+                    })
+                    .await?;
+                transfer.extended_write_response(&buf)?;
+                Vec::new()
+            }
+            MemorySpace::User => {
+                self.request_raw(
+                    ApciCode::UserMemoryWrite,
+                    UserMemoryWriteRequest::msg_len(data.len()),
+                    |buf| UserMemoryWriteRequest::write(buf, address, data),
+                    completion(ApciCode::UserMemoryResponse),
+                )
+                .await?
+            }
+            MemorySpace::FilterTable => {
+                let address = u16::try_from(address).expect("checked coupler address");
+                self.request_raw(
+                    ApciCode::FilterTableWrite,
+                    FilterTableWriteRequest::msg_len(data.len()),
+                    |buf| FilterTableWriteRequest::write(buf, address, data),
+                    completion(ApciCode::FilterTableResponse),
+                )
+                .await?
+            }
+            MemorySpace::Router => {
+                let address = u16::try_from(address).expect("checked coupler address");
+                self.request_raw(
+                    ApciCode::RouterMemoryWrite,
+                    RouterMemoryWriteRequest::msg_len(data.len()),
+                    |buf| RouterMemoryWriteRequest::write(buf, address, data),
+                    completion(ApciCode::RouterMemoryResponse),
+                )
+                .await?
+            }
+        };
 
-    /// Read from the legacy coupler Router memory address space.
-    pub async fn router_memory_read(&mut self, address: u32, count: u8) -> Result<Vec<u8>> {
-        let transfer = management::MemoryTransfer::new(management::MemoryFamily::Router, address, usize::from(count))?;
-        let address = u16::try_from(address).expect("checked coupler address");
-
-        let buf = self
-            .request(ApciCode::RouterMemoryRead, RouterMemoryReadRequest::MSG_LEN, |buf| {
-                RouterMemoryReadRequest::write(buf, address, count)
-            })
-            .await?;
-        Ok(transfer.read_response(&buf)?.to_vec())
-    }
-
-    /// Write to the legacy coupler Router memory address space.
-    ///
-    /// This is the non-Verify variant used by the standardized legacy
-    /// download procedure and therefore resolves on T_ACK.
-    pub async fn router_memory_write(&mut self, address: u32, data: &[u8]) -> Result<()> {
-        management::MemoryTransfer::new(management::MemoryFamily::Router, address, data.len())?;
-        let address = u16::try_from(address).expect("checked coupler address");
-
-        self.request_no_response(ApciCode::RouterMemoryWrite, RouterMemoryWriteRequest::msg_len(data.len()), |buf| {
-            RouterMemoryWriteRequest::write(buf, address, data)
-        })
-        .await
-    }
-
-    /// Write Router memory while Verify Mode is active and validate the
-    /// resulting `A_RouterMemory_Response`.
-    pub async fn router_memory_write_auto_verify(&mut self, address: u32, data: &[u8]) -> Result<()> {
-        let transfer = management::MemoryTransfer::new(management::MemoryFamily::Router, address, data.len())?;
-        let wire_address = u16::try_from(address).expect("checked coupler address");
-
-        let buf = self
-            .request_raw(
-                ApciCode::RouterMemoryWrite,
-                RouterMemoryWriteRequest::msg_len(data.len()),
-                |buf| RouterMemoryWriteRequest::write(buf, wire_address, data),
-                Completion::Response(Some(ApciCode::RouterMemoryResponse)),
-            )
-            .await?;
-        transfer.verify_response(&buf, data)
-    }
-
-    /// Read device memory (`DMP_MemRead_RCo`).
-    pub async fn memory_read(&mut self, address: u16, count: u8) -> Result<Vec<u8>> {
-        let transfer =
-            management::MemoryTransfer::new(management::MemoryFamily::Classic, u32::from(address), usize::from(count))?;
-
-        let buf = self
-            .request(ApciCode::MemoryRead, MemoryReadRequest::MSG_LEN, |buf| {
-                MemoryReadRequest::write(buf, count, address)
-            })
-            .await?;
-        Ok(transfer.read_response(&buf)?.to_vec())
-    }
-
-    /// Write device memory (`DMP_MemWrite_RCo`).
-    ///
-    /// Resolves on the device's T_ACK. Note that per 03/05/02 §3.16 the
-    /// plain variant carries no application-level confirmation — use
-    /// [`memory_write_verify`](Self::memory_write_verify) when the outcome
-    /// matters.
-    pub async fn memory_write(&mut self, address: u16, data: &[u8]) -> Result<()> {
-        management::MemoryTransfer::new(management::MemoryFamily::Classic, u32::from(address), data.len())?;
-
-        self.request_no_response(ApciCode::MemoryWrite, MemoryWriteRequest::msg_len(data.len()), |buf| {
-            MemoryWriteRequest::write(buf, address, data)
-        })
-        .await
-    }
-
-    /// Write device memory while `PID_DEVICE_CONTROL.VerifyMode` is active.
-    ///
-    /// In verify mode, `A_Memory_Write` becomes a response-bearing service:
-    /// the device echoes the address and bytes in `A_Memory_Response`. This is
-    /// not the same exchange as an ordinary write followed by
-    /// `A_Memory_Read`; BCU2 download procedures use the write response as
-    /// their confirmation.
-    pub async fn memory_write_auto_verify(&mut self, address: u16, data: &[u8]) -> Result<()> {
-        let transfer =
-            management::MemoryTransfer::new(management::MemoryFamily::Classic, u32::from(address), data.len())?;
-
-        let buf = self
-            .request_raw(
-                ApciCode::MemoryWrite,
-                MemoryWriteRequest::msg_len(data.len()),
-                |buf| MemoryWriteRequest::write(buf, address, data),
-                Completion::Response(Some(ApciCode::MemoryReadResponse)),
-            )
-            .await?;
-        transfer.verify_response(&buf, data)
-    }
-
-    /// Write device memory and read it back (`DMP_MemWrite_RCoV`,
-    /// 03/05/02 §3.16.3).
-    pub async fn memory_write_verify(&mut self, address: u16, data: &[u8]) -> Result<()> {
-        self.memory_write(address, data).await?;
-        let read_back = self.memory_read(address, data.len() as u8).await?;
-        if read_back != data {
-            return Err(Error::VerifyMismatch { address: u32::from(address) });
+        match check {
+            WriteCheck::Acknowledged => Ok(()),
+            WriteCheck::DeviceVerify => transfer.verify_response(&response, data),
+            WriteCheck::ReadBack => {
+                let count = u8::try_from(data.len()).map_err(|_| Error::Parse("read-back exceeds one octet"))?;
+                if self.memory_read(space, address, count).await? != data {
+                    return Err(Error::VerifyMismatch { address });
+                }
+                Ok(())
+            }
         }
-        Ok(())
-    }
-
-    /// Read through `A_MemoryExtended_Read` (24-bit address, explicit return
-    /// code).
-    pub async fn memory_extended_read(&mut self, address: u32, count: u8) -> Result<Vec<u8>> {
-        let transfer =
-            management::MemoryTransfer::new(management::MemoryFamily::Extended, address, usize::from(count))?;
-
-        let buf = self
-            .request(ApciCode::MemoryExtendedRead, MemoryExtendedAccess::msg_len(0), |buf| {
-                MemoryExtendedAccess::write(buf, count, address, &[])
-            })
-            .await?;
-        Ok(transfer.read_response(&buf)?.to_vec())
-    }
-
-    /// Write through `A_MemoryExtended_Write` and check its explicit return
-    /// code.
-    pub async fn memory_extended_write(&mut self, address: u32, data: &[u8]) -> Result<()> {
-        let transfer = management::MemoryTransfer::new(management::MemoryFamily::Extended, address, data.len())?;
-
-        let count = u8::try_from(data.len()).map_err(|_| Error::Parse("extended memory write exceeds one octet"))?;
-        let buf = self
-            .request(ApciCode::MemoryExtendedWrite, MemoryExtendedAccess::msg_len(data.len()), |buf| {
-                MemoryExtendedAccess::write(buf, count, address, data)
-            })
-            .await?;
-        transfer.extended_write_response(&buf)
     }
 
     /// Authorize with a key (`DMP_Authorize_RCo`). Returns the granted
@@ -833,7 +768,8 @@ mod tests {
     async fn classic_property_read_reports_a_typed_negative_response() {
         let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
         let mut connection = DeviceConnection::new(target(), cmd_tx, false, None, ConnectionId::TEST);
-        let client = connection.property_read(5, pid::MCB_TABLE, 1, 1);
+        let client =
+            connection.property_read(PropertyAddress::indexed(5, pid::MCB_TABLE).expect("PID fits one octet"), 1, 1);
         let device = async {
             let BusCommand::TlRequest { frame, completion, tx, .. } = cmd_rx.recv().await.expect("property-value read")
             else {
@@ -870,7 +806,12 @@ mod tests {
     async fn classic_property_write_reports_a_typed_negative_response() {
         let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
         let mut connection = DeviceConnection::new(target(), cmd_tx, false, None, ConnectionId::TEST);
-        let client = connection.property_write(4, pid::PROGRAM_VERSION, 1, 1, &[0x12, 0x34]);
+        let client = connection.property_write(
+            PropertyAddress::indexed(4, pid::PROGRAM_VERSION).expect("PID fits one octet"),
+            1,
+            1,
+            &[0x12, 0x34],
+        );
         let device = async {
             let BusCommand::TlRequest { frame, completion, tx, .. } =
                 cmd_rx.recv().await.expect("property-value write")
@@ -942,7 +883,7 @@ mod tests {
     async fn user_memory_read_encodes_twenty_bit_address_and_checks_response() {
         let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
         let mut connection = DeviceConnection::new(target(), cmd_tx, false, None, ConnectionId::TEST);
-        let client = connection.user_memory_read(0xA_1234, 3);
+        let client = connection.memory_read(MemorySpace::User, 0xA_1234, 3);
         let device = async {
             let BusCommand::TlRequest { frame, completion, tx, .. } = cmd_rx.recv().await.expect("user-memory request")
             else {
@@ -976,10 +917,13 @@ mod tests {
         let (cmd_tx, mut cmd_rx) = mpsc::channel(2);
         let mut connection = DeviceConnection::new(target(), cmd_tx, false, None, ConnectionId::TEST);
         let client = async {
-            assert!(matches!(connection.filter_table_write(0x4000, &[0xAA]).await, Err(Error::FilterTableNotOpen)));
+            assert!(matches!(
+                connection.memory_write(MemorySpace::FilterTable, 0x4000, &[0xAA], WriteCheck::Acknowledged).await,
+                Err(Error::FilterTableNotOpen)
+            ));
 
             connection.filter_table_open().await?;
-            connection.filter_table_write(0x4000, &[0xAA, 0xBB]).await
+            connection.memory_write(MemorySpace::FilterTable, 0x4000, &[0xAA, 0xBB], WriteCheck::Acknowledged).await
         };
         let device = async {
             let BusCommand::TlRequest { frame, completion, tx, .. } = cmd_rx.recv().await.expect("filter-table open")
@@ -1012,7 +956,7 @@ mod tests {
     async fn router_memory_read_uses_the_router_response_service() {
         let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
         let mut connection = DeviceConnection::new(target(), cmd_tx, false, None, ConnectionId::TEST);
-        let client = connection.router_memory_read(0xFFFC, 4);
+        let client = connection.memory_read(MemorySpace::Router, 0xFFFC, 4);
         let device = async {
             let BusCommand::TlRequest { frame, completion, tx, .. } = cmd_rx.recv().await.expect("router-memory read")
             else {
@@ -1042,10 +986,10 @@ mod tests {
         let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
         let mut connection = DeviceConnection::new(target(), cmd_tx, false, None, ConnectionId::TEST);
         let client = async {
-            connection.user_memory_write_auto_verify(0xA_1234, &[0x11, 0x22]).await?;
+            connection.memory_write(MemorySpace::User, 0xA_1234, &[0x11, 0x22], WriteCheck::DeviceVerify).await?;
             connection.filter_table_open().await?;
-            connection.filter_table_write_auto_verify(0x4000, &[0x33]).await?;
-            connection.router_memory_write_auto_verify(0x5000, &[0x44, 0x55]).await
+            connection.memory_write(MemorySpace::FilterTable, 0x4000, &[0x33], WriteCheck::DeviceVerify).await?;
+            connection.memory_write(MemorySpace::Router, 0x5000, &[0x44, 0x55], WriteCheck::DeviceVerify).await
         };
         let device = async {
             let BusCommand::TlRequest { completion, tx, .. } = cmd_rx.recv().await.expect("user-memory write") else {
@@ -1105,10 +1049,16 @@ mod tests {
     async fn unconfirmed_extended_property_write_resolves_on_transport_ack() {
         let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
         let mut connection = DeviceConnection::new(target(), cmd_tx, false, None, ConnectionId::TEST);
-        let client =
-            connection.property_ext_write_unconfirmed(InterfaceObjectType::ApplicationProgram, 1, 0x123, 7, 2, &[
-                0xAA, 0xBB, 0xCC, 0xDD,
-            ]);
+        let client = connection.property_write_unconfirmed(
+            PropertyAddress::Extended {
+                object_type: InterfaceObjectType::ApplicationProgram,
+                object_instance: 1,
+                property_id: 0x123,
+            },
+            7,
+            2,
+            &[0xAA, 0xBB, 0xCC, 0xDD],
+        );
         let device = async {
             let BusCommand::TlRequest { frame, completion, tx, .. } =
                 cmd_rx.recv().await.expect("unconfirmed property write")
@@ -1139,12 +1089,24 @@ mod tests {
 
         assert!(connection.adc_read(64, 1).await.is_err());
         assert!(connection.adc_read(1, 0).await.is_err());
-        assert!(connection.user_memory_read(0x10_0000, 1).await.is_err());
-        assert!(connection.user_memory_write(0xF_FFFF, &[1, 2]).await.is_err());
-        assert!(connection.router_memory_read(0xFFFF, 2).await.is_err());
-        assert!(connection.router_memory_write(0, &[]).await.is_err());
+        assert!(connection.memory_read(MemorySpace::User, 0x10_0000, 1).await.is_err());
+        assert!(connection.memory_write(MemorySpace::User, 0xF_FFFF, &[1, 2], WriteCheck::Acknowledged).await.is_err());
+        assert!(connection.memory_read(MemorySpace::Router, 0xFFFF, 2).await.is_err());
+        assert!(connection.memory_write(MemorySpace::Router, 0, &[], WriteCheck::Acknowledged).await.is_err());
         assert!(
-            connection.property_ext_write_unconfirmed(InterfaceObjectType::Device, 0, 1, 1, 1, &[1]).await.is_err()
+            connection
+                .property_write_unconfirmed(
+                    PropertyAddress::Extended {
+                        object_type: InterfaceObjectType::Device,
+                        object_instance: 0,
+                        property_id: 1
+                    },
+                    1,
+                    1,
+                    &[1]
+                )
+                .await
+                .is_err()
         );
 
         assert!(cmd_rx.try_recv().is_err(), "invalid operations send no traffic");
@@ -1167,25 +1129,58 @@ mod tests {
                 assert!(cmd_rx.try_recv().is_err(), "invalid request sends no frame");
             };
         }
-        rejected!(connection.property_read(0, 256, 1, 1));
-        rejected!(connection.property_read(0, 1, 4096, 1));
-        rejected!(connection.property_read(0, 1, 4095, 2));
-        rejected!(connection.property_read(0, 1, 1, 16));
-        rejected!(connection.property_write(0, 1, 1, 2, &[1, 2, 3]));
-        rejected!(connection.property_ext_read(InterfaceObjectType::Device, 0, 1, 1, 1));
-        rejected!(connection.property_ext_read(InterfaceObjectType::Device, 4096, 1, 1, 1));
-        rejected!(connection.property_ext_read(InterfaceObjectType::Device, 1, 4096, 1, 1));
-        rejected!(connection.property_ext_read(InterfaceObjectType::Device, 1, 1, 65535, 2));
-        rejected!(connection.property_ext_write(InterfaceObjectType::Device, 1, 1, 1, 2, &[1]));
-        rejected!(connection.property_description_read(0, 256, 0));
-        rejected!(connection.function_property_command(0, 256, &[]));
-        rejected!(connection.function_property_ext_state_read(InterfaceObjectType::Device, 0, 1, &[]));
-        rejected!(connection.memory_read(0, 64));
-        rejected!(connection.memory_read(65535, 2));
-        rejected!(connection.memory_write(0, &[0; 64]));
-        rejected!(connection.memory_write_auto_verify(65535, &[1, 2]));
-        rejected!(connection.memory_extended_read(0x1000000, 1));
-        rejected!(connection.memory_extended_write(0xffffff, &[1, 2]));
+        // A classic PID beyond one octet cannot even be addressed.
+        assert!(matches!(PropertyAddress::indexed(0, 256), Err(Error::Parse(_))));
+        rejected!(connection.property_read(PropertyAddress::indexed(0, 1).expect("PID fits one octet"), 4096, 1));
+        rejected!(connection.property_read(PropertyAddress::indexed(0, 1).expect("PID fits one octet"), 4095, 2));
+        rejected!(connection.property_read(PropertyAddress::indexed(0, 1).expect("PID fits one octet"), 1, 16));
+        rejected!(
+            connection.property_write(PropertyAddress::indexed(0, 1).expect("PID fits one octet"), 1, 2, &[1, 2, 3])
+        );
+        rejected!(connection.property_read(
+            PropertyAddress::Extended { object_type: InterfaceObjectType::Device, object_instance: 0, property_id: 1 },
+            1,
+            1
+        ));
+        rejected!(connection.property_read(
+            PropertyAddress::Extended {
+                object_type: InterfaceObjectType::Device,
+                object_instance: 4096,
+                property_id: 1
+            },
+            1,
+            1
+        ));
+        rejected!(connection.property_read(
+            PropertyAddress::Extended {
+                object_type: InterfaceObjectType::Device,
+                object_instance: 1,
+                property_id: 4096
+            },
+            1,
+            1
+        ));
+        rejected!(connection.property_read(
+            PropertyAddress::Extended { object_type: InterfaceObjectType::Device, object_instance: 1, property_id: 1 },
+            65535,
+            2
+        ));
+        rejected!(connection.property_write(
+            PropertyAddress::Extended { object_type: InterfaceObjectType::Device, object_instance: 1, property_id: 1 },
+            1,
+            2,
+            &[1]
+        ));
+        rejected!(connection.function_property_state_read(
+            PropertyAddress::Extended { object_type: InterfaceObjectType::Device, object_instance: 0, property_id: 1 },
+            &[]
+        ));
+        rejected!(connection.memory_read(MemorySpace::Standard, 0, 64));
+        rejected!(connection.memory_read(MemorySpace::Standard, 65535, 2));
+        rejected!(connection.memory_write(MemorySpace::Standard, 0, &[0; 64], WriteCheck::Acknowledged));
+        rejected!(connection.memory_write(MemorySpace::Standard, 65535, &[1, 2], WriteCheck::DeviceVerify));
+        rejected!(connection.memory_read(MemorySpace::Extended, 0x1000000, 1));
+        rejected!(connection.memory_write(MemorySpace::Extended, 0xffffff, &[1, 2], WriteCheck::Acknowledged));
     }
 
     #[tokio::test]
@@ -1201,7 +1196,7 @@ mod tests {
         ] {
             let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
             let mut connection = DeviceConnection::new(target(), cmd_tx, false, None, ConnectionId::TEST);
-            let client = connection.property_read(1, 3, 7, 2);
+            let client = connection.property_read(PropertyAddress::indexed(1, 3).expect("PID fits one octet"), 7, 2);
             let peer = async {
                 let BusCommand::TlRequest { tx, .. } = cmd_rx.recv().await.expect("request") else {
                     panic!("connected request")
@@ -1231,7 +1226,7 @@ mod tests {
         ] {
             let (cmd_tx, mut cmd_rx) = mpsc::channel(1);
             let mut connection = DeviceConnection::new(target(), cmd_tx, false, None, ConnectionId::TEST);
-            let client = connection.memory_read(0x100, 2);
+            let client = connection.memory_read(MemorySpace::Standard, 0x100, 2);
             let peer = async {
                 let BusCommand::TlRequest { tx, .. } = cmd_rx.recv().await.expect("request") else {
                     panic!("connected request")

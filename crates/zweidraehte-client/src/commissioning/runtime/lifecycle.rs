@@ -48,7 +48,15 @@ impl ExecutionSession<'_> {
     pub(crate) async fn advance_sending_sequence(&mut self, serial: Option<[u8; 6]>) -> Result<(), Diagnostic> {
         let reported = self
             .connection_mut()?
-            .property_ext_read(InterfaceObjectType::Security, 1, pid::security::SEQUENCE_NUMBER_SENDING, 1, 1)
+            .property_read(
+                PropertyAddress::Extended {
+                    object_type: InterfaceObjectType::Security,
+                    object_instance: 1,
+                    property_id: pid::security::SEQUENCE_NUMBER_SENDING,
+                },
+                1,
+                1,
+            )
             .await?;
         let reported: [u8; 6] = reported.try_into().map_err(|_| Diagnostic::new("PID 59 is not a six-octet value"))?;
         let reported = reported.into_iter().fold(0u64, |value, byte| value << 8 | u64::from(byte));
@@ -61,10 +69,12 @@ impl ExecutionSession<'_> {
             return Err(Diagnostic::new("PID 59 exceeds the KNX 48-bit range"));
         }
         self.connection_mut()?
-            .property_ext_write(
-                InterfaceObjectType::Security,
-                1,
-                pid::security::SEQUENCE_NUMBER_SENDING,
+            .property_write(
+                PropertyAddress::Extended {
+                    object_type: InterfaceObjectType::Security,
+                    object_instance: 1,
+                    property_id: pid::security::SEQUENCE_NUMBER_SENDING,
+                },
                 1,
                 1,
                 &selected.to_be_bytes()[2..],
@@ -106,7 +116,7 @@ impl ExecutionSession<'_> {
             _ => {
                 let result = {
                     let connection = self.connection_mut()?;
-                    connection.property_read(0, pid::DEVICE_CONTROL, 1, 1).await
+                    connection.property_read(PropertyAddress::indexed(0, pid::DEVICE_CONTROL)?, 1, 1).await
                 };
                 let bytes = result?;
                 let value = bytes
@@ -143,7 +153,7 @@ impl ExecutionSession<'_> {
         );
         let result = {
             let connection = self.connection_mut()?;
-            connection.property_write(0, pid::DEVICE_CONTROL, 1, 1, &[value]).await
+            connection.property_write(PropertyAddress::indexed(0, pid::DEVICE_CONTROL)?, 1, 1, &[value]).await
         };
         if let Err(error) = result {
             if mutating_request_may_have_reached_device(&error) {

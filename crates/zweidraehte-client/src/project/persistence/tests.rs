@@ -370,7 +370,7 @@ pub(in crate::project) fn persistence_fixture(intent: CommissioningIntent) -> (P
     .with_facts(crate::commissioning::ProgrammingFacts::new(crate::commissioning::ObservedTarget {
         previous_address: address,
         serial_number: None,
-        credential: crate::commissioning::ManagementCredential::Plaintext,
+        credential: crate::ManagementCredential::Plaintext,
     }))
     .compile_selection(&ProfileSelection::discovered(0x0012))
     .expect("persistence fixture compiles");

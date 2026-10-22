@@ -22,10 +22,13 @@
 
 use std::net::SocketAddrV4;
 use std::time::Duration;
+use zweidraehte_client::{AddressTarget, MemorySpace, PropertyAddress};
 
 use zweidraehte_client::commissioning::{ImageLocation, ImageSpace, ProfileSelection, ResolvedProfile};
 use zweidraehte_client::security::Keyring;
-use zweidraehte_client::{GroupAddress, GroupValueEncoding, IndividualAddress, KnxBus, SecurityEntry, SecurityStore};
+use zweidraehte_client::{
+    BusTarget, GroupAddress, GroupValueEncoding, IndividualAddress, KnxBus, SecurityEntry, SecurityStore,
+};
 use zweidraehte_ets_files::master_data::MasterDataLoadRequest;
 
 /// PID_SERIAL_NUMBER on the Device Object.
@@ -78,8 +81,11 @@ async fn programming_mode_scan_completes() {
     let bus = KnxBus::connect_ip(addr).await.expect("tunnel connects");
     // Usually no device is in programming mode; the point is that the
     // scan window elapses cleanly and returns (not what it finds).
-    let found =
-        bus.network_management().read_individual_addresses(Duration::from_secs(2)).await.expect("scan completes");
+    let found = bus
+        .network_management()
+        .read_individual_addresses(AddressTarget::ProgrammingMode, Duration::from_secs(2))
+        .await
+        .expect("scan completes");
     eprintln!("devices in programming mode: {:?}", found);
     bus.disconnect().await.expect("tunnel disconnects");
 }
@@ -104,7 +110,10 @@ async fn device_management_reads() {
 
     // Connected (RCo): serial number property + clean close.
     let mut device = bus.connect_device(target).await.expect("T_Connect");
-    let serial = device.property_read(0, PID_SERIAL_NUMBER, 1, 1).await.expect("serial number read");
+    let serial = device
+        .property_read(PropertyAddress::indexed(0, PID_SERIAL_NUMBER).expect("PID fits one octet"), 1, 1)
+        .await
+        .expect("serial number read");
     assert_eq!(serial.len(), 6, "KNX serial numbers are 6 bytes");
     eprintln!("device {} serial: {:02X?}", target, serial);
     device.close().await.expect("T_Disconnect");
@@ -147,10 +156,13 @@ async fn secure_connect_and_read() {
         SecurityEntry::with_credentials(zweidraehte_client::DeviceSecurityMode::Secure, tool_key, fdsk, Some(serial))
             .expect("live secure test provides a key"),
     );
-    let bus = KnxBus::connect_ip_with_security(addr, security).await.expect("tunnel connects");
+    let bus = KnxBus::builder().with_security(security).connect(&BusTarget::Ip(addr)).await.expect("tunnel connects");
 
     let mut device = bus.connect_device(target).await.expect("secure T_Connect incl. S-A_Sync");
-    let read_serial = device.property_read(0, PID_SERIAL_NUMBER, 1, 1).await.expect("wrapped serial read");
+    let read_serial = device
+        .property_read(PropertyAddress::indexed(0, PID_SERIAL_NUMBER).expect("PID fits one octet"), 1, 1)
+        .await
+        .expect("wrapped serial read");
     assert_eq!(read_serial, serial, "device serial matches KNX_DEVICE_SERIAL");
     let descriptor = device.device_descriptor_read(0).await.expect("wrapped descriptor read");
     eprintln!("secure device {} mask: {:02X?}", target, descriptor);
@@ -196,7 +208,7 @@ async fn secure_group_monitor() {
         return;
     };
 
-    let bus = KnxBus::connect_ip_with_security(addr, security).await.expect("tunnel connects");
+    let bus = KnxBus::builder().with_security(security).connect(&BusTarget::Ip(addr)).await.expect("tunnel connects");
     let mut events = bus.group_events();
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
@@ -248,7 +260,7 @@ async fn secure_group_write_live() {
         return;
     };
 
-    let bus = KnxBus::connect_ip_with_security(addr, security).await.expect("tunnel connects");
+    let bus = KnxBus::builder().with_security(security).connect(&BusTarget::Ip(addr)).await.expect("tunnel connects");
     bus.group_write(ga, &[value], GroupValueEncoding::Short)
         .await
         .expect("secured group write accepted by the interface");
@@ -314,14 +326,15 @@ async fn system7_load_states_readable() {
     // The four load-state bytes at B6EAh (ADT, AST, APP, PEI) — a
     // commissioned device answers Loaded (01) on the first three.
     let load_status = u16::try_from(status_addresses[0]).expect("MV-0705 load-state memory fits the classic service");
-    let states = device.memory_read(load_status, 4).await.expect("load states read");
+    let states = device.memory_read(MemorySpace::Standard, u32::from(load_status), 4).await.expect("load states read");
     eprintln!("load states ADT/AST/APP/PEI: {states:02X?}");
     assert_eq!(states.len(), 4);
 
     // The RT8 table head: IA-inclusive length, then the IA —
     // which must be the address we are talking to.
     let address_table = u16::try_from(address_table).expect("MV-0705 address-table memory fits the classic service");
-    let adt_head = device.memory_read(address_table, 3).await.expect("address table read");
+    let adt_head =
+        device.memory_read(MemorySpace::Standard, u32::from(address_table), 3).await.expect("address table read");
     eprintln!("address table: length {}, IA {:02X?}", adt_head[0], &adt_head[1..3]);
     assert_eq!(&adt_head[1..3], target.as_bytes(), "the address table holds the device's own IA");
 

@@ -14,10 +14,11 @@
 mod common;
 
 use std::time::Duration;
+use zweidraehte_client::PropertyAddress;
 
 use clap::Parser;
 use common::{TargetArgs, format_serial};
-use zweidraehte_client::{IndividualAddress, pid};
+use zweidraehte_client::{IndividualAddress, KnxBus, pid};
 
 /// Scan a KNX line for present individual addresses.
 #[derive(Parser)]
@@ -67,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (area, line) = args.line;
     let window = Duration::from_millis(args.timeout_ms);
 
-    let bus = args.target.to_target().connect().await?;
+    let bus = KnxBus::connect(&args.target.to_target()).await?;
     let own = bus.assigned_address();
     let nm = bus.network_management();
 
@@ -88,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // PID 11). Not every device answers a connectionless
             // property read, so a refusal degrades to just the
             // address.
-            match nm.property_read(addr, 0, pid::SERIAL_NUMBER, 1, 1).await {
+            match nm.property_read(addr, PropertyAddress::indexed(0, pid::SERIAL_NUMBER)?, 1, 1).await {
                 Ok(serial) => println!("  {addr}  serial {}", format_serial(&serial)),
                 Err(_) => println!("  {addr}  (serial not readable)"),
             }

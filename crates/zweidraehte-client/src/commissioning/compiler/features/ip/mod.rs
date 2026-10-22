@@ -113,9 +113,9 @@ impl ProgramCompiler<'_> {
         // procedure is empty. The Data Secure application profile enables the confirmed
         // service independently of the desired security mode or credentials.
         let kind = if product.supports_data_secure() {
-            crate::commissioning::RestartKind::Confirmed
+            crate::commissioning::inspection::RestartKind::Confirmed
         } else {
-            crate::commissioning::RestartKind::Basic
+            crate::commissioning::inspection::RestartKind::Basic
         };
         self.recipes.require_restart(kind, zweidraehte_project::ProgrammingSection::Configuration);
 

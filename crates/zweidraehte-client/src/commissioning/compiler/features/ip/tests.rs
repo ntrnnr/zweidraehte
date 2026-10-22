@@ -92,8 +92,9 @@ fn plain_management_binds_public_ip_settings_with_dormant_security_controls() {
 fn configuration_only_ip_controls_frame_the_selected_empty_source_and_restart() {
     use crate::commissioning::compiler::selection::RecipeSet;
     use crate::commissioning::input::ProgramSections;
+    use crate::commissioning::inspection::RestartKind;
     use crate::commissioning::procedure::ProcedureSourceId;
-    use crate::commissioning::{CommissioningIntent, DownloadMode, RestartKind};
+    use crate::commissioning::{CommissioningIntent, DownloadMode};
 
     // Native configuration-only compilation starts with no application source.
     // Its IP task requests a restart, then final session correction frames the
@@ -322,7 +323,7 @@ fn basic_tool_configuration_has_exact_ot11_image_shape() {
     assert!(operations.iter().all(|step| step.path.contribution.is_some()));
     assert!(matches!(
         operations.last().expect("IP configuration requires a terminal").operation,
-        ProcedureOperation::Restart { kind: crate::commissioning::RestartKind::Basic }
+        ProcedureOperation::Restart { kind: crate::commissioning::inspection::RestartKind::Basic }
     ));
     assert_eq!(property_write_pid(&operations[operations.len() - 2].operation), Some(pid::ip::IP_ASSIGNMENT_METHOD),);
 }

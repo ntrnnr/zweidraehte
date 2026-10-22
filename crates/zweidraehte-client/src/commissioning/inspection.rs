@@ -4,7 +4,7 @@
 //! does not grant access to execution; only a live-bound PreparedProgram can run.
 
 pub use super::procedure::operands::{
-    MemoryAddress, MemoryService, PointerEncoding, PropertyAddress, StandardMemoryService, pure_property_address,
+    MemoryAddress, MemoryService, PointerEncoding, StandardMemoryService, pure_property_address,
     required_plaintext_apdu,
 };
 pub use super::procedure::{

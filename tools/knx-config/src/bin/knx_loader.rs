@@ -24,7 +24,7 @@ use zweidraehte_client::commissioning::{
     DifferentialDecision, DifferentialFallback, DifferentialPolicy, DownloadMode, ImageSpace, PreparedProgram,
     ProfileSelection, ProgrammingModePolling, TargetSelection, UnloadMode,
 };
-use zweidraehte_client::{BusTarget, MaskVersion};
+use zweidraehte_client::{BusTarget, KnxBus, MaskVersion};
 use zweidraehte_ets_files::archive::{
     PackageCatalogLeaf, PackageCatalogOnlyReason, PackageInstantiation, PackageInstantiationBlock, PackageStore,
     StoredPackage,
@@ -1235,7 +1235,9 @@ async fn run_programming(
     let target = require_target(target).context("while attempting to select the bus interface")?;
 
     let execution = programming
-        .execute(|security| target.connect_with_security(security), &mut ProgressPrinter { device_mask })
+        .execute(|security| KnxBus::builder().with_security(security).connect(&target), &mut ProgressPrinter {
+            device_mask,
+        })
         .await;
 
     let reports = execution.map_err(|error| {
@@ -1423,10 +1425,11 @@ async fn run_read(
     let keyring = security.load_keyring().context("while attempting to load the ETS keyring")?;
     let target = require_target(target).context("while attempting to select the bus interface")?;
     let session = ProjectCommissioningSession::begin(store).context("while attempting to open the project session")?;
-    let operation =
-        ProjectOperation::connect(session, keyring.as_ref(), |security| target.connect_with_security(security))
-            .await
-            .context("while attempting to open the project operation")?;
+    let operation = ProjectOperation::connect(session, keyring.as_ref(), |security| {
+        KnxBus::builder().with_security(security).connect(&target)
+    })
+    .await
+    .context("while attempting to open the project operation")?;
     let options = MemoryReadOptions {
         sources: ManagementSources { keyring: keyring.as_ref(), master_data },
         allow_plaintext: true,
@@ -1488,7 +1491,9 @@ async fn run_unload(
     programming.set_policy(policy);
     let target = require_target(target).context("while attempting to select the bus interface")?;
     programming
-        .execute(|security| target.connect_with_security(security), &mut ProgressPrinter { device_mask: None })
+        .execute(|security| KnxBus::builder().with_security(security).connect(&target), &mut ProgressPrinter {
+            device_mask: None,
+        })
         .await
         .context("while attempting to unload the device")?;
 
@@ -1516,10 +1521,11 @@ async fn run_sync(
         ProjectCommissioningSession::begin(store)
     }
     .context("while attempting to open the project session")?;
-    let operation =
-        ProjectOperation::connect(session, keyring.as_ref(), |security| target.connect_with_security(security))
-            .await
-            .context("while attempting to open the project operation")?;
+    let operation = ProjectOperation::connect(session, keyring.as_ref(), |security| {
+        KnxBus::builder().with_security(security).connect(&target)
+    })
+    .await
+    .context("while attempting to open the project operation")?;
     let mode =
         if recover { ProjectSynchronization::Recover { client_floor } } else { ProjectSynchronization::Synchronize };
     let result = operation.synchronize(mode, ManagementSources { keyring: keyring.as_ref(), master_data }).await;

@@ -24,8 +24,9 @@ mod common;
 
 use clap::Parser;
 use common::TargetArgs;
+use zweidraehte_client::PropertyAddress;
 use zweidraehte_client::security::Keyring;
-use zweidraehte_client::{IndividualAddress, SecurityEntry, SecurityStore};
+use zweidraehte_client::{IndividualAddress, KnxBus, SecurityEntry, SecurityStore};
 
 /// Read device information over a KNX Data Secure connection.
 #[derive(Parser)]
@@ -85,19 +86,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let bus = args.target.to_target().connect_with_security(security).await?;
+    let bus = KnxBus::builder().with_security(security).connect(&args.target.to_target()).await?;
 
     println!("Connecting securely to {} (S-A_Sync handshake)...", args.ia);
     let mut dev = bus.connect_device(args.ia).await?;
     println!("Secure connection established.");
 
-    let serial = dev.property_read(0, 11, 1, 1).await?;
+    let serial = dev.property_read(PropertyAddress::indexed(0, 11)?, 1, 1).await?;
     println!("  PID_SERIAL_NUMBER: {:02X?}", serial);
 
     let descriptor = dev.device_descriptor_read(0).await?;
     println!("  Device descriptor: {:02X?}", descriptor);
 
-    let order_info = dev.property_read(0, 15, 1, 1).await;
+    let order_info = dev.property_read(PropertyAddress::indexed(0, 15)?, 1, 1).await;
     match order_info {
         Ok(info) => println!("  PID_ORDER_INFO:    {:02X?}", info),
         Err(e) => println!("  PID_ORDER_INFO:    <not readable: {e}>"),

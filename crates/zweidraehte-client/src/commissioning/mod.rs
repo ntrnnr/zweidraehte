@@ -5,7 +5,6 @@
 //! [`Commissioner::prepare`] observes the device and binds the program to a
 //! bus. [`Commissioner::execute`] consumes that [`PreparedProgram`].
 
-pub use crate::bus::access::ManagementCredential;
 pub use input::facts::{ObservedTarget, ProgrammingFacts};
 pub use input::security::{DesiredDataSecurity, ObservedDataSecurity};
 /// Requested device configuration and target facts.
@@ -40,8 +39,6 @@ pub use crate::commissioning::evidence::{
     DeploymentRecord, DeviceStamp, DifferentialDecision, DifferentialFallback, DifferentialPolicy, DiscoveredDevice,
 };
 pub use crate::commissioning::image::{ImageLocation, ImageSegment, ImageSpace, NativeImageRegion, SparseDeviceImage};
-pub use crate::commissioning::procedure::RestartKind;
-pub use crate::commissioning::procedure::operands::StandardMemoryService;
 pub use crate::commissioning::programmability::{Unprogrammable, mask_unprogrammable, unprogrammable};
 pub use runtime::credentials::ManagementAccessOptions;
 pub use runtime::prepared::PreparedProgram;

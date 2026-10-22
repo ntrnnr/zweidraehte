@@ -1,6 +1,6 @@
 //! Bounded diagnostic reads over the existing single-request services.
 
-use super::{BusError, BusResult, DeviceConnection};
+use super::{BusError, BusResult, DeviceConnection, MemorySpace, PropertyAddress};
 use zweidraehte_proto::{config::MAX_APDU_LENGTH_TP1_STANDARD as STANDARD_APDU_LENGTH, messages::apdu::secure, pid};
 
 /// Commissioning and diagnostics must reserve the same space for the service
@@ -25,7 +25,8 @@ impl DeviceConnection {
         {
             return STANDARD_APDU_LENGTH;
         }
-        match self.property_read(0, pid::device::MAX_APDU_LENGTH, 1, 1).await {
+        let max_apdu = PropertyAddress::indexed(0, pid::device::MAX_APDU_LENGTH).expect("PID fits one octet");
+        match self.property_read(max_apdu, 1, 1).await {
             Ok(bytes) if bytes.len() == 2 => {
                 let length = u16::from_be_bytes([bytes[0], bytes[1]]);
                 if (STANDARD_APDU_LENGTH..=254).contains(&length) { length } else { STANDARD_APDU_LENGTH }
@@ -58,7 +59,7 @@ impl DeviceConnection {
         while bytes.len() < length {
             let at = (usize::from(address) + bytes.len()) as u16;
             let count = chunk.min(length - bytes.len()) as u8;
-            bytes.extend(self.memory_read(at, count).await?);
+            bytes.extend(self.memory_read(MemorySpace::Standard, u32::from(at), count).await?);
         }
         Ok(bytes)
     }

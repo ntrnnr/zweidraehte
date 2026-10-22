@@ -31,10 +31,12 @@
 use std::env;
 use std::process::ExitCode;
 use std::time::Duration;
+use zweidraehte_client::{AddressTarget, MemorySpace, PropertyAddress, Protection, WriteCheck};
 
 use log::LevelFilter;
 use zweidraehte_project::ProgrammingSection;
 
+use zweidraehte_client::commissioning::inspection::RestartKind;
 use zweidraehte_client::commissioning::inspection::{MemoryAddress, MemoryService};
 use zweidraehte_client::commissioning::inspection::{OperationData, OperationTarget, ProcedureOperation};
 use zweidraehte_client::commissioning::{
@@ -42,7 +44,7 @@ use zweidraehte_client::commissioning::{
     CommissioningSectionOutcome, CommissioningStage, CommissioningVeto, CompileOptions, CompiledProgram, DownloadMode,
     ExecutionReport, ImageSpace, ManagementAccessOptions, ManagementModel, MutationStatus, ObjectSelector,
     PreparationOptions, PreparedProgram, ProgramSections, ProgrammingInput, ProgrammingModePolling,
-    ResourceManagementStyle, RestartKind, TargetSelection, UnloadMode,
+    ResourceManagementStyle, TargetSelection, UnloadMode,
 };
 use zweidraehte_client::configuration::ResolvedKeyMaterial;
 use zweidraehte_client::configuration::{
@@ -521,7 +523,7 @@ async fn main() -> ExitCode {
         }
 
         let (connector, control) = client_bridge::spawn(lifecycle);
-        let bus = KnxBus::with_connector(connector, ConnectorInfo { assigned_address: tester_ia(), max_apdu: 254 });
+        let bus = KnxBus::builder().attach(connector, ConnectorInfo { assigned_address: tester_ia(), max_apdu: 254 });
 
         for (name, scenario) in selected {
             print!("• {name} ... ");
@@ -734,7 +736,7 @@ async fn memory_load_state(
 
     let offset = u16::from(machine as u8) - 1;
     let bytes = connection
-        .memory_read(LOAD_STATUS_BASE + offset, 1)
+        .memory_read(MemorySpace::Standard, u32::from(LOAD_STATUS_BASE + offset), 1)
         .await
         .map_err(|error| format!("{context}: reading memory load state: {error}"))?;
 
@@ -747,7 +749,7 @@ async fn property_load_state(
     context: &str,
 ) -> Result<LoadState, String> {
     let bytes = connection
-        .property_read(object, pid::LOAD_STATE_CONTROL, 1, 1)
+        .property_read(PropertyAddress::indexed(object, pid::LOAD_STATE_CONTROL).expect("PID fits one octet"), 1, 1)
         .await
         .map_err(|error| format!("{context}: reading property load state: {error}"))?;
 
@@ -774,7 +776,11 @@ async fn assert_micro_system7_cot(connection: &mut DeviceConnection, context: &s
             .checked_add(u16::try_from(offset).map_err(|_| format!("{context}: COT offset exceeds u16"))?)
             .ok_or_else(|| format!("{context}: COT read address overflow"))?;
         let chunk = connection
-            .memory_read(address, u8::try_from(count).expect("COT chunk is at most 12 octets"))
+            .memory_read(
+                MemorySpace::Standard,
+                u32::from(address),
+                u8::try_from(count).expect("COT chunk is at most 12 octets"),
+            )
             .await
             .map_err(|error| format!("{context}: reading COT chunk at {address:04X}: {error}"))?;
         if chunk.len() != count {
@@ -824,7 +830,12 @@ async fn raw_memory_oversized_segment(
     const MACHINE: LsmMachine = LsmMachine::AddressTable;
 
     connection
-        .memory_write(LOAD_CONTROL_ADDRESS, &MemLoadControlRecord::event(MACHINE, LoadEvent::StartLoading))
+        .memory_write(
+            MemorySpace::Standard,
+            u32::from(LOAD_CONTROL_ADDRESS),
+            &MemLoadControlRecord::event(MACHINE, LoadEvent::StartLoading),
+            WriteCheck::Acknowledged,
+        )
         .await
         .map_err(|error| format!("{context}: starting memory load: {error}"))?;
     if memory_load_state(connection, MACHINE, context).await? != LoadState::Loading {
@@ -832,7 +843,12 @@ async fn raw_memory_oversized_segment(
     }
 
     connection
-        .memory_write(LOAD_CONTROL_ADDRESS, &MemLoadControlRecord::abs_segment(MACHINE, &segment))
+        .memory_write(
+            MemorySpace::Standard,
+            u32::from(LOAD_CONTROL_ADDRESS),
+            &MemLoadControlRecord::abs_segment(MACHINE, &segment),
+            WriteCheck::Acknowledged,
+        )
         .await
         .map_err(|error| format!("{context}: declaring oversized memory segment: {error}"))?;
     let rejected = memory_load_state(connection, MACHINE, context).await?;
@@ -841,7 +857,12 @@ async fn raw_memory_oversized_segment(
     }
 
     connection
-        .memory_write(LOAD_CONTROL_ADDRESS, &MemLoadControlRecord::event(MACHINE, LoadEvent::Unload))
+        .memory_write(
+            MemorySpace::Standard,
+            u32::from(LOAD_CONTROL_ADDRESS),
+            &MemLoadControlRecord::event(MACHINE, LoadEvent::Unload),
+            WriteCheck::Acknowledged,
+        )
         .await
         .map_err(|error| format!("{context}: recovering memory load state: {error}"))?;
     let recovered = memory_load_state(connection, MACHINE, context).await?;
@@ -860,7 +881,12 @@ async fn raw_property_oversized_segment(
     const OBJECT: u8 = 1;
 
     connection
-        .property_write(OBJECT, pid::LOAD_STATE_CONTROL, 1, 1, &LoadControlRecord::event(LoadEvent::StartLoading))
+        .property_write(
+            PropertyAddress::indexed(OBJECT, pid::LOAD_STATE_CONTROL).expect("PID fits one octet"),
+            1,
+            1,
+            &LoadControlRecord::event(LoadEvent::StartLoading),
+        )
         .await
         .map_err(|error| format!("{context}: starting property load: {error}"))?;
     if property_load_state(connection, OBJECT, context).await? != LoadState::Loading {
@@ -868,7 +894,12 @@ async fn raw_property_oversized_segment(
     }
 
     connection
-        .property_write(OBJECT, pid::LOAD_STATE_CONTROL, 1, 1, &LoadControlRecord::rel_segment(&segment))
+        .property_write(
+            PropertyAddress::indexed(OBJECT, pid::LOAD_STATE_CONTROL).expect("PID fits one octet"),
+            1,
+            1,
+            &LoadControlRecord::rel_segment(&segment),
+        )
         .await
         .map_err(|error| format!("{context}: declaring oversized relative segment: {error}"))?;
     let rejected = property_load_state(connection, OBJECT, context).await?;
@@ -877,7 +908,12 @@ async fn raw_property_oversized_segment(
     }
 
     connection
-        .property_write(OBJECT, pid::LOAD_STATE_CONTROL, 1, 1, &LoadControlRecord::event(LoadEvent::Unload))
+        .property_write(
+            PropertyAddress::indexed(OBJECT, pid::LOAD_STATE_CONTROL).expect("PID fits one octet"),
+            1,
+            1,
+            &LoadControlRecord::event(LoadEvent::Unload),
+        )
         .await
         .map_err(|error| format!("{context}: recovering property load state: {error}"))?;
     let recovered = property_load_state(connection, OBJECT, context).await?;
@@ -1144,7 +1180,7 @@ fn scenario_bcu1_programmer_download<'a>(
         let mut connection = bus.connect_device(desired).await.map_err(|error| format!("reconnect: {error}"))?;
         let association_offset = 0x0100 + definition_offset(bcu1_stack::definition().assoc_table_offset())?;
         let association = connection
-            .memory_read(association_offset, 5)
+            .memory_read(MemorySpace::Standard, u32::from(association_offset), 5)
             .await
             .map_err(|error| format!("association table: {error}"))?;
         close_quietly(connection).await;
@@ -1332,14 +1368,29 @@ area 1 conformance {{
         bus.connect_device(dut_ia()).await.map_err(|error| format!("initial table check sync: {error}"))?;
     let initial_table_check = async {
         let count = connection
-            .property_ext_read(InterfaceObjectType::Security, 1, pid::security::GROUP_KEY_TABLE, 0, 1)
+            .property_read(
+                PropertyAddress::Extended {
+                    object_type: InterfaceObjectType::Security,
+                    object_instance: 1,
+                    property_id: pid::security::GROUP_KEY_TABLE,
+                },
+                0,
+                1,
+            )
             .await
             .map_err(|error| format!("reading initial PID 53 count: {error}"))?;
         if count != 2u16.to_be_bytes() {
             return Err(format!("initial PID 53 count {count:02X?}, expected two rows"));
         }
         let mode = connection
-            .function_property_ext_state_read(InterfaceObjectType::Security, 1, pid::security::SECURITY_MODE, &[0, 0])
+            .function_property_state_read(
+                PropertyAddress::Extended {
+                    object_type: InterfaceObjectType::Security,
+                    object_instance: 1,
+                    property_id: pid::security::SECURITY_MODE,
+                },
+                &[0, 0],
+            )
             .await
             .map_err(|error| format!("reading initial Security Mode: {error}"))?;
         if mode.return_code != 0 || mode.data != [0, 1] {
@@ -1377,7 +1428,15 @@ area 1 conformance {{
         bus.connect_device(dut_ia()).await.map_err(|error| format!("replacement check sync: {error}"))?;
     let replacement_check = async {
         let count = connection
-            .property_ext_read(InterfaceObjectType::Security, 1, pid::security::GROUP_KEY_TABLE, 0, 1)
+            .property_read(
+                PropertyAddress::Extended {
+                    object_type: InterfaceObjectType::Security,
+                    object_instance: 1,
+                    property_id: pid::security::GROUP_KEY_TABLE,
+                },
+                0,
+                1,
+            )
             .await
             .map_err(|error| format!("reading replaced PID 53 count: {error}"))?;
         if count != 1u16.to_be_bytes() {
@@ -1571,7 +1630,9 @@ fn scenario_system7_programming_mode_addressing<'a>(
 
         control.set_programming_mode(true).await.map_err(|e| format!("prog mode on: {e}"))?;
         let nm = bus.network_management();
-        nm.write_individual_address(new_ia).await.map_err(|e| format!("IA write: {e}"))?;
+        nm.write_individual_address(AddressTarget::ProgrammingMode, new_ia, Protection::Plain)
+            .await
+            .map_err(|e| format!("IA write: {e}"))?;
         control.set_programming_mode(false).await.map_err(|e| format!("prog mode off: {e}"))?;
 
         // The device must now answer connected management on its new
@@ -1627,23 +1688,25 @@ fn scenario_system7_full_download<'a>(
         // its flushed state. Everything must have survived the reboot.
         let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("reconnect: {e}"))?;
         let checks = async {
-            let states = conn.memory_read(0xB6EA, 3).await.map_err(|e| format!("load states: {e}"))?;
+            let states =
+                conn.memory_read(MemorySpace::Standard, 0xB6EA, 3).await.map_err(|e| format!("load states: {e}"))?;
             if states != [u8::from(LoadState::Loaded); 3] {
                 return Err(format!("load states {states:02X?}, expected all Loaded"));
             }
             // ADT: length 2 for the IA and one group address.
-            let adt = conn.memory_read(0x4000, 5).await.map_err(|e| format!("ADT read: {e}"))?;
+            let adt = conn.memory_read(MemorySpace::Standard, 0x4000, 5).await.map_err(|e| format!("ADT read: {e}"))?;
             if adt != [2, 0x10, 0x01, 0x19, 0x01] {
                 return Err(format!("ADT {adt:02X?}, expected [02 10 01 19 01]"));
             }
             // AST: the single link, TSAP 1 → object 1.
-            let ast = conn.memory_read(0x4100, 3).await.map_err(|e| format!("AST read: {e}"))?;
+            let ast = conn.memory_read(MemorySpace::Standard, 0x4100, 3).await.map_err(|e| format!("AST read: {e}"))?;
             if ast != [1, 1, 1] {
                 return Err(format!("AST {ast:02X?}, expected [01 01 01]"));
             }
             // COT: built from the product file's object definitions,
             // so ASAP 1 carries the flags the generator declared.
-            let cot = conn.memory_read(0x4200, 11).await.map_err(|e| format!("COT read: {e}"))?;
+            let cot =
+                conn.memory_read(MemorySpace::Standard, 0x4200, 11).await.map_err(|e| format!("COT read: {e}"))?;
             if cot[0] < 2 {
                 return Err(format!("COT count {} covers no objects", cot[0]));
             }
@@ -1680,7 +1743,8 @@ fn scenario_system7_unload_all<'a>(
         // Capture the table before commissioning owns the connection so the
         // retention check covers the unload itself.
         let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("connect: {e}"))?;
-        let original_adt = conn.memory_read(0x4000, 3).await.map_err(|e| format!("original ADT read: {e}"));
+        let original_adt =
+            conn.memory_read(MemorySpace::Standard, 0x4000, 3).await.map_err(|e| format!("original ADT read: {e}"));
         close_quietly(conn).await;
         let original_adt = original_adt?;
 
@@ -1706,13 +1770,14 @@ fn scenario_system7_unload_all<'a>(
 
         let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("reconnect: {e}"))?;
         let result = async {
-            let states = conn.memory_read(0xB6EA, 4).await.map_err(|e| format!("load states: {e}"))?;
+            let states =
+                conn.memory_read(MemorySpace::Standard, 0xB6EA, 4).await.map_err(|e| format!("load states: {e}"))?;
             if states != [u8::from(LoadState::Unloaded); 4] {
                 return Err(format!("load states {states:02X?}, expected all Unloaded"));
             }
             // Unload invalidates the table while retaining its bytes, including
             // the IA slot needed to keep this connection alive.
-            let adt = conn.memory_read(0x4000, 3).await.map_err(|e| format!("ADT read: {e}"))?;
+            let adt = conn.memory_read(MemorySpace::Standard, 0x4000, 3).await.map_err(|e| format!("ADT read: {e}"))?;
             if adt != original_adt {
                 return Err(format!("ADT head {adt:02X?}, expected retained {original_adt:02X?}"));
             }
@@ -1818,7 +1883,8 @@ async fn run_bcu2_descriptor(bus: &KnxBus, target: Bcu2Target) -> Result<(), Str
         }
         // Volume 9 calls 0115h UsrSavPtr. The ETS mask fixtures use
         // 48h there, alongside the factory level-0 authorization key.
-        let user_save = conn.memory_read(0x0115, 1).await.map_err(|e| format!("UsrSavPtr: {e}"))?;
+        let user_save =
+            conn.memory_read(MemorySpace::Standard, 0x0115, 1).await.map_err(|e| format!("UsrSavPtr: {e}"))?;
         if user_save != [0x48] {
             return Err(format!("UsrSavPtr {user_save:02X?}, expected 48h"));
         }
@@ -1856,9 +1922,18 @@ fn scenario_bcu2_required_properties<'a>(
                 return Err(format!("authorize granted level {level}, expected 0"));
             }
             for &(object, property, written, expected, name) in values {
-                conn.property_write(object, property, 1, 1, written).await.map_err(|e| format!("write {name}: {e}"))?;
-                let actual =
-                    conn.property_read(object, property, 1, 1).await.map_err(|e| format!("read {name}: {e}"))?;
+                conn.property_write(
+                    PropertyAddress::indexed(object, property).expect("PID fits one octet"),
+                    1,
+                    1,
+                    written,
+                )
+                .await
+                .map_err(|e| format!("write {name}: {e}"))?;
+                let actual = conn
+                    .property_read(PropertyAddress::indexed(object, property).expect("PID fits one octet"), 1, 1)
+                    .await
+                    .map_err(|e| format!("read {name}: {e}"))?;
                 if actual != expected {
                     return Err(format!("{name} readback {actual:02X?}, expected {expected:02X?}"));
                 }
@@ -1867,8 +1942,10 @@ fn scenario_bcu2_required_properties<'a>(
             // The Device Object reports the physically connected PEI. This
             // MCU has none; object 3 above stores the application's required
             // PEI independently.
-            let actual_pei =
-                conn.property_read(0, pid::PEI_TYPE, 1, 1).await.map_err(|e| format!("device PEI: {e}"))?;
+            let actual_pei = conn
+                .property_read(PropertyAddress::indexed(0, pid::PEI_TYPE).expect("PID fits one octet"), 1, 1)
+                .await
+                .map_err(|e| format!("device PEI: {e}"))?;
             if actual_pei != [0] {
                 return Err(format!("device PEI {actual_pei:02X?}, expected none"));
             }
@@ -1882,7 +1959,7 @@ fn scenario_bcu2_required_properties<'a>(
         let result = async {
             for &(object, property, _, expected, name) in values {
                 let actual = conn
-                    .property_read(object, property, 1, 1)
+                    .property_read(PropertyAddress::indexed(object, property).expect("PID fits one octet"), 1, 1)
                     .await
                     .map_err(|e| format!("read persisted {name}: {e}"))?;
                 if actual != expected {
@@ -1906,7 +1983,9 @@ fn scenario_bcu2_programming_mode_addressing<'a>(
 
         control.set_programming_mode(true).await.map_err(|e| format!("prog mode on: {e}"))?;
         let nm = bus.network_management();
-        nm.write_individual_address(new_ia).await.map_err(|e| format!("IA write: {e}"))?;
+        nm.write_individual_address(AddressTarget::ProgrammingMode, new_ia, Protection::Plain)
+            .await
+            .map_err(|e| format!("IA write: {e}"))?;
         control.set_programming_mode(false).await.map_err(|e| format!("prog mode off: {e}"))?;
 
         // On a BCU2 the IA lives inside the address table at 0117h —
@@ -1914,7 +1993,8 @@ fn scenario_bcu2_programming_mode_addressing<'a>(
         // a memory read shows where it landed.
         let mut conn = bus.connect_device(new_ia).await.map_err(|e| format!("connect at new IA: {e}"))?;
         let result = async {
-            let slot = conn.memory_read(0x0117, 2).await.map_err(|e| format!("IA slot read: {e}"))?;
+            let slot =
+                conn.memory_read(MemorySpace::Standard, 0x0117, 2).await.map_err(|e| format!("IA slot read: {e}"))?;
             if slot != new_ia.as_bytes() {
                 return Err(format!("IA slot {slot:02X?}, expected {:02X?}", new_ia.as_bytes()));
             }
@@ -1980,7 +2060,7 @@ async fn run_bcu2_full_download(bus: &KnxBus, control: &DutControl, target: Bcu2
     let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("reconnect: {e}"))?;
     let checks = async {
         let state = conn
-            .property_read(3, pid::LOAD_STATE_CONTROL, 1, 1)
+            .property_read(PropertyAddress::indexed(3, pid::LOAD_STATE_CONTROL).expect("PID fits one octet"), 1, 1)
             .await
             .map_err(|e| format!("application load state: {e}"))?;
         if state.first() != Some(&u8::from(LoadState::Loaded)) {
@@ -1988,12 +2068,13 @@ async fn run_bcu2_full_download(bus: &KnxBus, control: &DutControl, target: Bcu2
         }
         // The RT2 address table at 0116h: length counts the IA
         // slot, then the IA, then the single rewired GA.
-        let adt = conn.memory_read(0x0116, 5).await.map_err(|e| format!("ADT read: {e}"))?;
+        let adt = conn.memory_read(MemorySpace::Standard, 0x0116, 5).await.map_err(|e| format!("ADT read: {e}"))?;
         if adt != [0x02, 0x10, 0x01, 0x19, 0x01] {
             return Err(format!("ADT {adt:02X?}, expected [02 10 01 19 01]"));
         }
         // RunError cleared back to FFh — the application runs.
-        let run_error = conn.memory_read(0x010D, 1).await.map_err(|e| format!("RunError: {e}"))?;
+        let run_error =
+            conn.memory_read(MemorySpace::Standard, 0x010D, 1).await.map_err(|e| format!("RunError: {e}"))?;
         if run_error != [0xFF] {
             return Err(format!("RunError {run_error:02X?}, expected FFh"));
         }
@@ -2094,8 +2175,11 @@ async fn run_bcu2_light_switch_download(bus: &KnxBus, control: &DutControl, targ
         // MV-0020 device therefore needs two requests for this 20-byte table;
         // the APDU-40 secure composition could accept one, but exercising the
         // common BCU2 path keeps the scenario profile-neutral.
-        let mut cot = conn.memory_read(0x0146, 10).await.map_err(|e| format!("COT read: {e}"))?;
-        cot.extend(conn.memory_read(0x0150, 10).await.map_err(|e| format!("COT tail read: {e}"))?);
+        let mut cot =
+            conn.memory_read(MemorySpace::Standard, 0x0146, 10).await.map_err(|e| format!("COT read: {e}"))?;
+        cot.extend(
+            conn.memory_read(MemorySpace::Standard, 0x0150, 10).await.map_err(|e| format!("COT tail read: {e}"))?,
+        );
         if cot[0] != 6 || cot[1] != 0xD0 {
             return Err(format!("COT header {:02X?}, expected count 6, RAM flags D0h", &cot[..2]));
         }
@@ -2106,7 +2190,8 @@ async fn run_bcu2_light_switch_download(bus: &KnxBus, control: &DutControl, targ
         }
         // The parameter block at 0200h: the defaults with the two
         // overridden bytes.
-        let params = conn.memory_read(0x0200, 8).await.map_err(|e| format!("param read: {e}"))?;
+        let params =
+            conn.memory_read(MemorySpace::Standard, 0x0200, 8).await.map_err(|e| format!("param read: {e}"))?;
         if params != [4, 3, 1, 0, 0, 0, 0, 0] {
             return Err(format!("params {params:02X?}, expected [04 03 01 00 00 00 00 00]"));
         }
@@ -2156,7 +2241,11 @@ async fn run_bcu2_unload_all(bus: &KnxBus, target: Bcu2Target) -> Result<(), Str
     let result = async {
         for obj in [1u8, 2, 3] {
             let state = conn
-                .property_read(obj, pid::LOAD_STATE_CONTROL, 1, 1)
+                .property_read(
+                    PropertyAddress::indexed(obj, pid::LOAD_STATE_CONTROL).expect("PID fits one octet"),
+                    1,
+                    1,
+                )
                 .await
                 .map_err(|e| format!("load state of object {obj}: {e}"))?;
             if state.first() != Some(&u8::from(LoadState::Unloaded)) {
@@ -2166,11 +2255,12 @@ async fn run_bcu2_unload_all(bus: &KnxBus, target: Bcu2Target) -> Result<(), Str
         // The address table collapsed to the mute length with the
         // IA intact, and the ApplicationID's DevType is zeroed —
         // the device is unconfigured but still commissioned.
-        let adt = conn.memory_read(0x0116, 3).await.map_err(|e| format!("ADT read: {e}"))?;
+        let adt = conn.memory_read(MemorySpace::Standard, 0x0116, 3).await.map_err(|e| format!("ADT read: {e}"))?;
         if adt != [0x01, 0x10, 0x01] {
             return Err(format!("ADT head {adt:02X?}, expected mute length with IA intact"));
         }
-        let dev_type = conn.memory_read(0x0105, 3).await.map_err(|e| format!("DevType read: {e}"))?;
+        let dev_type =
+            conn.memory_read(MemorySpace::Standard, 0x0105, 3).await.map_err(|e| format!("DevType read: {e}"))?;
         if dev_type != [0x00, 0x00, 0x00] {
             return Err(format!("ApplicationID tail {dev_type:02X?}, expected zeroed"));
         }
@@ -2186,7 +2276,7 @@ async fn reset_secure_fixture(bus: &KnxBus, control: &DutControl, serial: &[u8; 
     // commission needs 02h, followed by assigning the test IA again.
     control.master_reset(2).await.map_err(|e| format!("factory reset: {e}"))?;
     bus.network_management()
-        .assign_individual_address_by_serial(serial, dut_ia(), Duration::from_millis(200))
+        .assign_individual_address(serial, dut_ia(), Duration::from_millis(200), Protection::Plain)
         .await
         .map_err(|e| format!("restore fixture IA after factory reset: {e}"))?;
     Ok(())
@@ -2289,7 +2379,15 @@ fn scenario_bcu2_secure_commission<'a>(
         let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("post-download sync: {e}"))?;
         let checks = async {
             let load_state = conn
-                .property_ext_read(SECURITY_IO, SECURITY_OCCURRENCE, pid::LOAD_STATE_CONTROL, 1, 1)
+                .property_read(
+                    PropertyAddress::Extended {
+                        object_type: SECURITY_IO,
+                        object_instance: SECURITY_OCCURRENCE,
+                        property_id: pid::LOAD_STATE_CONTROL,
+                    },
+                    1,
+                    1,
+                )
                 .await
                 .map_err(|e| format!("Security IO load state: {e}"))?;
             if load_state != [u8::from(LoadState::Loaded)] {
@@ -2302,7 +2400,15 @@ fn scenario_bcu2_secure_commission<'a>(
                 (pid::security::GO_SECURITY_FLAGS, 6u16, "GO security flags"),
             ] {
                 let count = conn
-                    .property_ext_read(SECURITY_IO, SECURITY_OCCURRENCE, property, 0, 1)
+                    .property_read(
+                        PropertyAddress::Extended {
+                            object_type: SECURITY_IO,
+                            object_instance: SECURITY_OCCURRENCE,
+                            property_id: property,
+                        },
+                        0,
+                        1,
+                    )
                     .await
                     .map_err(|e| format!("{name} count: {e}"))?;
                 if count != expected.to_be_bytes() {
@@ -2311,9 +2417,14 @@ fn scenario_bcu2_secure_commission<'a>(
             }
 
             let mode = conn
-                .function_property_ext_state_read(SECURITY_IO, SECURITY_OCCURRENCE, pid::security::SECURITY_MODE, &[
-                    0, 0,
-                ])
+                .function_property_state_read(
+                    PropertyAddress::Extended {
+                        object_type: SECURITY_IO,
+                        object_instance: SECURITY_OCCURRENCE,
+                        property_id: pid::security::SECURITY_MODE,
+                    },
+                    &[0, 0],
+                )
                 .await
                 .map_err(|e| format!("Security Mode: {e}"))?;
             if mode.return_code != 0 || mode.data != [0, 1] {
@@ -2326,11 +2437,13 @@ fn scenario_bcu2_secure_commission<'a>(
             // This is the shipping light-switch product rather than the
             // four-object DUT fixture: its RT2 table and parameter block must
             // survive the secure download and restart as well.
-            let cot = conn.memory_read(0x0146, 20).await.map_err(|e| format!("COT read: {e}"))?;
+            let cot =
+                conn.memory_read(MemorySpace::Standard, 0x0146, 20).await.map_err(|e| format!("COT read: {e}"))?;
             if cot[0] != 6 || cot[1] != 0xD0 {
                 return Err(format!("COT header {:02X?}, expected six objects at D0h", &cot[..2]));
             }
-            let params = conn.memory_read(0x0200, 8).await.map_err(|e| format!("parameter read: {e}"))?;
+            let params =
+                conn.memory_read(MemorySpace::Standard, 0x0200, 8).await.map_err(|e| format!("parameter read: {e}"))?;
             if params != [4, 3, 1, 0, 0, 0, 0, 0] {
                 return Err(format!("parameters {params:02X?}, expected secure light-switch overrides"));
             }
@@ -2391,7 +2504,8 @@ fn scenario_micro_s7_descriptor<'a, const MAX_APDU: u16>(
             // The System 7 signature reads: the plain (uninverted)
             // OptionReg at 0100h, and sixteen-level authorization with
             // the factory key granting level 0.
-            let option_reg = conn.memory_read(0x0100, 1).await.map_err(|e| format!("OptionReg: {e}"))?;
+            let option_reg =
+                conn.memory_read(MemorySpace::Standard, 0x0100, 1).await.map_err(|e| format!("OptionReg: {e}"))?;
             if option_reg != [0x00] {
                 return Err(format!("OptionReg {option_reg:02X?}, expected 00h uninverted"));
             }
@@ -2404,7 +2518,11 @@ fn scenario_micro_s7_descriptor<'a, const MAX_APDU: u16>(
             // objects and identity Properties are mandatory for MV-0705.
             for object in 0..=3 {
                 let object_type = conn
-                    .property_read(object, pid::OBJECT_TYPE, 1, 1)
+                    .property_read(
+                        PropertyAddress::indexed(object, pid::OBJECT_TYPE).expect("PID fits one octet"),
+                        1,
+                        1,
+                    )
                     .await
                     .map_err(|e| format!("object {object} type: {e}"))?;
                 if object_type != u16::from(object).to_be_bytes() {
@@ -2420,7 +2538,10 @@ fn scenario_micro_s7_descriptor<'a, const MAX_APDU: u16>(
                 (3, pid::PROGRAM_VERSION, &[0x00, 0xFA, 0x0B, 0x70, 0x01][..], "program version"),
                 (3, pid::PEI_TYPE, &[0x00][..], "application PEI type"),
             ] {
-                let actual = conn.property_read(object, property, 1, 1).await.map_err(|e| format!("{name}: {e}"))?;
+                let actual = conn
+                    .property_read(PropertyAddress::indexed(object, property).expect("PID fits one octet"), 1, 1)
+                    .await
+                    .map_err(|e| format!("{name}: {e}"))?;
                 if actual != expected {
                     return Err(format!("{name} {actual:02X?}, expected {expected:02X?}"));
                 }
@@ -2442,7 +2563,9 @@ fn scenario_micro_s7_programming_mode_addressing<'a>(
 
         control.set_programming_mode(true).await.map_err(|e| format!("prog mode on: {e}"))?;
         let nm = bus.network_management();
-        nm.write_individual_address(new_ia).await.map_err(|e| format!("IA write: {e}"))?;
+        nm.write_individual_address(AddressTarget::ProgrammingMode, new_ia, Protection::Plain)
+            .await
+            .map_err(|e| format!("IA write: {e}"))?;
         control.set_programming_mode(false).await.map_err(|e| format!("prog mode off: {e}"))?;
 
         // RT8 keeps the IA at bytes 1–2 of the address table blob
@@ -2450,7 +2573,8 @@ fn scenario_micro_s7_programming_mode_addressing<'a>(
         // write, a memory read shows where it landed.
         let mut conn = bus.connect_device(new_ia).await.map_err(|e| format!("connect at new IA: {e}"))?;
         let result = async {
-            let slot = conn.memory_read(0x4001, 2).await.map_err(|e| format!("IA slot read: {e}"))?;
+            let slot =
+                conn.memory_read(MemorySpace::Standard, 0x4001, 2).await.map_err(|e| format!("IA slot read: {e}"))?;
             if slot != new_ia.as_bytes() {
                 return Err(format!("IA slot {slot:02X?}, expected {:02X?}", new_ia.as_bytes()));
             }
@@ -2495,13 +2619,14 @@ fn scenario_micro_s7_full_download<'a, const MAX_APDU: u16>(
         let checks = async {
             // The three machines the download drove, read through the
             // memory-mapped status bytes; App2 stays untouched.
-            let states = conn.memory_read(0xB6EA, 4).await.map_err(|e| format!("load states: {e}"))?;
+            let states =
+                conn.memory_read(MemorySpace::Standard, 0xB6EA, 4).await.map_err(|e| format!("load states: {e}"))?;
             if states[..3] != [u8::from(LoadState::Loaded); 3] || states[3] != u8::from(LoadState::Unloaded) {
                 return Err(format!("load states {states:02X?}, expected [Loaded ×3, Unloaded]"));
             }
             // The RT8 address table at 4000h: length 2 counts the IA
             // and the single rewired GA.
-            let adt = conn.memory_read(0x4000, 5).await.map_err(|e| format!("ADT read: {e}"))?;
+            let adt = conn.memory_read(MemorySpace::Standard, 0x4000, 5).await.map_err(|e| format!("ADT read: {e}"))?;
             if adt != [0x02, 0x10, 0x01, 0x19, 0x01] {
                 return Err(format!("ADT {adt:02X?}, expected [02 10 01 19 01]"));
             }
@@ -2555,7 +2680,7 @@ fn scenario_micro_s7_secure_commission<'a>(
             return Err(format!("descriptor {descriptor:02X?}, expected mask 0705"));
         }
         let max_apdu = first
-            .property_read(0, pid::device::MAX_APDU_LENGTH, 1, 1)
+            .property_read(PropertyAddress::indexed(0, pid::device::MAX_APDU_LENGTH).expect("PID fits one octet"), 1, 1)
             .await
             .map_err(|e| format!("maximum APDU: {e}"))?;
         if max_apdu != 40u16.to_be_bytes() {
@@ -2607,7 +2732,15 @@ fn scenario_micro_s7_secure_commission<'a>(
         let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("post-download sync: {e}"))?;
         let checks = async {
             let load_state = conn
-                .property_ext_read(SECURITY_IO, SECURITY_OCCURRENCE, pid::LOAD_STATE_CONTROL, 1, 1)
+                .property_read(
+                    PropertyAddress::Extended {
+                        object_type: SECURITY_IO,
+                        object_instance: SECURITY_OCCURRENCE,
+                        property_id: pid::LOAD_STATE_CONTROL,
+                    },
+                    1,
+                    1,
+                )
                 .await
                 .map_err(|e| format!("Security IO load state: {e}"))?;
             if load_state != [u8::from(LoadState::Loaded)] {
@@ -2619,7 +2752,15 @@ fn scenario_micro_s7_secure_commission<'a>(
                 (pid::security::GO_SECURITY_FLAGS, 8u16, "GO security flags"),
             ] {
                 let count = conn
-                    .property_ext_read(SECURITY_IO, SECURITY_OCCURRENCE, property, 0, 1)
+                    .property_read(
+                        PropertyAddress::Extended {
+                            object_type: SECURITY_IO,
+                            object_instance: SECURITY_OCCURRENCE,
+                            property_id: property,
+                        },
+                        0,
+                        1,
+                    )
                     .await
                     .map_err(|e| format!("{name} count: {e}"))?;
                 if count != expected.to_be_bytes() {
@@ -2627,9 +2768,14 @@ fn scenario_micro_s7_secure_commission<'a>(
                 }
             }
             let mode = conn
-                .function_property_ext_state_read(SECURITY_IO, SECURITY_OCCURRENCE, pid::security::SECURITY_MODE, &[
-                    0, 0,
-                ])
+                .function_property_state_read(
+                    PropertyAddress::Extended {
+                        object_type: SECURITY_IO,
+                        object_instance: SECURITY_OCCURRENCE,
+                        property_id: pid::security::SECURITY_MODE,
+                    },
+                    &[0, 0],
+                )
                 .await
                 .map_err(|e| format!("Security Mode: {e}"))?;
             if mode.return_code != 0 || mode.data != [0, 1] {
@@ -2787,13 +2933,14 @@ fn scenario_micro_s7_unload_all<'a>(
 
         let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("reconnect: {e}"))?;
         let result = async {
-            let states = conn.memory_read(0xB6EA, 4).await.map_err(|e| format!("load states: {e}"))?;
+            let states =
+                conn.memory_read(MemorySpace::Standard, 0xB6EA, 4).await.map_err(|e| format!("load states: {e}"))?;
             if states != [u8::from(LoadState::Unloaded); 4] {
                 return Err(format!("load states {states:02X?}, expected all Unloaded"));
             }
             // RT8 unload keeps only the IA slot in the length and
             // spares its bytes 1–2.
-            let adt = conn.memory_read(0x4000, 3).await.map_err(|e| format!("ADT read: {e}"))?;
+            let adt = conn.memory_read(MemorySpace::Standard, 0x4000, 3).await.map_err(|e| format!("ADT read: {e}"))?;
             if adt != [0x01, 0x10, 0x01] {
                 return Err(format!("ADT head {adt:02X?}, expected IA-only mute length"));
             }
@@ -2916,7 +3063,11 @@ fn scenario_system_b_full_download<'a>(
             // path it was driven with.
             for obj in [1u8, 2, 3] {
                 let state = conn
-                    .property_read(obj, pid::LOAD_STATE_CONTROL, 1, 1)
+                    .property_read(
+                        PropertyAddress::indexed(obj, pid::LOAD_STATE_CONTROL).expect("PID fits one octet"),
+                        1,
+                        1,
+                    )
                     .await
                     .map_err(|e| format!("load state of object {obj}: {e}"))?;
                 if state.first() != Some(&u8::from(LoadState::Loaded)) {
@@ -2927,11 +3078,17 @@ fn scenario_system_b_full_download<'a>(
             // which is the whole point of the relative path.
             let read_table = async |conn: &mut DeviceConnection, obj: u8, len: u8| -> Result<Vec<u8>, String> {
                 let base = conn
-                    .property_read(obj, pid::TABLE_REFERENCE, 1, 1)
+                    .property_read(
+                        PropertyAddress::indexed(obj, pid::TABLE_REFERENCE).expect("PID fits one octet"),
+                        1,
+                        1,
+                    )
                     .await
                     .map_err(|e| format!("base of {obj}: {e}"))?;
                 let addr = u16::from_be_bytes([base[2], base[3]]);
-                conn.memory_read(addr, len).await.map_err(|e| format!("read-back of object {obj}: {e}"))
+                conn.memory_read(MemorySpace::Standard, u32::from(addr), len)
+                    .await
+                    .map_err(|e| format!("read-back of object {obj}: {e}"))
             };
 
             // Address table: one entry, the rewired group address.
@@ -3005,7 +3162,11 @@ fn scenario_system_b_unload_all<'a>(
             // it was driven with — including 5, which this DUT has.
             for obj in [1u8, 2, 3, 4, 5] {
                 let state = conn
-                    .property_read(obj, pid::LOAD_STATE_CONTROL, 1, 1)
+                    .property_read(
+                        PropertyAddress::indexed(obj, pid::LOAD_STATE_CONTROL).expect("PID fits one octet"),
+                        1,
+                        1,
+                    )
                     .await
                     .map_err(|e| format!("load state of object {obj}: {e}"))?;
                 if state.first() != Some(&u8::from(LoadState::Unloaded)) {
@@ -3142,10 +3303,15 @@ fn scenario_system_b_redownload<'a>(
         // table entry, and it is the new group address.
         let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("reconnect: {e}"))?;
         let checks = async {
-            let base =
-                conn.property_read(1, pid::TABLE_REFERENCE, 1, 1).await.map_err(|e| format!("table reference: {e}"))?;
+            let base = conn
+                .property_read(PropertyAddress::indexed(1, pid::TABLE_REFERENCE).expect("PID fits one octet"), 1, 1)
+                .await
+                .map_err(|e| format!("table reference: {e}"))?;
             let addr = u16::from_be_bytes([base[2], base[3]]);
-            let adt = conn.memory_read(addr, 4).await.map_err(|e| format!("address table read-back: {e}"))?;
+            let adt = conn
+                .memory_read(MemorySpace::Standard, u32::from(addr), 4)
+                .await
+                .map_err(|e| format!("address table read-back: {e}"))?;
             if adt != [0x00, 0x01, 0x2B, 0x03] {
                 return Err(format!("address table {adt:02X?}, expected one entry for 5/3/3"));
             }

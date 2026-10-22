@@ -15,6 +15,7 @@ mod common;
 
 use clap::{Parser, ValueEnum};
 use common::TargetArgs;
+use zweidraehte_client::PropertyAddress;
 use zweidraehte_client::{IndividualAddress, KnxBus};
 
 // ============================================================================
@@ -145,7 +146,7 @@ async fn bsl_command(
 
     let result = client
         .network_management()
-        .function_property_command(device, BSL_OBJECT_IDX, BSL_PROPERTY_ID, &service_data)
+        .function_property_command(device, PropertyAddress::indexed(BSL_OBJECT_IDX, BSL_PROPERTY_ID)?, &service_data)
         .await?;
 
     log::debug!(
@@ -411,7 +412,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::parse();
 
     // Connect to the bus.
-    let bus = config.target.to_target().connect().await?;
+    let bus = KnxBus::connect(&config.target.to_target()).await?;
     println!("Connected. Assigned address: {}, interface max APDU: {}", bus.assigned_address(), bus.max_apdu());
 
     // Dispatch the requested command.

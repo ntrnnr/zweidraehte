@@ -1,6 +1,7 @@
 //! Acquire one exact target through the selected discovery service.
 
 use super::profile::AcquiredTarget;
+use crate::AddressTarget;
 use crate::commissioning::compiler::program::CompiledProgram;
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::error::DiagnosticResult as Result;
@@ -8,7 +9,7 @@ use crate::commissioning::input::{ProgrammingModePolling, TargetSelection};
 use crate::commissioning::runtime::commissioner::{
     Commissioner, CommissioningObserver, DeviceObservation, OPEN_MEDIUM_COLLECTION_WINDOW,
 };
-use crate::commissioning::runtime::policy::{unique_domain_target, unique_target};
+use crate::commissioning::runtime::policy::{programming_mode_scan, unique_domain_target, unique_target};
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::apdu::device::OpenMediumDomainAddress;
 
@@ -24,7 +25,7 @@ impl Commissioner<'_> {
         match selection {
             TargetSelection::SerialNumber(serial_number) => {
                 let addresses = network
-                    .read_individual_addresses_by_serial(serial_number, self.options.scan_window)
+                    .read_individual_addresses(AddressTarget::Serial(*serial_number), self.options.scan_window)
                     .await
                     .map_err(|error| Diagnostic::from(error).preparation_context("locating serial-number target"))?;
                 let address = unique_target(addresses, "serial number")?;
@@ -80,12 +81,10 @@ impl Commissioner<'_> {
             loop {
                 observer.checkpoint()?;
                 let network = self.bus.network_management();
-                let found = if open_medium {
-                    network.read_open_medium_individual_addresses(OPEN_MEDIUM_COLLECTION_WINDOW).await
-                } else {
-                    network.read_individual_addresses(self.options.scan_window).await
-                }
-                .map_err(|error| Diagnostic::from(error).preparation_context("scanning physical programming mode"))?;
+                let (target, window) = programming_mode_scan(open_medium, self.options.scan_window);
+                let found = network.read_individual_addresses(target, window).await.map_err(|error| {
+                    Diagnostic::from(error).preparation_context("scanning physical programming mode")
+                })?;
                 if !found.is_empty() || !polling.wait_when_none_found {
                     return Ok(found);
                 }
@@ -115,7 +114,7 @@ impl Commissioner<'_> {
         let network = self.bus.network_management();
         let (address, current) = if let Some(serial_number) = serial_number {
             let found = network
-                .read_domain_addresses_by_serial(&serial_number, OPEN_MEDIUM_COLLECTION_WINDOW)
+                .read_domain_addresses(AddressTarget::Serial(serial_number), OPEN_MEDIUM_COLLECTION_WINDOW)
                 .await
                 .map_err(|error| Diagnostic::from(error).preparation_context("reading the serial-number RF domain"))?;
             unique_domain_target(found, "the prepared serial number")?
@@ -126,9 +125,12 @@ impl Commissioner<'_> {
                 ));
             }
 
-            let found = network.read_programming_mode_domain_addresses(OPEN_MEDIUM_COLLECTION_WINDOW).await.map_err(
-                |error| Diagnostic::from(error).preparation_context("reading the programming-mode RF domain"),
-            )?;
+            let found = network
+                .read_domain_addresses(AddressTarget::OpenMediumProgrammingMode, OPEN_MEDIUM_COLLECTION_WINDOW)
+                .await
+                .map_err(|error| {
+                    Diagnostic::from(error).preparation_context("reading the programming-mode RF domain")
+                })?;
             unique_domain_target(found, "physical programming mode")?
         };
 

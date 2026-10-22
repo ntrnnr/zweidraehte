@@ -1164,13 +1164,16 @@ devices. `std` + tokio; product/master-data parsing comes from
 reference: `CLIENT.md` at the repo root.
 
 Structure (concrete owners with a private bus driver):
-- `bus/` - `KnxBus`, `DeviceConnection`, `NetworkManagement`, framing and
-  management services; the private driver owns transport ordering and secure
-  sequence state, using the shared protocol transport state machine.
+- `bus/` - `KnxBus` (opened through `KnxBus::builder()`), `DeviceConnection`,
+  `NetworkManagement`, framing and management services. One method per
+  operation family, parameterised by `MemorySpace`/`WriteCheck`,
+  `PropertyAddress` and `AddressTarget`/`Protection`; the private driver owns
+  transport ordering and secure sequence state, using the shared protocol
+  transport state machine.
 - `connector/` - `KnxConnector` trait carrying raw cEMI, with IP
   tunneling and USB HID implementations; tunnel state sits beside its connector.
-  `BusTarget` holds a built-in endpoint without clap and opens it with an explicit
-  `SecurityStore`; `cli` owns argument parsing and environment-variable policy.
+  `BusTarget` holds a built-in endpoint without clap; the builder opens it with an
+  explicit `SecurityStore`. `cli` owns argument parsing and environment-variable policy.
   Its optional USB variant and dispatch arm stay together in `connector/target.rs`.
 - `security/` - KNX Data Secure channels, runtime keyring matching, and sequence
   stores; generic `.knxkeys` parsing/export lives in `zweidraehte-ets-files`

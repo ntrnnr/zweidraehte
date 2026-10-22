@@ -4,7 +4,7 @@
 //! TSAP/ASAP fields occupy one or two octets. PID_TABLE's property description
 //! is the device's authoritative declaration; the current project cannot infer it.
 
-use crate::bus::DeviceConnection;
+use crate::bus::{DeviceConnection, PropertyAddress};
 use crate::commissioning::Diagnostic;
 use crate::commissioning::catalog::profile::{
     AssociationTableEntrySize, ImageRequirement, ObjectSelector, ResolvedProfile,
@@ -42,7 +42,7 @@ pub(crate) async fn observe_association_table_entry_size(
         })?;
     let index = object_index(connection, &selector).await?;
     let description = connection
-        .property_description_read(index, pid::TABLE, 0)
+        .property_description_read(PropertyAddress::indexed(index, pid::TABLE)?)
         .await
         .map_err(|error| Diagnostic::from(error).preparation_context("read association-table property description"))?;
     if description.prop_id != pid::TABLE {
@@ -70,7 +70,7 @@ async fn object_index(connection: &mut DeviceConnection, selector: &ObjectSelect
     // Property descriptions use indexed addressing. Resolve type selectors
     // against the observed object list, preserving their zero-based occurrence.
     let count = connection
-        .property_read(0, pid::device::IO_LIST, 0, 1)
+        .property_read(PropertyAddress::indexed(0, pid::device::IO_LIST)?, 0, 1)
         .await
         .map_err(|error| Diagnostic::from(error).preparation_context("read interface-object list count"))?;
     let count = u16::from_be_bytes(
@@ -81,9 +81,12 @@ async fn object_index(connection: &mut DeviceConnection, selector: &ObjectSelect
     }
     let mut matching = 0;
     for index in 0..count {
-        let value = connection.property_read(0, pid::device::IO_LIST, index + 1, 1).await.map_err(|error| {
-            Diagnostic::from(error).preparation_context(format!("read interface-object list entry {index}"))
-        })?;
+        let value = connection
+            .property_read(PropertyAddress::indexed(0, pid::device::IO_LIST)?, index + 1, 1)
+            .await
+            .map_err(|error| {
+                Diagnostic::from(error).preparation_context(format!("read interface-object list entry {index}"))
+            })?;
         let value = u16::from_be_bytes(
             value.try_into().map_err(|_| Diagnostic::preparation("interface-object type is not two octets"))?,
         );

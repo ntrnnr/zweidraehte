@@ -43,7 +43,7 @@ async fn cancellation_before_preparation_sends_no_sender_probe() {
         skip_current: false,
     };
     let sent = Arc::new(AtomicUsize::new(0));
-    let bus = KnxBus::with_connector(CountingConnector(sent.clone()), ConnectorInfo {
+    let bus = KnxBus::builder().attach(CountingConnector(sent.clone()), ConnectorInfo {
         assigned_address: crate::IndividualAddress::new(1, 1, 250),
         max_apdu: 254,
     });

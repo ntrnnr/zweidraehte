@@ -22,7 +22,7 @@ use zweidraehte_proto::pid;
 
 use crate::bus::driver::BusCommand;
 use crate::bus::frames;
-use crate::bus::management::{self, FunctionPropertyResult, ResponseMatcher};
+use crate::bus::management::{self, FunctionPropertyResult, PropertyAddress, ResponseMatcher};
 use crate::bus::{BusError as Error, BusResult as Result};
 
 /// Network-management surface, obtained from
@@ -52,116 +52,133 @@ pub struct ProgrammingModeDevice {
     pub serial_number: [u8; 6],
 }
 
+/// Which devices a network-management request selects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressTarget {
+    /// Every device whose physical programming mode is active, by ordinary
+    /// broadcast (03/05/02 §2.2, §2.3).
+    ProgrammingMode,
+    /// Every device whose physical programming mode is active, by KNX system
+    /// broadcast. The open-medium procedures (03/05/02 §2.9, §2.10) use this
+    /// to stay independent of the interface's ordinary broadcast domain.
+    OpenMediumProgrammingMode,
+    /// The device with this KNX serial number (03/05/02 §2.4, §2.5).
+    Serial([u8; 6]),
+}
+
+/// Protection of a state-changing network-management broadcast.
+///
+/// Only serial-number writes have a secure form; a secure write to a
+/// programming-mode target is refused with [`BusError::Unsupported`]. Discovery
+/// and verification reads are always plain.
+///
+/// [`BusError::Unsupported`]: crate::BusError::Unsupported
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Protection {
+    Plain,
+    /// KNX Data Secure, under the security entry at `current` whose key a
+    /// preceding system-broadcast sync proved. The inner service and the
+    /// secure envelope are both system broadcasts.
+    Secure {
+        current: IndividualAddress,
+        key: [u8; 16],
+    },
+}
+
+impl std::fmt::Debug for Protection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Plain => f.write_str("Plain"),
+            Self::Secure { current, .. } => f.debug_struct("Secure").field("current", current).finish_non_exhaustive(),
+        }
+    }
+}
+
 impl<'bus> NetworkManagement<'bus> {
     pub(crate) fn new(cmd_tx: &'bus mpsc::Sender<BusCommand>, source: IndividualAddress) -> Self {
         Self { cmd_tx, source }
     }
 
     // ========================================================================
-    // Programming-mode addressing (NM_IndividualAddress_*)
+    // Individual addresses (NM_IndividualAddress_*)
     // ========================================================================
 
-    /// `NM_IndividualAddress_Write` (03/05/02 §2.3): assign an individual
-    /// address to the device in programming mode.
+    /// Collect the individual address of every device `target` selects,
+    /// listening for `scan_window`.
     ///
-    /// The write is a broadcast with no confirmation; every device in
-    /// programming mode accepts it, so the caller must ensure exactly one
-    /// is. Verify with [`read_individual_addresses`]
-    /// (Self::read_individual_addresses) afterwards.
-    pub async fn write_individual_address(&self, new_addr: IndividualAddress) -> Result<()> {
-        let frame = frames::build_broadcast_frame(
-            self.source,
-            ApciCode::IndividualAddressWrite,
-            IndividualAddressWrite::MSG_LEN,
-            |buf| IndividualAddressWrite::write(buf, new_addr),
-        );
-        self.send_only(frame).await
-    }
-
-    /// `NM_IndividualAddress_Read` (03/05/02 §2.2): collect the addresses
-    /// of all devices currently in programming mode, listening for
-    /// `scan_window`.
-    pub async fn read_individual_addresses(&self, scan_window: Duration) -> Result<Vec<IndividualAddress>> {
-        let frame =
-            frames::build_broadcast_frame(self.source, ApciCode::IndividualAddressRead, APCI_ONLY_MSG_LEN, |_| {});
-        let matcher = ResponseMatcher { source: None, apci: Some(ApciCode::IndividualAddressResponse) };
+    /// Every response is retained, including repeated source addresses,
+    /// because two uncommissioned devices may still share one address and a
+    /// serial number may be duplicated. A serial response for a different
+    /// serial number is an error.
+    pub async fn read_individual_addresses(
+        &self,
+        target: AddressTarget,
+        scan_window: Duration,
+    ) -> Result<Vec<IndividualAddress>> {
+        let (frame, matcher) = match target {
+            AddressTarget::ProgrammingMode => (
+                frames::build_broadcast_frame(self.source, ApciCode::IndividualAddressRead, APCI_ONLY_MSG_LEN, |_| {}),
+                ResponseMatcher { source: None, apci: Some(ApciCode::IndividualAddressResponse) },
+            ),
+            AddressTarget::OpenMediumProgrammingMode => (
+                frames::build_system_broadcast_frame(
+                    self.source,
+                    ApciCode::IndividualAddressRead,
+                    APCI_ONLY_MSG_LEN,
+                    |_| {},
+                ),
+                ResponseMatcher { source: None, apci: Some(ApciCode::IndividualAddressResponse) },
+            ),
+            AddressTarget::Serial(serial) => (
+                frames::build_broadcast_frame(
+                    self.source,
+                    ApciCode::IndividualAddressSerialNumberRead,
+                    IndividualAddressSerialNumberRead::MSG_LEN,
+                    |buf| IndividualAddressSerialNumberRead::write(buf, &serial),
+                ),
+                ResponseMatcher { source: None, apci: Some(ApciCode::IndividualAddressSerialNumberResponse) },
+            ),
+        };
         let responses = self.scan(frame, matcher, scan_window).await?;
 
-        // The responding device's address is the response frame's source;
-        // the APDU itself is empty.
-        Ok(responses
-            .iter()
-            .map(|internal| KnxMessageBuffer::from_buffer(internal.as_slice()).get_source_addr())
-            .collect())
+        // The responding device's address is the response frame's source.
+        responses
+            .into_iter()
+            .map(|internal| {
+                if let AddressTarget::Serial(serial) = &target {
+                    let responded = IndividualAddressSerialNumberResponse::serial_number(&internal)
+                        .ok_or(Error::Parse("IndividualAddressSerialNumberResponse too short"))?;
+                    if responded != serial {
+                        return Err(Error::UnexpectedResponse);
+                    }
+                }
+                Ok(KnxMessageBuffer::from_buffer(internal.as_slice()).get_source_addr())
+            })
+            .collect()
     }
 
-    /// Open-medium form of `NM_IndividualAddress_Read` used by the combined
-    /// domain-and-IA procedures (03/05/02 sections 2.9 and 2.10).
-    ///
-    /// Unlike [`Self::read_individual_addresses`], this sends a KNX system
-    /// broadcast so the scan is independent of the interface's ordinary
-    /// broadcast domain. Every response is retained, including repeated source
-    /// addresses, because two uncommissioned devices may still share one IA.
-    pub async fn read_open_medium_individual_addresses(&self, scan_window: Duration) -> Result<Vec<IndividualAddress>> {
-        let frame = frames::build_system_broadcast_frame(
-            self.source,
-            ApciCode::IndividualAddressRead,
-            APCI_ONLY_MSG_LEN,
-            |_| {},
-        );
-        let matcher = ResponseMatcher { source: None, apci: Some(ApciCode::IndividualAddressResponse) };
-        let responses = self.scan(frame, matcher, scan_window).await?;
-
-        Ok(responses
-            .iter()
-            .map(|internal| KnxMessageBuffer::from_buffer(internal.as_slice()).get_source_addr())
-            .collect())
+    /// The individual address of exactly one device `target` selects.
+    /// Cardinality is checked before examining the address value.
+    pub async fn read_individual_address(
+        &self,
+        target: AddressTarget,
+        scan_window: Duration,
+    ) -> Result<IndividualAddress> {
+        let found = self.read_individual_addresses(target, scan_window).await?;
+        exactly_one(target, found)
     }
 
-    /// Require exactly one programming-mode response to an open-medium IA
-    /// scan. Cardinality is checked before examining the address value.
-    pub async fn read_open_medium_individual_address(&self, scan_window: Duration) -> Result<IndividualAddress> {
-        let found = self.read_open_medium_individual_addresses(scan_window).await?;
-
-        match found.as_slice() {
-            [address] => Ok(*address),
-            [] => Err(Error::ProgrammingDeviceNotFound),
-            _ => Err(Error::MultipleProgrammingDevices(found.len())),
-        }
-    }
-
-    /// Open-medium form of `NM_IndividualAddress_Write` used after the domain
-    /// address has been selected (03/05/02 sections 2.9 and 2.10).
-    ///
-    /// The PDU has no target identity. The caller must first retain a complete
-    /// scan window and prove that exactly one device is in programming mode.
-    pub async fn write_open_medium_individual_address(&self, new_addr: IndividualAddress) -> Result<()> {
-        let frame = frames::build_system_broadcast_frame(
-            self.source,
-            ApciCode::IndividualAddressWrite,
-            IndividualAddressWrite::MSG_LEN,
-            |buf| IndividualAddressWrite::write(buf, new_addr),
-        );
-
-        self.send_only(frame).await
-    }
-
-    /// Scan physical programming mode until at least one device responds.
-    ///
-    /// `wait_timeout = None` preserves the ordinary one-scan behavior.
-    /// `Some(timeout)` repeats scans until a device responds or the overall
-    /// timeout expires. An expired wait returns an empty list, just like a
+    /// Scan physical programming mode until at least one device responds or
+    /// `timeout` expires. An expired wait returns an empty list, just like a
     /// single scan without responses.
-    pub async fn read_individual_addresses_with_wait(
+    pub async fn await_programming_mode(
         &self,
         scan_window: Duration,
-        wait_timeout: Option<Duration>,
+        timeout: Duration,
     ) -> Result<Vec<IndividualAddress>> {
-        let Some(wait_timeout) = wait_timeout else { return self.read_individual_addresses(scan_window).await };
-
-        tokio::time::timeout(wait_timeout, async {
+        tokio::time::timeout(timeout, async {
             loop {
-                let found = match self.read_individual_addresses(scan_window).await {
+                let found = match self.read_individual_addresses(AddressTarget::ProgrammingMode, scan_window).await {
                     Ok(found) => found,
 
                     // A bus access can reject the request before the scan
@@ -229,131 +246,87 @@ impl<'bus> NetworkManagement<'bus> {
             .collect()
     }
 
-    // ========================================================================
-    // Serial-number addressing (NM_IndividualAddress_SerialNumber_*)
-    // ========================================================================
-
-    /// `NM_IndividualAddress_SerialNumber_Read` (03/05/02 §2.4): find the
-    /// individual address of the device with the given KNX serial number.
-    pub async fn read_individual_address_by_serial(&self, serial: &[u8; 6]) -> Result<IndividualAddress> {
-        let found = self.read_individual_addresses_by_serial(serial, management::RESPONSE_TIMEOUT).await?;
-        match found.as_slice() {
-            [address] => Ok(*address),
-            [] => Err(Error::SerialDeviceNotFound),
-            _ => Err(Error::DuplicateSerialNumber(found.len())),
+    /// Assign `new_addr` to the devices `target` selects
+    /// (`NM_IndividualAddress_Write`, `NM_IndividualAddress_SerialNumber_Write`).
+    ///
+    /// The write is a broadcast with no confirmation. A programming-mode write
+    /// is accepted by every device in programming mode, so the caller must
+    /// first prove that exactly one is. Verify with
+    /// [`read_individual_address`](Self::read_individual_address) afterwards.
+    pub async fn write_individual_address(
+        &self,
+        target: AddressTarget,
+        new_addr: IndividualAddress,
+        protection: Protection,
+    ) -> Result<()> {
+        match (target, protection) {
+            (AddressTarget::ProgrammingMode, Protection::Plain) => {
+                let frame = frames::build_broadcast_frame(
+                    self.source,
+                    ApciCode::IndividualAddressWrite,
+                    IndividualAddressWrite::MSG_LEN,
+                    |buf| IndividualAddressWrite::write(buf, new_addr),
+                );
+                self.send_only(frame).await
+            }
+            (AddressTarget::OpenMediumProgrammingMode, Protection::Plain) => {
+                let frame = frames::build_system_broadcast_frame(
+                    self.source,
+                    ApciCode::IndividualAddressWrite,
+                    IndividualAddressWrite::MSG_LEN,
+                    |buf| IndividualAddressWrite::write(buf, new_addr),
+                );
+                self.send_only(frame).await
+            }
+            (AddressTarget::Serial(serial), Protection::Plain) => {
+                let frame = frames::build_broadcast_frame(
+                    self.source,
+                    ApciCode::IndividualAddressSerialNumberWrite,
+                    IndividualAddressSerialNumberWrite::MSG_LEN,
+                    |buf| IndividualAddressSerialNumberWrite::write(buf, &serial, new_addr),
+                );
+                self.send_only(frame).await
+            }
+            (AddressTarget::Serial(serial), Protection::Secure { current, key }) => {
+                let frame = frames::build_system_broadcast_frame(
+                    self.source,
+                    ApciCode::IndividualAddressSerialNumberWrite,
+                    IndividualAddressSerialNumberWrite::MSG_LEN,
+                    |buf| IndividualAddressSerialNumberWrite::write(buf, &serial, new_addr),
+                );
+                self.send_secure(frame, current, key).await
+            }
+            (AddressTarget::ProgrammingMode | AddressTarget::OpenMediumProgrammingMode, Protection::Secure { .. }) => {
+                Err(Error::Unsupported("programming-mode address writes have no secure form"))
+            }
         }
     }
 
-    /// Scanning variant of serial-number address discovery. Collecting
-    /// every response lets commissioning reject duplicated factory
-    /// identities instead of selecting whichever answer arrived first.
-    pub async fn read_individual_addresses_by_serial(
-        &self,
-        serial: &[u8; 6],
-        scan_window: Duration,
-    ) -> Result<Vec<IndividualAddress>> {
-        let frame = frames::build_broadcast_frame(
-            self.source,
-            ApciCode::IndividualAddressSerialNumberRead,
-            IndividualAddressSerialNumberRead::MSG_LEN,
-            |buf| IndividualAddressSerialNumberRead::write(buf, serial),
-        );
-        let matcher = ResponseMatcher { source: None, apci: Some(ApciCode::IndividualAddressSerialNumberResponse) };
-        let responses = self.scan(frame, matcher, scan_window).await?;
-        responses
-            .into_iter()
-            .map(|internal| {
-                let responded = IndividualAddressSerialNumberResponse::serial_number(&internal)
-                    .ok_or(Error::Parse("IndividualAddressSerialNumberResponse too short"))?;
-                if responded != serial {
-                    return Err(Error::UnexpectedResponse);
-                }
-                Ok(KnxMessageBuffer::from_buffer(internal.as_slice()).get_source_addr())
-            })
-            .collect()
-    }
-
-    /// `NM_IndividualAddress_SerialNumber_Write` (03/05/02 §2.5): assign an
-    /// individual address to the device with the given serial number.
-    /// Broadcast without confirmation — verify by reading it back.
-    pub async fn write_individual_address_by_serial(
-        &self,
-        serial: &[u8; 6],
-        new_addr: IndividualAddress,
-    ) -> Result<()> {
-        let frame = frames::build_broadcast_frame(
-            self.source,
-            ApciCode::IndividualAddressSerialNumberWrite,
-            IndividualAddressSerialNumberWrite::MSG_LEN,
-            |buf| IndividualAddressSerialNumberWrite::write(buf, serial, new_addr),
-        );
-        self.send_only(frame).await
-    }
-
-    /// Secure form of `NM_IndividualAddress_SerialNumber_Write` used after
-    /// the serial-addressed FDSK sync in initial commissioning. The inner
-    /// service and the secure envelope are both system broadcasts; `current`
-    /// names the security entry whose credential the preceding sync proved.
-    pub async fn write_individual_address_by_serial_secure(
-        &self,
-        serial: &[u8; 6],
-        current: IndividualAddress,
-        new_addr: IndividualAddress,
-        key: [u8; 16],
-    ) -> Result<()> {
-        let frame = frames::build_system_broadcast_frame(
-            self.source,
-            ApciCode::IndividualAddressSerialNumberWrite,
-            IndividualAddressSerialNumberWrite::MSG_LEN,
-            |buf| IndividualAddressSerialNumberWrite::write(buf, serial, new_addr),
-        );
-        let (tx, rx) = oneshot::channel();
-        self.cmd_tx
-            .send(BusCommand::SecureSystemBroadcast { frame, at: current, key, tx })
-            .await
-            .map_err(|_| Error::WorkerGone)?;
-        rx.await.map_err(|_| Error::WorkerGone)?
-    }
-
-    /// ETS-style serial address assignment (03/05/02 §2.5): locate a
-    /// unique target, prove the requested address is unused, write, and
-    /// verify through another serial-number read. This service does not
-    /// reset the device.
-    pub async fn assign_individual_address_by_serial(
+    /// ETS-style serial address assignment (03/05/02 §2.5): locate a unique
+    /// target, prove the requested address is unused, write, and verify
+    /// through another serial-number read. This service does not reset the
+    /// device.
+    ///
+    /// Discovery and collision checks remain plain NM services; only the
+    /// state-changing write uses `protection`, exactly as in the Data Secure
+    /// bootstrap procedure. A secure `current` must be the address the device
+    /// is found at, since that is the security entry its sync proved.
+    pub async fn assign_individual_address(
         &self,
         serial: &[u8; 6],
         new_address: IndividualAddress,
         scan_window: Duration,
+        protection: Protection,
     ) -> Result<SerialAddressAssignment> {
-        self.assign_individual_address_by_serial_inner(serial, new_address, scan_window, None).await
-    }
-
-    /// Secure serial-number assignment. Discovery and collision checks remain
-    /// plain NM services; only the state-changing write is protected, exactly
-    /// as in the Data Secure bootstrap procedure.
-    pub async fn assign_individual_address_by_serial_secure(
-        &self,
-        serial: &[u8; 6],
-        new_address: IndividualAddress,
-        scan_window: Duration,
-        key: [u8; 16],
-    ) -> Result<SerialAddressAssignment> {
-        self.assign_individual_address_by_serial_inner(serial, new_address, scan_window, Some(key)).await
-    }
-
-    async fn assign_individual_address_by_serial_inner(
-        &self,
-        serial: &[u8; 6],
-        new_address: IndividualAddress,
-        scan_window: Duration,
-        secure_key: Option<[u8; 16]>,
-    ) -> Result<SerialAddressAssignment> {
-        let found = self.read_individual_addresses_by_serial(serial, scan_window).await?;
-        let previous = match found.as_slice() {
-            [address] => *address,
-            [] => return Err(Error::SerialDeviceNotFound),
-            _ => return Err(Error::DuplicateSerialNumber(found.len())),
-        };
+        let target = AddressTarget::Serial(*serial);
+        let previous = self.read_individual_address(target, scan_window).await?;
+        if let Protection::Secure { current, .. } = protection
+            && current != previous
+        {
+            return Err(Error::ProgrammingVerification(format!(
+                "secure assignment was synchronized at {current}, but the device answers at {previous}"
+            )));
+        }
         if previous == new_address {
             return Ok(SerialAddressAssignment { previous, current: previous, changed: false });
         }
@@ -361,11 +334,8 @@ impl<'bus> NetworkManagement<'bus> {
             return Err(Error::IndividualAddressOccupied(new_address));
         }
 
-        match secure_key {
-            Some(key) => self.write_individual_address_by_serial_secure(serial, previous, new_address, key).await?,
-            None => self.write_individual_address_by_serial(serial, new_address).await?,
-        }
-        let verified = self.read_individual_addresses_by_serial(serial, scan_window).await?;
+        self.write_individual_address(target, new_address, protection).await?;
+        let verified = self.read_individual_addresses(target, scan_window).await?;
         match verified.as_slice() {
             [address] if *address == new_address => {
                 Ok(SerialAddressAssignment { previous, current: *address, changed: true })
@@ -377,223 +347,134 @@ impl<'bus> NetworkManagement<'bus> {
     }
 
     // ========================================================================
-    // Open-medium domain addressing (NM_DomainAddress_*)
+    // Open-medium domain addresses (NM_DomainAddress_*)
     // ========================================================================
 
-    /// `NM_DomainAddress_Read` (03/05/02 §2.7): collect the PL110 or RF
-    /// domain address of every device whose physical programming mode is
-    /// active.
+    /// Collect the PL110 or RF domain address of every device `target`
+    /// selects (`NM_DomainAddress_Read`, `A_DomainAddressSerialNumber_Read`).
     ///
-    /// The procedure is a system broadcast and must remain a scan. Returning
-    /// every response is what lets the caller distinguish no selected device,
-    /// one selected device, and an unsafe multi-device selection.
-    pub async fn read_programming_mode_domain_addresses(
+    /// Both procedures are system broadcasts, so the two programming-mode
+    /// targets send the same request. Returning every response is what lets
+    /// the caller distinguish no selected device, one selected device, and an
+    /// unsafe multi-device selection or duplicated serial number.
+    pub async fn read_domain_addresses(
         &self,
+        target: AddressTarget,
         scan_window: Duration,
     ) -> Result<Vec<(IndividualAddress, OpenMediumDomainAddress)>> {
-        let frame =
-            frames::build_system_broadcast_frame(self.source, ApciCode::DomainAddressRead, APCI_ONLY_MSG_LEN, |_| {});
-        let matcher = ResponseMatcher { source: None, apci: Some(ApciCode::DomainAddressResponse) };
-
-        self.scan(frame, matcher, scan_window)
-            .await?
-            .into_iter()
-            .map(|internal| {
-                let domain_address = DomainAddressResponse::domain_address(&internal)
-                    .ok_or(Error::Parse("DomainAddressResponse has neither the PL nor RF width"))?;
-                let address = KnxMessageBuffer::from_buffer(internal.as_slice()).get_source_addr();
-
-                Ok((address, domain_address))
-            })
-            .collect()
-    }
-
-    /// Require exactly one programming-mode domain response.
-    pub async fn read_programming_mode_domain_address(
-        &self,
-        scan_window: Duration,
-    ) -> Result<(IndividualAddress, OpenMediumDomainAddress)> {
-        let found = self.read_programming_mode_domain_addresses(scan_window).await?;
-
-        match found.as_slice() {
-            [device] => Ok(*device),
-            [] => Err(Error::ProgrammingDeviceNotFound),
-            _ => Err(Error::MultipleProgrammingDevices(found.len())),
-        }
-    }
-
-    /// `A_DomainAddress_Write` (03/03/07 §3.3.3): write the PL110 or RF
-    /// domain address to devices in physical programming mode.
-    ///
-    /// This service contains no device identity. The standardized protected
-    /// procedure therefore uses the serial-number service below; callers
-    /// requiring authenticated commissioning must not use this operation.
-    pub async fn write_programming_mode_domain_address(&self, domain_address: OpenMediumDomainAddress) -> Result<()> {
-        let frame = frames::build_system_broadcast_frame(
-            self.source,
-            ApciCode::DomainAddressWrite,
-            DomainAddressWrite::msg_len(domain_address),
-            |buf| DomainAddressWrite::write(buf, domain_address),
-        );
-
-        self.send_only(frame).await
-    }
-
-    /// Verify that exactly one programming-mode device reports the expected
-    /// domain address and return that device's current individual address.
-    pub async fn verify_programming_mode_domain_address(
-        &self,
-        expected: OpenMediumDomainAddress,
-        scan_window: Duration,
-    ) -> Result<IndividualAddress> {
-        let (address, actual) = self.read_programming_mode_domain_address(scan_window).await?;
-        if actual != expected {
-            return Err(Error::ProgrammingVerification(format!(
-                "programming-mode domain write returned {actual:?}, expected {expected:?}"
-            )));
-        }
-
-        Ok(address)
-    }
-
-    /// `A_DomainAddressSerialNumber_Read` (03/03/07 §3.3.6): collect every
-    /// device answering for a six-octet KNX serial number.
-    ///
-    /// Although serial numbers are intended to be unique, collecting for the
-    /// complete window makes duplicate factory identities an explicit error
-    /// in the singular and verification helpers.
-    pub async fn read_domain_addresses_by_serial(
-        &self,
-        serial: &[u8; 6],
-        scan_window: Duration,
-    ) -> Result<Vec<(IndividualAddress, OpenMediumDomainAddress)>> {
-        let frame = frames::build_system_broadcast_frame(
-            self.source,
-            ApciCode::DomainAddressSerialNumberRead,
-            DomainAddressSerialNumberRead::MSG_LEN,
-            |buf| DomainAddressSerialNumberRead::write(buf, serial),
-        );
-        let matcher = ResponseMatcher { source: None, apci: Some(ApciCode::DomainAddressSerialNumberResponse) };
-
-        self.scan(frame, matcher, scan_window)
-            .await?
-            .into_iter()
-            .map(|internal| {
-                let response_serial = DomainAddressSerialNumberResponse::serial_number(&internal)
-                    .ok_or(Error::Parse("DomainAddressSerialNumberResponse is too short"))?;
-                if response_serial != serial {
-                    return Err(Error::UnexpectedResponse);
-                }
-
-                let domain_address = DomainAddressSerialNumberResponse::domain_address(&internal)
-                    .ok_or(Error::Parse("serial domain response has neither the PL nor RF width"))?;
-                let address = KnxMessageBuffer::from_buffer(internal.as_slice()).get_source_addr();
-
-                Ok((address, domain_address))
-            })
-            .collect()
-    }
-
-    /// Read one PL110 or RF domain address by serial number, rejecting
-    /// missing and duplicated serial identities.
-    pub async fn read_domain_address_by_serial(
-        &self,
-        serial: &[u8; 6],
-    ) -> Result<(IndividualAddress, OpenMediumDomainAddress)> {
-        let found = self.read_domain_addresses_by_serial(serial, management::RESPONSE_TIMEOUT).await?;
-
-        match found.as_slice() {
-            [device] => Ok(*device),
-            [] => Err(Error::SerialDeviceNotFound),
-            _ => Err(Error::DuplicateSerialNumber(found.len())),
-        }
-    }
-
-    /// `NM_DomainAddressSerialNumber_Write` (03/05/02 §2.12): write a PL110
-    /// or RF domain address to the device selected by serial number.
-    pub async fn write_domain_address_by_serial(
-        &self,
-        serial: &[u8; 6],
-        domain_address: OpenMediumDomainAddress,
-    ) -> Result<()> {
-        let frame = frames::build_system_broadcast_frame(
-            self.source,
-            ApciCode::DomainAddressSerialNumberWrite,
-            DomainAddressSerialNumberWrite::msg_len(domain_address),
-            |buf| DomainAddressSerialNumberWrite::write(buf, serial, domain_address),
-        );
-
-        self.send_only(frame).await
-    }
-
-    /// Protected `NM_DomainAddressSerialNumber_Secure_Write` (03/05/02
-    /// §2.13), used after a system-broadcast secure sync selected the serial
-    /// device. `current` identifies the synchronized security entry.
-    pub async fn write_domain_address_by_serial_secure(
-        &self,
-        serial: &[u8; 6],
-        current: IndividualAddress,
-        domain_address: OpenMediumDomainAddress,
-        key: [u8; 16],
-    ) -> Result<()> {
-        let frame = frames::build_system_broadcast_frame(
-            self.source,
-            ApciCode::DomainAddressSerialNumberWrite,
-            DomainAddressSerialNumberWrite::msg_len(domain_address),
-            |buf| DomainAddressSerialNumberWrite::write(buf, serial, domain_address),
-        );
-        let (tx, rx) = oneshot::channel();
-
-        self.cmd_tx
-            .send(BusCommand::SecureSystemBroadcast { frame, at: current, key, tx })
-            .await
-            .map_err(|_| Error::WorkerGone)?;
-        rx.await.map_err(|_| Error::WorkerGone)?
-    }
-
-    /// Perform the verification step required by
-    /// `NM_DomainAddressSerialNumber_Write` (03/05/02 §2.12) and its secure
-    /// counterpart (§2.13).
-    ///
-    /// The standardized procedure deliberately asks for an
-    /// `A_IndividualAddressSerialNumber_Response`: this proves that the
-    /// serial-selected device is reachable after changing its domain, but it
-    /// does not echo the new domain value. The procedure compiler owns the
-    /// specified delay and retry policy around this primitive.
-    pub async fn verify_domain_address_write_by_serial(
-        &self,
-        serial: &[u8; 6],
-        scan_window: Duration,
-    ) -> Result<IndividualAddress> {
-        let found = self.read_individual_addresses_by_serial(serial, scan_window).await?;
-
-        match found.as_slice() {
-            [address] => Ok(*address),
-            [] => Err(Error::SerialDeviceNotFound),
-            _ => Err(Error::DuplicateSerialNumber(found.len())),
-        }
-    }
-
-    /// Read the actual domain value after a serial-selected write.
-    ///
-    /// This is a stronger diagnostic than the standardized reachability check
-    /// above, but it is only possible when the newly selected domain remains
-    /// reachable from the management client.
-    pub async fn verify_domain_address_value_by_serial(
-        &self,
-        serial: &[u8; 6],
-        expected: OpenMediumDomainAddress,
-        scan_window: Duration,
-    ) -> Result<IndividualAddress> {
-        let found = self.read_domain_addresses_by_serial(serial, scan_window).await?;
-        let (address, actual) = match found.as_slice() {
-            [device] => *device,
-            [] => return Err(Error::SerialDeviceNotFound),
-            _ => return Err(Error::DuplicateSerialNumber(found.len())),
+        let (frame, matcher) = match target {
+            AddressTarget::ProgrammingMode | AddressTarget::OpenMediumProgrammingMode => (
+                frames::build_system_broadcast_frame(
+                    self.source,
+                    ApciCode::DomainAddressRead,
+                    APCI_ONLY_MSG_LEN,
+                    |_| {},
+                ),
+                ResponseMatcher { source: None, apci: Some(ApciCode::DomainAddressResponse) },
+            ),
+            AddressTarget::Serial(serial) => (
+                frames::build_system_broadcast_frame(
+                    self.source,
+                    ApciCode::DomainAddressSerialNumberRead,
+                    DomainAddressSerialNumberRead::MSG_LEN,
+                    |buf| DomainAddressSerialNumberRead::write(buf, &serial),
+                ),
+                ResponseMatcher { source: None, apci: Some(ApciCode::DomainAddressSerialNumberResponse) },
+            ),
         };
+
+        self.scan(frame, matcher, scan_window)
+            .await?
+            .into_iter()
+            .map(|internal| {
+                let domain_address = match &target {
+                    AddressTarget::Serial(serial) => {
+                        let response_serial = DomainAddressSerialNumberResponse::serial_number(&internal)
+                            .ok_or(Error::Parse("DomainAddressSerialNumberResponse is too short"))?;
+                        if response_serial != serial {
+                            return Err(Error::UnexpectedResponse);
+                        }
+                        DomainAddressSerialNumberResponse::domain_address(&internal)
+                            .ok_or(Error::Parse("serial domain response has neither the PL nor RF width"))?
+                    }
+                    _ => DomainAddressResponse::domain_address(&internal)
+                        .ok_or(Error::Parse("DomainAddressResponse has neither the PL nor RF width"))?,
+                };
+                let address = KnxMessageBuffer::from_buffer(internal.as_slice()).get_source_addr();
+
+                Ok((address, domain_address))
+            })
+            .collect()
+    }
+
+    /// The domain address of exactly one device `target` selects.
+    pub async fn read_domain_address(
+        &self,
+        target: AddressTarget,
+        scan_window: Duration,
+    ) -> Result<(IndividualAddress, OpenMediumDomainAddress)> {
+        let found = self.read_domain_addresses(target, scan_window).await?;
+        exactly_one(target, found)
+    }
+
+    /// Write a PL110 or RF domain address to the devices `target` selects
+    /// (`A_DomainAddress_Write`, `NM_DomainAddressSerialNumber_Write` and its
+    /// secure form, 03/05/02 §2.12, §2.13).
+    ///
+    /// The programming-mode service contains no device identity; callers
+    /// requiring authenticated commissioning must address the device by
+    /// serial number.
+    pub async fn write_domain_address(
+        &self,
+        target: AddressTarget,
+        domain_address: OpenMediumDomainAddress,
+        protection: Protection,
+    ) -> Result<()> {
+        match (target, protection) {
+            (AddressTarget::ProgrammingMode | AddressTarget::OpenMediumProgrammingMode, Protection::Plain) => {
+                let frame = frames::build_system_broadcast_frame(
+                    self.source,
+                    ApciCode::DomainAddressWrite,
+                    DomainAddressWrite::msg_len(domain_address),
+                    |buf| DomainAddressWrite::write(buf, domain_address),
+                );
+                self.send_only(frame).await
+            }
+            (AddressTarget::Serial(serial), protection) => {
+                let frame = frames::build_system_broadcast_frame(
+                    self.source,
+                    ApciCode::DomainAddressSerialNumberWrite,
+                    DomainAddressSerialNumberWrite::msg_len(domain_address),
+                    |buf| DomainAddressSerialNumberWrite::write(buf, &serial, domain_address),
+                );
+                match protection {
+                    Protection::Plain => self.send_only(frame).await,
+                    Protection::Secure { current, key } => self.send_secure(frame, current, key).await,
+                }
+            }
+            (AddressTarget::ProgrammingMode | AddressTarget::OpenMediumProgrammingMode, Protection::Secure { .. }) => {
+                Err(Error::Unsupported("programming-mode domain writes have no secure form"))
+            }
+        }
+    }
+
+    /// Verify that exactly one device `target` selects reports the expected
+    /// domain address, and return its current individual address.
+    ///
+    /// For a serial target this is a stronger diagnostic than the
+    /// standardized §2.12 check, which only proves reachability through
+    /// [`read_individual_address`](Self::read_individual_address); it needs
+    /// the newly selected domain to remain reachable from this client.
+    pub async fn verify_domain_address(
+        &self,
+        target: AddressTarget,
+        expected: OpenMediumDomainAddress,
+        scan_window: Duration,
+    ) -> Result<IndividualAddress> {
+        let (address, actual) = self.read_domain_address(target, scan_window).await?;
         if actual != expected {
             return Err(Error::ProgrammingVerification(format!(
-                "serial domain write returned {actual:?}, expected {expected:?}"
+                "domain write returned {actual:?}, expected {expected:?}"
             )));
         }
 
@@ -652,69 +533,77 @@ impl<'bus> NetworkManagement<'bus> {
     }
 
     /// Read a property value without opening a transport connection.
+    // TODO: connectionless extended property reads, should a caller need
+    // them; only standard addressing is implemented here.
     pub async fn property_read(
         &self,
         addr: IndividualAddress,
-        obj_idx: u8,
-        prop_id: u16,
+        property: PropertyAddress,
         start_idx: u16,
         count: u16,
     ) -> Result<Vec<u8>> {
-        let property = management::ClassicProperty::new(obj_idx, prop_id, start_idx, count)?;
+        let (object_index, property_id) = indexed(property)?;
+        let property = management::ClassicProperty::new(object_index, property_id, start_idx, count)?;
 
         let buf = self
             .unconnected(addr, ApciCode::PropertyValueRead, PropertyValueHeader::MIN_MSG_LEN, |buf| {
-                PropertyValueResponse::write(buf, obj_idx, prop_id, count, start_idx, &[])
+                PropertyValueResponse::write(buf, object_index, property_id, count, start_idx, &[])
             })
             .await?;
         Ok(property.response(&buf)?.to_vec())
     }
 
-    /// Execute a function property command without opening a transport
-    /// connection.
     async fn function_property_request(
         &self,
         apci: ApciCode,
         addr: IndividualAddress,
-        obj_idx: u8,
-        prop_id: u16,
+        property: PropertyAddress,
         service_data: &[u8],
     ) -> Result<FunctionPropertyResult> {
-        management::validate_property_id(prop_id)?;
+        let (object_index, property_id) = indexed(property)?;
 
         let buf = self
             .unconnected(addr, apci, FunctionPropertyHeader::msg_len(service_data.len()), |buf| {
-                FunctionPropertyHeader::write(buf, obj_idx, prop_id, service_data)
+                FunctionPropertyHeader::write(buf, object_index, property_id, service_data)
             })
             .await?;
-        FunctionPropertyResult::parse(&buf, obj_idx, prop_id)
+        FunctionPropertyResult::parse(&buf, object_index, property_id)
     }
 
+    /// Execute a function property command without opening a transport
+    /// connection. Only standard addressing is implemented connectionless.
     pub async fn function_property_command(
         &self,
         addr: IndividualAddress,
-        obj_idx: u8,
-        prop_id: u16,
+        property: PropertyAddress,
         service_data: &[u8],
     ) -> Result<FunctionPropertyResult> {
-        self.function_property_request(ApciCode::FunctionPropertyCommand, addr, obj_idx, prop_id, service_data).await
+        self.function_property_request(ApciCode::FunctionPropertyCommand, addr, property, service_data).await
     }
 
     /// Read the state of a function property without opening a transport
-    /// connection.
+    /// connection. Only standard addressing is implemented connectionless.
     pub async fn function_property_state_read(
         &self,
         addr: IndividualAddress,
-        obj_idx: u8,
-        prop_id: u16,
+        property: PropertyAddress,
         service_data: &[u8],
     ) -> Result<FunctionPropertyResult> {
-        self.function_property_request(ApciCode::FunctionPropertyStateRead, addr, obj_idx, prop_id, service_data).await
+        self.function_property_request(ApciCode::FunctionPropertyStateRead, addr, property, service_data).await
     }
 
     // ========================================================================
     // Internal plumbing
     // ========================================================================
+
+    async fn send_secure(&self, frame: Vec<u8>, current: IndividualAddress, key: [u8; 16]) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(BusCommand::SecureSystemBroadcast { frame, at: current, key, tx })
+            .await
+            .map_err(|_| Error::WorkerGone)?;
+        rx.await.map_err(|_| Error::WorkerGone)?
+    }
 
     async fn unconnected(
         &self,
@@ -746,6 +635,28 @@ impl<'bus> NetworkManagement<'bus> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx.send(BusCommand::SendOnly { frame, tx }).await.map_err(|_| Error::WorkerGone)?;
         rx.await.map_err(|_| Error::WorkerGone)?
+    }
+}
+
+/// The one response a singular read requires, with the cardinality error
+/// that fits how the target selected devices.
+fn exactly_one<T: Copy>(target: AddressTarget, found: Vec<T>) -> Result<T> {
+    match (found.as_slice(), target) {
+        ([device], _) => Ok(*device),
+        ([], AddressTarget::Serial(_)) => Err(Error::SerialDeviceNotFound),
+        ([], _) => Err(Error::ProgrammingDeviceNotFound),
+        (_, AddressTarget::Serial(_)) => Err(Error::DuplicateSerialNumber(found.len())),
+        (_, _) => Err(Error::MultipleProgrammingDevices(found.len())),
+    }
+}
+
+/// The standard addressing the connectionless services implement.
+fn indexed(property: PropertyAddress) -> Result<(u8, u16)> {
+    match property {
+        PropertyAddress::Indexed { object_index, property_id } => Ok((object_index, u16::from(property_id))),
+        PropertyAddress::Extended { .. } => {
+            Err(Error::Unsupported("connectionless property services use standard addressing"))
+        }
     }
 }
 
@@ -854,14 +765,23 @@ mod tests {
     async fn connectionless_property_rejects_invalid_fields_and_stale_reply() {
         let (tx, mut rx) = mpsc::channel(1);
         let management = NetworkManagement::new(&tx, source());
-        for (property, start, count) in [(256, 1, 1), (1, 4096, 1), (1, 1, 16)] {
+        assert!(matches!(PropertyAddress::indexed(0, 256), Err(Error::Parse(_))));
+        for (property, start, count) in [(1, 4096, 1), (1, 1, 16)] {
             assert!(matches!(
-                management.property_read(current(), 0, property, start, count).await,
+                management
+                    .property_read(
+                        current(),
+                        PropertyAddress::indexed(0, property).expect("PID fits one octet"),
+                        start,
+                        count
+                    )
+                    .await,
                 Err(Error::Parse(_))
             ));
         }
         assert!(rx.try_recv().is_err());
-        let client = management.property_read(current(), 0, 1, 7, 1);
+        let client =
+            management.property_read(current(), PropertyAddress::indexed(0, 1).expect("PID fits one octet"), 7, 1);
         let peer = async {
             let BusCommand::Unconnected { tx, .. } = rx.recv().await.expect("request") else {
                 panic!("unconnected request")
@@ -884,7 +804,12 @@ mod tests {
     async fn connectionless_property_read_reports_a_typed_negative_response() {
         let (tx, mut rx) = mpsc::channel(1);
         let management = NetworkManagement::new(&tx, source());
-        let client = management.property_read(current(), 5, pid::MCB_TABLE, 1, 1);
+        let client = management.property_read(
+            current(),
+            PropertyAddress::indexed(5, pid::MCB_TABLE).expect("PID fits one octet"),
+            1,
+            1,
+        );
         let device = async {
             let BusCommand::Unconnected { frame, matcher, tx } =
                 rx.recv().await.expect("connectionless property-value read")
@@ -952,8 +877,7 @@ mod tests {
     async fn configured_programming_mode_wait_repeats_empty_scans() {
         let (tx, mut rx) = mpsc::channel(2);
         let management = NetworkManagement::new(&tx, source());
-        let client =
-            management.read_individual_addresses_with_wait(Duration::from_millis(1), Some(Duration::from_secs(1)));
+        let client = management.await_programming_mode(Duration::from_millis(1), Duration::from_secs(1));
         let device = async {
             let BusCommand::Scan { tx, .. } = rx.recv().await.expect("first scan command") else {
                 panic!("expected a scan command")
@@ -974,8 +898,7 @@ mod tests {
     async fn configured_programming_mode_wait_retries_a_rejected_scan() {
         let (tx, mut rx) = mpsc::channel(2);
         let management = NetworkManagement::new(&tx, source());
-        let client =
-            management.read_individual_addresses_with_wait(Duration::from_millis(1), Some(Duration::from_secs(1)));
+        let client = management.await_programming_mode(Duration::from_millis(1), Duration::from_secs(1));
         let device = async {
             let BusCommand::Scan { tx, .. } = rx.recv().await.expect("first scan command") else {
                 panic!("expected a scan command")
@@ -996,7 +919,8 @@ mod tests {
     async fn open_medium_ia_scan_uses_system_broadcast_and_preserves_cardinality() {
         let (tx, mut rx) = mpsc::channel(1);
         let management = NetworkManagement::new(&tx, source());
-        let client = management.read_open_medium_individual_addresses(Duration::from_millis(1));
+        let client =
+            management.read_individual_addresses(AddressTarget::OpenMediumProgrammingMode, Duration::from_millis(1));
         let device = async {
             let BusCommand::Scan { frame, tx, .. } = rx.recv().await.expect("scan command") else {
                 panic!("expected a scan command")
@@ -1023,7 +947,8 @@ mod tests {
     async fn singular_open_medium_ia_read_rejects_duplicate_responses() {
         let (tx, mut rx) = mpsc::channel(1);
         let management = NetworkManagement::new(&tx, source());
-        let client = management.read_open_medium_individual_address(Duration::from_millis(1));
+        let client =
+            management.read_individual_address(AddressTarget::OpenMediumProgrammingMode, Duration::from_millis(1));
         let device = async {
             let BusCommand::Scan { tx, .. } = rx.recv().await.expect("scan command") else {
                 panic!("expected a scan command")
@@ -1046,7 +971,8 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(1);
         let management = NetworkManagement::new(&tx, source());
-        let client = management.write_open_medium_individual_address(desired());
+        let client =
+            management.write_individual_address(AddressTarget::OpenMediumProgrammingMode, desired(), Protection::Plain);
         let device = async {
             let BusCommand::SendOnly { frame, tx } = rx.recv().await.expect("write command") else {
                 panic!("expected a send-only command")
@@ -1070,7 +996,8 @@ mod tests {
     async fn serial_assignment_is_a_noop_at_the_desired_address() {
         let (tx, mut rx) = mpsc::channel(4);
         let management = NetworkManagement::new(&tx, source());
-        let client = management.assign_individual_address_by_serial(&SERIAL, desired(), Duration::from_millis(1));
+        let client =
+            management.assign_individual_address(&SERIAL, desired(), Duration::from_millis(1), Protection::Plain);
         let device = async { answer_serial_scan(&mut rx, &[desired()]).await };
         let (result, ()) = tokio::join!(client, device);
 
@@ -1087,7 +1014,8 @@ mod tests {
         for (answers, expected_duplicate) in [(Vec::new(), None), (vec![current(), desired()], Some(2))] {
             let (tx, mut rx) = mpsc::channel(4);
             let management = NetworkManagement::new(&tx, source());
-            let client = management.assign_individual_address_by_serial(&SERIAL, desired(), Duration::from_millis(1));
+            let client =
+                management.assign_individual_address(&SERIAL, desired(), Duration::from_millis(1), Protection::Plain);
             let device = async { answer_serial_scan(&mut rx, &answers).await };
             let (result, ()) = tokio::join!(client, device);
             assert!(match (result, expected_duplicate) {
@@ -1102,7 +1030,8 @@ mod tests {
     async fn serial_assignment_refuses_an_occupied_address() {
         let (tx, mut rx) = mpsc::channel(4);
         let management = NetworkManagement::new(&tx, source());
-        let client = management.assign_individual_address_by_serial(&SERIAL, desired(), Duration::from_millis(1));
+        let client =
+            management.assign_individual_address(&SERIAL, desired(), Duration::from_millis(1), Protection::Plain);
         let device = async {
             answer_serial_scan(&mut rx, &[current()]).await;
             answer_presence_scan(&mut rx, true).await;
@@ -1115,7 +1044,8 @@ mod tests {
     async fn serial_assignment_writes_and_verifies() {
         let (tx, mut rx) = mpsc::channel(4);
         let management = NetworkManagement::new(&tx, source());
-        let client = management.assign_individual_address_by_serial(&SERIAL, desired(), Duration::from_millis(1));
+        let client =
+            management.assign_individual_address(&SERIAL, desired(), Duration::from_millis(1), Protection::Plain);
         let device = async {
             answer_serial_scan(&mut rx, &[current()]).await;
             answer_presence_scan(&mut rx, false).await;
@@ -1139,7 +1069,10 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(4);
         let management = NetworkManagement::new(&tx, source());
         let client =
-            management.assign_individual_address_by_serial_secure(&SERIAL, desired(), Duration::from_millis(1), KEY);
+            management.assign_individual_address(&SERIAL, desired(), Duration::from_millis(1), Protection::Secure {
+                current: current(),
+                key: KEY,
+            });
         let device = async {
             answer_serial_scan(&mut rx, &[current()]).await;
             answer_presence_scan(&mut rx, false).await;
@@ -1163,7 +1096,8 @@ mod tests {
     async fn serial_assignment_reports_failed_verification() {
         let (tx, mut rx) = mpsc::channel(4);
         let management = NetworkManagement::new(&tx, source());
-        let client = management.assign_individual_address_by_serial(&SERIAL, desired(), Duration::from_millis(1));
+        let client =
+            management.assign_individual_address(&SERIAL, desired(), Duration::from_millis(1), Protection::Plain);
         let device = async {
             answer_serial_scan(&mut rx, &[current()]).await;
             answer_presence_scan(&mut rx, false).await;
@@ -1186,7 +1120,8 @@ mod tests {
         let rf = OpenMediumDomainAddress::Rf([1, 2, 3, 4, 5, 6]);
         let (tx, mut rx) = mpsc::channel(1);
         let management = NetworkManagement::new(&tx, source());
-        let client = management.read_programming_mode_domain_addresses(Duration::from_millis(1));
+        let client =
+            management.read_domain_addresses(AddressTarget::OpenMediumProgrammingMode, Duration::from_millis(1));
         let device = async {
             let BusCommand::Scan { frame, tx, .. } = rx.recv().await.expect("scan command") else {
                 panic!("expected a scan command")
@@ -1210,7 +1145,7 @@ mod tests {
         let domain = OpenMediumDomainAddress::Pl(0x42);
         let (tx, mut rx) = mpsc::channel(1);
         let management = NetworkManagement::new(&tx, source());
-        let client = management.read_programming_mode_domain_address(Duration::from_millis(1));
+        let client = management.read_domain_address(AddressTarget::OpenMediumProgrammingMode, Duration::from_millis(1));
         let device = async {
             let BusCommand::Scan { tx, .. } = rx.recv().await.expect("scan command") else {
                 panic!("expected a scan command")
@@ -1230,7 +1165,8 @@ mod tests {
         let domain = OpenMediumDomainAddress::Rf([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
         let (tx, mut rx) = mpsc::channel(1);
         let management = NetworkManagement::new(&tx, source());
-        let client = management.write_programming_mode_domain_address(domain);
+        let client =
+            management.write_domain_address(AddressTarget::OpenMediumProgrammingMode, domain, Protection::Plain);
         let device = async {
             let BusCommand::SendOnly { frame, tx } = rx.recv().await.expect("write command") else {
                 panic!("expected a send-only command")
@@ -1255,7 +1191,7 @@ mod tests {
         let domain = OpenMediumDomainAddress::Pl(0x7F);
         let (tx, mut rx) = mpsc::channel(1);
         let management = NetworkManagement::new(&tx, source());
-        let client = management.verify_domain_address_value_by_serial(&SERIAL, domain, Duration::from_millis(1));
+        let client = management.verify_domain_address(AddressTarget::Serial(SERIAL), domain, Duration::from_millis(1));
         let device = async {
             let BusCommand::Scan { frame, tx, .. } = rx.recv().await.expect("scan command") else {
                 panic!("expected a scan command")
@@ -1279,7 +1215,7 @@ mod tests {
         let domain = OpenMediumDomainAddress::Pl(0x7F);
         let (tx, mut rx) = mpsc::channel(1);
         let management = NetworkManagement::new(&tx, source());
-        let client = management.read_domain_addresses_by_serial(&SERIAL, Duration::from_millis(1));
+        let client = management.read_domain_addresses(AddressTarget::Serial(SERIAL), Duration::from_millis(1));
         let device = async {
             let BusCommand::Scan { tx, .. } = rx.recv().await.expect("scan command") else {
                 panic!("expected a scan command")
@@ -1303,7 +1239,10 @@ mod tests {
         let domain = OpenMediumDomainAddress::Rf([1, 3, 5, 7, 9, 11]);
         let (tx, mut rx) = mpsc::channel(1);
         let management = NetworkManagement::new(&tx, source());
-        let client = management.write_domain_address_by_serial_secure(&SERIAL, current(), domain, KEY);
+        let client = management.write_domain_address(AddressTarget::Serial(SERIAL), domain, Protection::Secure {
+            current: current(),
+            key: KEY,
+        });
         let device = async {
             let BusCommand::SecureSystemBroadcast { frame, at, key, tx } = rx.recv().await.expect("write command")
             else {

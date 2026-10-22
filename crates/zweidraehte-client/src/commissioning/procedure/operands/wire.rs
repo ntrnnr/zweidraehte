@@ -8,32 +8,9 @@ use super::*;
 /// compact `0x02` return code.
 pub(crate) const FUNCTION_PROPERTY_NOT_SUPPORTED_ERROR: u32 = 0xC004_2B25;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum PropertyAddress {
-    Indexed { object_index: u8, property_id: u8 },
-    Extended { object_type: InterfaceObjectType, object_instance: u16, property_id: u16 },
-}
-
-impl PropertyAddress {
-    pub const fn overhead(self) -> u16 {
-        match self {
-            Self::Indexed { .. } => 5,
-            Self::Extended { .. } => 9,
-        }
-    }
-    pub const fn max_count(self) -> usize {
-        match self {
-            Self::Indexed { .. } => 15,
-            Self::Extended { .. } => 255,
-        }
-    }
-    pub const fn max_start(self) -> u16 {
-        match self {
-            Self::Indexed { .. } => 0xFFF,
-            Self::Extended { .. } => u16::MAX,
-        }
-    }
-}
+/// Commissioning addresses properties with the bus layer's type, so a
+/// compiled operand reaches the device without translation.
+pub use crate::PropertyAddress;
 
 pub fn pure_property_address(object: &ObjectSelector, property_id: u16) -> Result<PropertyAddress, CompileError> {
     match object {

@@ -40,7 +40,8 @@
 //! # Usage
 //!
 //! ```no_run
-//! use zweidraehte_client::{KnxBus, GroupValueEncoding};
+//! use std::time::Duration;
+//! use zweidraehte_client::{AddressTarget, GroupValueEncoding, KnxBus, PropertyAddress, pid};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let bus = KnxBus::connect_ip("192.168.1.100:3671".parse()?).await?;
@@ -51,19 +52,18 @@
 //!
 //! // Connected (RCo) device management.
 //! let mut device = bus.connect_device("1.1.42".parse()?).await?;
-//! let serial = device.property_read(0, 11, 1, 1).await?;
+//! let serial = device.property_read(PropertyAddress::indexed(0, pid::SERIAL_NUMBER)?, 1, 1).await?;
 //! device.close().await?;
 //!
 //! // Network management.
 //! let found = bus.network_management()
-//!     .read_individual_addresses(std::time::Duration::from_secs(3)).await?;
+//!     .read_individual_addresses(AddressTarget::ProgrammingMode, Duration::from_secs(3))
+//!     .await?;
 //!
 //! bus.disconnect().await?;
 //! # Ok(())
 //! # }
 //! ```
-
-#![allow(async_fn_in_trait)]
 
 pub mod bus;
 #[cfg(feature = "cli")]
@@ -77,12 +77,13 @@ pub mod connector;
 pub mod project;
 pub mod security;
 
-pub use bus::access::{ManagementCredential, ManagementCredentials};
+pub use bus::access::{ManagementCredential, ManagementKeys};
 pub use bus::group::{GroupService, GroupTelegram};
-pub use bus::management::{FunctionPropertyResult, PropertyDescription};
+
 pub use bus::{
-    BusError, BusResult, DeviceConnection, KnxBus, NetworkManagement, ProgrammingModeDevice, RestartAck,
-    SerialAddressAssignment,
+    AddressTarget, BusError, BusResult, DeviceConnection, FunctionPropertyResult, KnxBus, KnxBusBuilder, MemorySpace,
+    NetworkManagement, ProgrammingModeDevice, PropertyAddress, PropertyDescription, Protection, RestartAck,
+    SerialAddressAssignment, WriteCheck,
 };
 pub use connector::{BusTarget, ConnectorInfo, IpTunnelConnector, KnxConnector};
 #[cfg(feature = "usb")]

@@ -113,7 +113,7 @@ pub struct DutControl {
 
 /// Spawn the pump around a lifecycle whose child is already running
 /// (`spawn_and_wait_roi` done). Returns the connector to hand to
-/// `KnxBus::with_connector` and the control handle for scenarios.
+/// `KnxBus::builder().attach` and the control handle for scenarios.
 pub fn spawn(lifecycle: ChildLifecycle) -> (DutConnector, DutControl) {
     let (cmd_tx, cmd_rx) = mpsc::channel(8);
     let (frame_tx, frame_rx) = mpsc::channel(64);

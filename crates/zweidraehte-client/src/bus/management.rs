@@ -11,12 +11,14 @@
 mod memory;
 mod property;
 pub(super) use memory::{MemoryFamily, MemoryTransfer};
-pub(super) use property::{ClassicProperty, ExtendedProperty, validate_extended_target, validate_property_id};
+pub(super) use property::{ClassicProperty, ExtendedProperty, validate_extended_target};
 
 use std::time::Duration;
 
 use crate::bus::{BusError as Error, BusResult as Result};
 use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::dpt::InterfaceObjectType;
+use zweidraehte_proto::messages::apdu::property_ext::PropertyExtDescription;
 use zweidraehte_proto::messages::knx::{ApciCode, decode_apci_code, offsets};
 
 /// How long a management procedure waits for the device's answer once the
@@ -34,11 +36,59 @@ pub struct FunctionPropertyResult {
     pub data: Vec<u8>,
 }
 
-/// Result of a property description read.
-#[derive(Debug, Clone)]
+/// An interface-object property, addressed the way the services reach it.
+///
+/// `Indexed` uses the standard property services (03/03/07): an object index
+/// and a one-octet property ID. `Extended` uses AN163 extended addressing by
+/// object type and one-based instance, with a 12-bit property ID. Each
+/// property operation on [`DeviceConnection`](crate::DeviceConnection)
+/// selects its service from this addressing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PropertyAddress {
+    Indexed { object_index: u8, property_id: u8 },
+    Extended { object_type: InterfaceObjectType, object_instance: u16, property_id: u16 },
+}
+
+impl PropertyAddress {
+    /// Standard addressing for a property ID constant such as
+    /// [`pid::SERIAL_NUMBER`](crate::pid::SERIAL_NUMBER), which must fit one
+    /// octet.
+    pub fn indexed(object_index: u8, property_id: u16) -> Result<Self> {
+        let property_id =
+            u8::try_from(property_id).map_err(|_| Error::Parse("classic property identifier exceeds one octet"))?;
+        Ok(Self::Indexed { object_index, property_id })
+    }
+
+    /// Bytes of a property request's APDU that precede its data.
+    pub const fn overhead(self) -> u16 {
+        match self {
+            Self::Indexed { .. } => 5,
+            Self::Extended { .. } => 9,
+        }
+    }
+
+    /// Most elements one request can carry.
+    pub const fn max_count(self) -> usize {
+        match self {
+            Self::Indexed { .. } => 15,
+            Self::Extended { .. } => 255,
+        }
+    }
+
+    /// Highest start index the service can encode.
+    pub const fn max_start(self) -> u16 {
+        match self {
+            Self::Indexed { .. } => 0xFFF,
+            Self::Extended { .. } => u16::MAX,
+        }
+    }
+}
+
+/// Result of a property description read, for either addressing.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PropertyDescription {
     pub prop_id: u16,
-    pub prop_idx: u8,
+    pub prop_idx: u16,
     pub write_enabled: bool,
     pub pdt: u8,
     pub max_elements: u16,
@@ -47,6 +97,24 @@ pub struct PropertyDescription {
 }
 
 impl PropertyDescription {
+    /// A negative response: the device does not describe this property.
+    /// Both services zero the type, element count and access levels.
+    pub fn is_absent(&self) -> bool {
+        self.pdt == 0 && self.max_elements == 0 && self.read_access == 0 && self.write_access == 0
+    }
+
+    pub(super) fn from_extended(description: PropertyExtDescription) -> Self {
+        Self {
+            prop_id: description.prop_id,
+            prop_idx: description.prop_idx,
+            write_enabled: description.writeable,
+            pdt: description.pdt,
+            max_elements: description.max_elements,
+            read_access: description.read_level,
+            write_access: description.write_level,
+        }
+    }
+
     /// Parse an `A_PropertyDescription_Response` from an internal-format
     /// frame.
     pub(super) fn parse(buf: &[u8]) -> Option<Self> {
@@ -58,7 +126,7 @@ impl PropertyDescription {
         let type_byte = buf[base + 5];
         Some(Self {
             prop_id: buf[base + 3] as u16,
-            prop_idx: buf[base + 4],
+            prop_idx: u16::from(buf[base + 4]),
             write_enabled: (type_byte & 0x80) != 0,
             pdt: type_byte & 0x3F,
             max_elements: u16::from_be_bytes([buf[base + 6], buf[base + 7]]),

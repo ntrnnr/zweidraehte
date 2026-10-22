@@ -1,8 +1,8 @@
 //! Service sizing and dispatch use the same concrete operands as preflight.
 use super::data::changed_ranges;
 use super::{ExecutionSession, mutating_request_may_have_reached_device};
-use crate::bus::BusError;
 use crate::bus::management::FunctionPropertyResult;
+use crate::bus::{BusError, MemorySpace, WriteCheck};
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::procedure::operands::{
     FUNCTION_PROPERTY_NOT_SUPPORTED_ERROR, MemoryAddress, MemoryService, PointerEncoding, PropertyAddress,
@@ -251,14 +251,7 @@ impl ExecutionSession<'_> {
             let count = (length - bytes.len()).min(capacity) as u8;
             let address = address + bytes.len() as u32;
             let connection = self.connection_mut()?;
-            let result = match service {
-                MemoryService::Classic => connection.memory_read(address as u16, count).await,
-                MemoryService::Extended => connection.memory_extended_read(address, count).await,
-                MemoryService::User => connection.user_memory_read(address, count).await,
-                MemoryService::Filter => connection.filter_table_read(address, count).await,
-                MemoryService::Router => connection.router_memory_read(address, count).await,
-                MemoryService::Standard => unreachable!("deferred service resolves before dispatch"),
-            };
+            let result = connection.memory_read(memory_space(service), address, count).await;
             let chunk = result?;
             if chunk.len() != usize::from(count) {
                 return Err(Diagnostic::new("memory response length differs from request"));
@@ -278,18 +271,15 @@ impl ExecutionSession<'_> {
         for (index, chunk) in data.chunks(capacity.max(1)).enumerate() {
             let address = address + (index * capacity) as u32;
             let connection = self.connection_mut()?;
-            let result = match (service, verification == MemoryVerification::DeviceResponse) {
-                (MemoryService::Classic, false) => connection.memory_write(address as u16, chunk).await,
-                (MemoryService::Classic, true) => connection.memory_write_auto_verify(address as u16, chunk).await,
-                (MemoryService::Extended, _) => connection.memory_extended_write(address, chunk).await,
-                (MemoryService::User, false) => connection.user_memory_write(address, chunk).await,
-                (MemoryService::User, true) => connection.user_memory_write_auto_verify(address, chunk).await,
-                (MemoryService::Filter, false) => connection.filter_table_write(address, chunk).await,
-                (MemoryService::Filter, true) => connection.filter_table_write_auto_verify(address, chunk).await,
-                (MemoryService::Router, false) => connection.router_memory_write(address, chunk).await,
-                (MemoryService::Router, true) => connection.router_memory_write_auto_verify(address, chunk).await,
-                (MemoryService::Standard, _) => unreachable!("deferred service resolves before dispatch"),
+            // Read-back stays here rather than in the bus write, so the
+            // mutation is recorded before the comparison and a mismatch
+            // carries the load-control comparison cause. The extended service
+            // confirms with its return code and has no Verify Mode response.
+            let check = match verification {
+                MemoryVerification::DeviceResponse if service != MemoryService::Extended => WriteCheck::DeviceVerify,
+                _ => WriteCheck::Acknowledged,
             };
+            let result = connection.memory_write(memory_space(service), address, chunk, check).await;
             result.map_err(|error| self.mutating_client_error(error))?;
             self.record_mutation();
             let chunk_geometry = geometry.range(index * capacity..index * capacity + chunk.len());
@@ -376,38 +366,14 @@ impl ExecutionSession<'_> {
             let connection = self.connection_mut()?;
             if let Some(data) = data {
                 let chunk = &data[offset * width..(offset + usize::from(chunk_count)) * width];
-                let result = match address {
-                    PropertyAddress::Indexed { object_index, property_id } => {
-                        connection
-                            .property_write(object_index, property_id.into(), chunk_start, chunk_count, chunk)
-                            .await
-                    }
-                    PropertyAddress::Extended { object_type, object_instance, property_id }
-                        if matches!(operation, PropertyOperation::ConfirmedWrite(_)) =>
-                    {
-                        connection
-                            .property_ext_write(
-                                object_type,
-                                object_instance,
-                                property_id,
-                                chunk_start,
-                                chunk_count,
-                                chunk,
-                            )
-                            .await
-                    }
-                    PropertyAddress::Extended { object_type, object_instance, property_id } => {
-                        connection
-                            .property_ext_write_unconfirmed(
-                                object_type,
-                                object_instance,
-                                property_id,
-                                chunk_start,
-                                chunk_count,
-                                chunk,
-                            )
-                            .await
-                    }
+                // Standard addressing has only the confirmed write; an
+                // extended unconfirmed operation keeps its unconfirmed service.
+                let unconfirmed = matches!(address, PropertyAddress::Extended { .. })
+                    && !matches!(operation, PropertyOperation::ConfirmedWrite(_));
+                let result = if unconfirmed {
+                    connection.property_write_unconfirmed(address, chunk_start, chunk_count, chunk).await
+                } else {
+                    connection.property_write(address, chunk_start, chunk_count, chunk).await
                 };
                 if result.is_ok() || result.as_ref().err().is_some_and(mutating_request_may_have_reached_device) {
                     self.effects.expose_group_keys(
@@ -422,16 +388,7 @@ impl ExecutionSession<'_> {
                 result.map_err(|error| self.mutating_client_error(error))?;
                 self.record_mutation();
             } else {
-                let result = match address {
-                    PropertyAddress::Indexed { object_index, property_id } => {
-                        connection.property_read(object_index, property_id.into(), chunk_start, chunk_count).await
-                    }
-                    PropertyAddress::Extended { object_type, object_instance, property_id } => {
-                        connection
-                            .property_ext_read(object_type, object_instance, property_id, chunk_start, chunk_count)
-                            .await
-                    }
-                };
+                let result = connection.property_read(address, chunk_start, chunk_count).await;
                 let chunk = result?;
                 if chunk.len() != usize::from(chunk_count) * width {
                     return Err(Diagnostic::new("property response length differs from request"));
@@ -612,7 +569,7 @@ impl ExecutionSession<'_> {
                     let known = if let Some(object_type) = seeded {
                         Some(object_type)
                     } else {
-                        match self.connection_mut()?.property_read(index, pid::OBJECT_TYPE, 1, 1).await {
+                        match self.connection_mut()?.property_read(object_type_property(index), 1, 1).await {
                             Ok(bytes) => {
                                 let raw: [u8; 2] = bytes
                                     .as_slice()
@@ -802,18 +759,16 @@ impl ExecutionSession<'_> {
 
         let connection_apdu = self.bus.max_apdu().min(self.config.target_max_apdu);
         if extended && connection_apdu > 15 {
-            let description =
-                self.connection_mut()?.property_ext_description_read(object_type, object_instance, property_id).await?;
+            let description = self
+                .connection_mut()?
+                .property_description_read(PropertyAddress::Extended { object_type, object_instance, property_id })
+                .await?;
 
             // TODO: The reference reports a missing extended description as
             // a device-management failure rather than an unavailable
             // resource; how a negative response maps onto that is not
             // established, so no error handler cause is attached.
-            if description.pdt == 0
-                && description.max_elements == 0
-                && description.read_level == 0
-                && description.write_level == 0
-            {
+            if description.is_absent() {
                 return Err(Diagnostic::new(format!(
                     "device does not describe property {property_id} on interface object type {} instance {object_instance}",
                     key.0
@@ -840,14 +795,12 @@ impl ExecutionSession<'_> {
             return Ok(*property_data_type);
         }
 
-        let description =
-            self.connection_mut()?.property_description_read(object_index, u16::from(property_id), 0).await?;
+        let description = self
+            .connection_mut()?
+            .property_description_read(PropertyAddress::Indexed { object_index, property_id })
+            .await?;
 
-        if description.pdt == 0
-            && description.max_elements == 0
-            && description.read_access == 0
-            && description.write_access == 0
-        {
+        if description.is_absent() {
             let mut error = Diagnostic::new(format!(
                 "device does not describe property {property_id} on interface object {object_index}"
             ));
@@ -920,19 +873,10 @@ impl ExecutionSession<'_> {
             LoadEffect::InvalidateAll => self.images.forget_device(),
         }
         let connection = self.connection_mut()?;
-        let result = match (address, command) {
-            (PropertyAddress::Indexed { object_index, property_id }, true) => {
-                connection.function_property_command(object_index, property_id.into(), data).await
-            }
-            (PropertyAddress::Indexed { object_index, property_id }, false) => {
-                connection.function_property_state_read(object_index, property_id.into(), data).await
-            }
-            (PropertyAddress::Extended { object_type, object_instance, property_id }, true) => {
-                connection.function_property_ext_command(object_type, object_instance, property_id, data).await
-            }
-            (PropertyAddress::Extended { object_type, object_instance, property_id }, false) => {
-                connection.function_property_ext_state_read(object_type, object_instance, property_id, data).await
-            }
+        let result = if command {
+            connection.function_property_command(address, data).await
+        } else {
+            connection.function_property_state_read(address, data).await
         };
         let result = result
             .map_err(|error| if command { self.mutating_client_error(error) } else { Diagnostic::from(error) })?;
@@ -949,4 +893,21 @@ impl ExecutionSession<'_> {
         }
         Ok(result)
     }
+}
+
+/// The bus memory space a resolved operand's service reaches.
+fn memory_space(service: MemoryService) -> MemorySpace {
+    match service {
+        MemoryService::Classic => MemorySpace::Standard,
+        MemoryService::Extended => MemorySpace::Extended,
+        MemoryService::User => MemorySpace::User,
+        MemoryService::Filter => MemorySpace::FilterTable,
+        MemoryService::Router => MemorySpace::Router,
+        MemoryService::Standard => unreachable!("deferred service resolves before dispatch"),
+    }
+}
+
+/// `PID_OBJECT_TYPE` of the interface object at `index`.
+fn object_type_property(index: u8) -> PropertyAddress {
+    PropertyAddress::indexed(index, pid::OBJECT_TYPE).expect("PID_OBJECT_TYPE fits one octet")
 }

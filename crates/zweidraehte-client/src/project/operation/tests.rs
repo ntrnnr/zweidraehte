@@ -43,11 +43,10 @@ impl KnxConnector for ClosingConnector {
 }
 
 fn bus(security: SecurityStore, closed: Arc<AtomicUsize>, fail: bool) -> KnxBus {
-    KnxBus::with_connector_and_security(
-        ClosingConnector { closed, fail },
-        ConnectorInfo { assigned_address: IndividualAddress::new(1, 1, 250), max_apdu: 254 },
-        security,
-    )
+    KnxBus::builder().with_security(security).attach(ClosingConnector { closed, fail }, ConnectorInfo {
+        assigned_address: IndividualAddress::new(1, 1, 250),
+        max_apdu: 254,
+    })
 }
 
 fn completed() -> ProjectDeviceCommissioningReport {

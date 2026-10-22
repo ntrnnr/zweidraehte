@@ -18,7 +18,7 @@ mod common;
 use clap::Parser;
 use common::TargetArgs;
 use zweidraehte_client::security::Keyring;
-use zweidraehte_client::{GroupService, SecurityStore};
+use zweidraehte_client::{GroupService, KnxBus, SecurityStore};
 
 /// Monitor group telegrams on the bus.
 #[derive(Parser)]
@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Keyring '{}' loaded.", keyring.project);
     }
 
-    let bus = args.target.to_target().connect_with_security(security).await?;
+    let bus = KnxBus::builder().with_security(security).connect(&args.target.to_target()).await?;
     println!("Connected as {}. Monitoring group traffic (Ctrl-C to stop).", bus.assigned_address());
 
     let mut events = bus.group_events();

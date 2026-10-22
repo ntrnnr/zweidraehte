@@ -15,16 +15,16 @@ use crate::security::{DeviceSecurityMode, SecurityEntry};
 /// Borrowed management candidates, in Tool Key then FDSK order.
 /// Application keys are intentionally outside this lower-layer interface.
 #[derive(Clone, Copy)]
-pub struct ManagementCredentials<'a> {
+pub struct ManagementKeys<'a> {
     serial_number: Option<[u8; 6]>,
     tool_key: Option<&'a [u8; 16]>,
     fdsk: Option<&'a [u8; 16]>,
 }
 
-impl<'a> ManagementCredentials<'a> {
+impl<'a> ManagementKeys<'a> {
     /// No secure credential: only plaintext access remains, where permitted.
     pub fn plaintext() -> Self {
-        Self { serial_number: None, tool_key: None, fdsk: None }
+        Self::from_parts(None, None, None)
     }
 
     /// Credentials for the device with this serial number. Secure session
@@ -32,12 +32,12 @@ impl<'a> ManagementCredentials<'a> {
     /// [`with_tool_key`](Self::with_tool_key) and [`with_fdsk`](Self::with_fdsk).
     ///
     /// ```
-    /// # use zweidraehte_client::ManagementCredentials;
+    /// # use zweidraehte_client::ManagementKeys;
     /// # let (serial_number, tool_key, factory_key) = ([0x00, 0xFA, 0, 0, 0, 1], [0x11; 16], [0x22; 16]);
-    /// let credentials = ManagementCredentials::for_serial(serial_number).with_tool_key(&tool_key).with_fdsk(&factory_key);
+    /// let credentials = ManagementKeys::for_serial(serial_number).with_tool_key(&tool_key).with_fdsk(&factory_key);
     /// ```
     pub fn for_serial(serial_number: [u8; 6]) -> Self {
-        Self { serial_number: Some(serial_number), ..Self::plaintext() }
+        Self::from_parts(Some(serial_number), None, None)
     }
 
     /// The installed Tool Key, tried first.
@@ -65,9 +65,9 @@ impl<'a> ManagementCredentials<'a> {
     }
 }
 
-impl std::fmt::Debug for ManagementCredentials<'_> {
+impl std::fmt::Debug for ManagementKeys<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ManagementCredentials")
+        f.debug_struct("ManagementKeys")
             .field("serial_number", &self.serial_number)
             .field("tool_key", &self.tool_key.map(|_| "[REDACTED]"))
             .field("fdsk", &self.fdsk.map(|_| "[REDACTED]"))
@@ -101,7 +101,7 @@ impl KnxBus {
     pub async fn connect_management(
         &self,
         address: IndividualAddress,
-        keys: ManagementCredentials<'_>,
+        keys: ManagementKeys<'_>,
         allow_plaintext: bool,
     ) -> Result<(DeviceConnection, ManagementCredential)> {
         self.acquire_management(
@@ -121,7 +121,7 @@ impl KnxBus {
     pub async fn connect_management_synchronized(
         &self,
         address: IndividualAddress,
-        keys: ManagementCredentials<'_>,
+        keys: ManagementKeys<'_>,
         allow_plaintext: bool,
     ) -> Result<(DeviceConnection, ManagementCredential)> {
         self.acquire_management(
@@ -140,7 +140,7 @@ impl KnxBus {
     pub(crate) async fn acquire_management(
         &self,
         address: IndividualAddress,
-        keys: ManagementCredentials<'_>,
+        keys: ManagementKeys<'_>,
         plaintext: PlaintextAccess,
         force_sync: bool,
     ) -> Result<(DeviceConnection, ManagementCredential)> {

@@ -47,6 +47,11 @@ pub enum BusError {
     #[error("filter-table memory access requires A_FilterTable_Open first")]
     FilterTableNotOpen,
 
+    /// The request combines options no single service provides, such as a
+    /// Verify Mode check on extended memory or a secure programming-mode write.
+    #[error("unsupported request: {0}")]
+    Unsupported(&'static str),
+
     #[error("no device answered for the requested serial number")]
     SerialDeviceNotFound,
 

@@ -1,6 +1,7 @@
 //! Network scope policy and explicit post-assignment address verification.
 
 use super::identity::unique_target;
+use crate::AddressTarget;
 use crate::bus::KnxBus;
 use crate::commissioning::error::Diagnostic;
 use crate::commissioning::error::DiagnosticResult as Result;
@@ -50,19 +51,27 @@ pub(in crate::commissioning) fn system_status_with_programming_mode(value: u8, e
 // verification is another programming-mode address read: the response source
 // is the persisted IA. Do not substitute a connectionless DD0 probe here;
 // base BCU profiles expose DD0 only through connected management.
+/// How physical programming mode is scanned: an open medium answers a KNX
+/// system broadcast and needs the longer collection window.
+pub(in crate::commissioning) fn programming_mode_scan(
+    open_medium: bool,
+    scan_window: Duration,
+) -> (AddressTarget, Duration) {
+    if open_medium {
+        (AddressTarget::OpenMediumProgrammingMode, OPEN_MEDIUM_COLLECTION_WINDOW)
+    } else {
+        (AddressTarget::ProgrammingMode, scan_window)
+    }
+}
+
 pub(in crate::commissioning) async fn verify_programming_mode_address(
     bus: &KnxBus,
     expected: IndividualAddress,
     window: Duration,
     open_medium: bool,
 ) -> Result<()> {
-    let network = bus.network_management();
-    let found = if open_medium {
-        network.read_open_medium_individual_addresses(OPEN_MEDIUM_COLLECTION_WINDOW).await
-    } else {
-        network.read_individual_addresses(window).await
-    }
-    .map_err(|error| {
+    let (target, window) = programming_mode_scan(open_medium, window);
+    let found = bus.network_management().read_individual_addresses(target, window).await.map_err(|error| {
         Diagnostic::from(error).preparation_context("verifying the programming-mode individual address")
     })?;
 
@@ -89,7 +98,7 @@ pub(in crate::commissioning) async fn verify_serial_address(
 ) -> Result<()> {
     let found = bus
         .network_management()
-        .read_individual_addresses_by_serial(&serial_number, window)
+        .read_individual_addresses(AddressTarget::Serial(serial_number), window)
         .await
         .map_err(|error| Diagnostic::from(error).context("verifying the serial-number IA assignment"))?;
     match found.as_slice() {

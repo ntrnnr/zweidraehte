@@ -15,12 +15,50 @@ use zweidraehte_proto::messages::knx::ApciCode;
 use self::error::{BusError as Error, BusResult as Result};
 use crate::bus::driver::{BusCommand, BusTask};
 use crate::bus::group::GroupTelegram;
-use crate::connector::{ConnectorInfo, IpTunnelConnector, KnxConnector};
+use crate::connector::{BusTarget, ConnectorInfo, KnxConnector};
 mod error;
 use crate::security::{SecurityEntry, SecurityStore};
-pub use device::{DeviceConnection, RestartAck};
+pub use device::{DeviceConnection, MemorySpace, RestartAck, WriteCheck};
 pub use error::{BusError, BusResult};
-pub use network::{NetworkManagement, ProgrammingModeDevice, SerialAddressAssignment};
+pub use management::{FunctionPropertyResult, PropertyAddress, PropertyDescription};
+pub use network::{AddressTarget, NetworkManagement, ProgrammingModeDevice, Protection, SerialAddressAssignment};
+
+/// Options for opening a [`KnxBus`], from [`KnxBus::builder`].
+///
+/// Data Secure starts disabled: an empty keyring and in-memory sequence
+/// counters. Supply a prepared [`SecurityStore`] with
+/// [`with_security`](Self::with_security) so secure traffic cannot start
+/// from a counter that is not durable.
+#[derive(Default)]
+#[must_use = "a builder opens nothing until `connect` or `attach`"]
+pub struct KnxBusBuilder {
+    security: SecurityStore,
+}
+
+impl std::fmt::Debug for KnxBusBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The security store holds device keys.
+        f.debug_struct("KnxBusBuilder").finish_non_exhaustive()
+    }
+}
+
+impl KnxBusBuilder {
+    /// Keyring entries and a caller-owned sequence-number store.
+    pub fn with_security(mut self, security: SecurityStore) -> Self {
+        self.security = security;
+        self
+    }
+
+    /// Open a built-in endpoint.
+    pub async fn connect(self, target: &BusTarget) -> Result<KnxBus> {
+        target.open(self.security).await
+    }
+
+    /// Run the bus over an already opened custom connector.
+    pub fn attach<C: KnxConnector>(self, connector: C, info: ConnectorInfo) -> KnxBus {
+        KnxBus::start(connector, info, self.security)
+    }
+}
 
 /// Capacity of the command channel between API handles and the bus task.
 const COMMAND_CHANNEL_CAPACITY: usize = 8;
@@ -61,36 +99,38 @@ impl std::fmt::Debug for KnxBus {
 }
 
 impl KnxBus {
-    /// Connect through a KNX/IP interface via tunneling.
-    pub async fn connect_ip(server: SocketAddrV4) -> Result<Self> {
-        let (connector, info) = IpTunnelConnector::connect(server).await?;
-        Ok(Self::with_connector(connector, info))
-    }
-
-    /// [`connect_ip`](Self::connect_ip) with a pre-built security store
-    /// (keyring entries and a caller-owned sequence-number store).
-    pub async fn connect_ip_with_security(server: SocketAddrV4, security: SecurityStore) -> Result<Self> {
-        let (connector, info) = IpTunnelConnector::connect(server).await?;
-        Ok(Self::with_connector_and_security(connector, info, security))
-    }
-
-    /// Wrap an already opened custom connector.
+    /// Configure a bus connection before opening it.
     ///
-    /// Data Secure starts disabled (empty keyring, in-memory sequence
-    /// counters); add devices with
-    /// [`set_device_security`](Self::set_device_security) or start from
-    /// [`with_connector_and_security`](Self::with_connector_and_security).
-    pub fn with_connector<C: KnxConnector>(connector: C, info: ConnectorInfo) -> Self {
-        Self::with_connector_and_security(connector, info, SecurityStore::new())
+    /// ```no_run
+    /// use zweidraehte_client::{BusTarget, KnxBus, SecurityStore};
+    ///
+    /// # async fn open_bus(security: SecurityStore) -> Result<(), Box<dyn std::error::Error>> {
+    /// let target = BusTarget::Ip("192.168.1.100:3671".parse()?);
+    /// let bus = KnxBus::builder().with_security(security).connect(&target).await?;
+    /// // Use group communication or device management through the bus.
+    /// bus.disconnect().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn builder() -> KnxBusBuilder {
+        KnxBusBuilder::default()
     }
 
-    /// Wrap an already opened custom connector with a pre-built security
-    /// store.
-    pub fn with_connector_and_security<C: KnxConnector>(
-        connector: C,
-        info: ConnectorInfo,
-        security: SecurityStore,
-    ) -> Self {
+    /// Connect to a built-in endpoint with an empty security store and
+    /// in-memory sequence counters.
+    pub async fn connect(target: &BusTarget) -> Result<Self> {
+        Self::builder().connect(target).await
+    }
+
+    /// Connect through a KNX/IP interface via tunneling, with an empty
+    /// security store.
+    pub async fn connect_ip(server: SocketAddrV4) -> Result<Self> {
+        Self::connect(&BusTarget::Ip(server)).await
+    }
+
+    /// Spawn the bus task over an opened connector. Every public
+    /// constructor ends here.
+    pub(crate) fn start<C: KnxConnector>(connector: C, info: ConnectorInfo, security: SecurityStore) -> Self {
         // A prepared commissioning value is meaningful only on the live bus
         // which discovered it. Relaxed ordering is sufficient because the ID
         // carries identity, not synchronization between bus tasks.
@@ -264,8 +304,7 @@ impl KnxBus {
     /// traffic on the same address is rejected as a downgrade.
     pub async fn set_group_key(&self, group: GroupAddress, key: [u8; 16]) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        let ga = u16::from_be_bytes(group.0);
-        self.cmd_tx.send(BusCommand::SetGroupKey { ga, key, tx }).await.map_err(|_| Error::WorkerGone)?;
+        self.cmd_tx.send(BusCommand::SetGroupKey { group, key, tx }).await.map_err(|_| Error::WorkerGone)?;
         rx.await.map_err(|_| Error::WorkerGone)
     }
 

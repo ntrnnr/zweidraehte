@@ -4,7 +4,7 @@
 //! installation adapter. These values retain one set of application tables and
 //! lend management credentials to the bus without teaching it project policy.
 
-use crate::bus::access::{ManagementCredential, ManagementCredentials};
+use crate::bus::access::{ManagementCredential, ManagementKeys};
 use std::collections::BTreeMap;
 use std::num::NonZeroU8;
 use zweidraehte_project::KeyMetadata;
@@ -111,8 +111,8 @@ impl core::fmt::Debug for ResolvedKeyMaterial {
 }
 
 impl ResolvedKeyMaterial {
-    pub fn management_credentials(&self) -> ManagementCredentials<'_> {
-        ManagementCredentials::from_parts(self.serial_number, self.tool_key(), self.fdsk())
+    pub fn management_keys(&self) -> ManagementKeys<'_> {
+        ManagementKeys::from_parts(self.serial_number, self.tool_key(), self.fdsk())
     }
 
     /// Credential an offline compile assumes: the first one live acquisition

@@ -1,4 +1,5 @@
 //! Revalidate the prepared identity and security observation before mutation.
+use crate::AddressTarget;
 use crate::commissioning::runtime::TransferContext;
 
 use crate::commissioning::catalog::profile::{
@@ -127,7 +128,7 @@ impl ExecutionSession<'_> {
             let addresses = self
                 .bus
                 .network_management()
-                .read_individual_addresses_by_serial(&serial_number, self.config.scan_window)
+                .read_individual_addresses(AddressTarget::Serial(serial_number), self.config.scan_window)
                 .await
                 .map_err(|error| {
                     Diagnostic::from(error).preparation_context("revalidating the selected serial number")

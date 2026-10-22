@@ -1,5 +1,6 @@
 //! Network provisioning in fixed phase order, with one cleanup path.
 use crate::commissioning::runtime::TransferContext;
+use crate::{AddressTarget, Protection};
 
 use crate::commissioning::compiler::program::CompiledProgram;
 use crate::commissioning::error::classify_serial_domain_poll;
@@ -15,8 +16,8 @@ use crate::commissioning::runtime::commissioner::{
 };
 use crate::commissioning::runtime::credentials::ManagementAccess;
 use crate::commissioning::runtime::policy::{
-    open_medium_domain, system_status_with_programming_mode, unique_domain_target, unique_target,
-    verify_programming_mode_address, verify_serial_address,
+    open_medium_domain, programming_mode_scan, system_status_with_programming_mode, unique_domain_target,
+    unique_target, verify_programming_mode_address, verify_serial_address,
 };
 use crate::commissioning::runtime::prepared::PreparedEvidence;
 use zweidraehte_project::ProgrammingSection;
@@ -181,7 +182,7 @@ impl ExecutionSession<'_> {
 
         if let Some(serial_number) = serial_number {
             let found = network
-                .read_domain_addresses_by_serial(&serial_number, OPEN_MEDIUM_COLLECTION_WINDOW)
+                .read_domain_addresses(AddressTarget::Serial(serial_number), OPEN_MEDIUM_COLLECTION_WINDOW)
                 .await
                 .map_err(|error| Diagnostic::from(error).context("revalidating the serial-number RF domain"))?;
             let (address, current) = unique_domain_target(found, "the prepared serial number")?;
@@ -245,7 +246,7 @@ impl ExecutionSession<'_> {
         }
 
         let found = network
-            .read_programming_mode_domain_addresses(OPEN_MEDIUM_COLLECTION_WINDOW)
+            .read_domain_addresses(AddressTarget::OpenMediumProgrammingMode, OPEN_MEDIUM_COLLECTION_WINDOW)
             .await
             .map_err(|error| Diagnostic::from(error).context("revalidating the programming-mode RF domain"))?;
         let (address, current) = unique_domain_target(found, "physical programming mode")?;
@@ -256,10 +257,11 @@ impl ExecutionSession<'_> {
             return Ok(false);
         }
 
-        let written = network.write_programming_mode_domain_address(desired).await;
+        let written =
+            network.write_domain_address(AddressTarget::OpenMediumProgrammingMode, desired, Protection::Plain).await;
         self.network_write_result("writing the programming-mode RF domain", written)?;
         let verified = network
-            .verify_programming_mode_domain_address(desired, OPEN_MEDIUM_COLLECTION_WINDOW)
+            .verify_domain_address(AddressTarget::OpenMediumProgrammingMode, desired, OPEN_MEDIUM_COLLECTION_WINDOW)
             .await
             .map_err(|error| Diagnostic::from(error).context("verifying the programming-mode RF domain"))?;
         if verified != expected_address {
@@ -280,15 +282,15 @@ impl ExecutionSession<'_> {
         let result = match &self.access {
             ManagementAccess::ToolKey(key) | ManagementAccess::Fdsk(key) => {
                 network
-                    .write_domain_address_by_serial_secure(
-                        &serial_number,
-                        self.target,
-                        desired,
-                        key.key16().expect("selected management key width"),
-                    )
+                    .write_domain_address(AddressTarget::Serial(serial_number), desired, Protection::Secure {
+                        current: self.target,
+                        key: key.key16().expect("selected management key width"),
+                    })
                     .await
             }
-            ManagementAccess::Plaintext => network.write_domain_address_by_serial(&serial_number, desired).await,
+            ManagementAccess::Plaintext => {
+                network.write_domain_address(AddressTarget::Serial(serial_number), desired, Protection::Plain).await
+            }
         };
 
         self.network_write_result("writing the serial-number RF domain", result)
@@ -317,8 +319,11 @@ impl ExecutionSession<'_> {
             }
 
             let attempt_window = remaining.min(SERIAL_DOMAIN_READ_ATTEMPT_WINDOW);
-            let result =
-                self.bus.network_management().read_individual_addresses_by_serial(&serial_number, attempt_window).await;
+            let result = self
+                .bus
+                .network_management()
+                .read_individual_addresses(AddressTarget::Serial(serial_number), attempt_window)
+                .await;
 
             match classify_serial_domain_poll(result)? {
                 SerialDomainPoll::Found(address) => return Ok(Some(address)),
@@ -351,7 +356,7 @@ impl ExecutionSession<'_> {
         let (open_medium, source) = match plan.target() {
             TargetSelection::SerialNumber(serial) => {
                 let found = network
-                    .read_individual_addresses_by_serial(serial, self.config.scan_window)
+                    .read_individual_addresses(AddressTarget::Serial(*serial), self.config.scan_window)
                     .await
                     .map_err(|error| Diagnostic::from(error).context("revalidating the serial-number target"))?;
                 let found = unique_target(found, "the serial-number target")?;
@@ -362,15 +367,17 @@ impl ExecutionSession<'_> {
                 let written = match &self.access {
                     ManagementAccess::ToolKey(key) | ManagementAccess::Fdsk(key) => {
                         network
-                            .write_individual_address_by_serial_secure(
-                                serial,
-                                previous,
-                                desired,
-                                key.key16().expect("selected management key width"),
-                            )
+                            .write_individual_address(AddressTarget::Serial(*serial), desired, Protection::Secure {
+                                current: previous,
+                                key: key.key16().expect("selected management key width"),
+                            })
                             .await
                     }
-                    ManagementAccess::Plaintext => network.write_individual_address_by_serial(serial, desired).await,
+                    ManagementAccess::Plaintext => {
+                        network
+                            .write_individual_address(AddressTarget::Serial(*serial), desired, Protection::Plain)
+                            .await
+                    }
                 };
                 self.network_write_result("assigning the individual address by serial number", written)?;
                 verify_serial_address(self.bus, *serial, desired, self.config.scan_window).await?;
@@ -397,21 +404,16 @@ impl ExecutionSession<'_> {
                 return Err(Diagnostic::new("ExistingAddress cannot assign a different project individual address"));
             }
         };
-        let active = if open_medium {
-            network.read_open_medium_individual_addresses(OPEN_MEDIUM_COLLECTION_WINDOW).await
-        } else {
-            network.read_individual_addresses(self.config.scan_window).await
-        }
-        .map_err(|error| Diagnostic::from(error).context(format!("revalidating {source}")))?;
+        let (target, window) = programming_mode_scan(open_medium, self.config.scan_window);
+        let active = network
+            .read_individual_addresses(target, window)
+            .await
+            .map_err(|error| Diagnostic::from(error).context(format!("revalidating {source}")))?;
         let active = unique_target(active, source)?;
         if active != previous {
             return Err(Diagnostic::new(format!("the {source} target changed before individual-address assignment")));
         }
-        let write = if open_medium {
-            network.write_open_medium_individual_address(desired).await
-        } else {
-            network.write_individual_address(desired).await
-        };
+        let write = network.write_individual_address(target, desired, Protection::Plain).await;
         self.network_write_result("writing the programming-mode individual address", write)?;
         verify_programming_mode_address(self.bus, desired, self.config.scan_window, open_medium).await?;
 
@@ -488,16 +490,24 @@ impl ExecutionSession<'_> {
             let written = match &self.access {
                 ManagementAccess::ToolKey(key) | ManagementAccess::Fdsk(key) => {
                     network
-                        .write_individual_address_by_serial_secure(
-                            &serial_number,
-                            self.target,
+                        .write_individual_address(
+                            AddressTarget::Serial(serial_number),
                             default_address,
-                            key.key16().expect("selected management key width"),
+                            Protection::Secure {
+                                current: self.target,
+                                key: key.key16().expect("selected management key width"),
+                            },
                         )
                         .await
                 }
                 ManagementAccess::Plaintext => {
-                    network.write_individual_address_by_serial(&serial_number, default_address).await
+                    network
+                        .write_individual_address(
+                            AddressTarget::Serial(serial_number),
+                            default_address,
+                            Protection::Plain,
+                        )
+                        .await
                 }
             };
             self.network_write_result("resetting the legacy device individual address", written)?;

@@ -7,6 +7,7 @@
 //! sync-timeout paths run instantly.
 
 use crate as zweidraehte_client;
+use crate::{AddressTarget, MemorySpace, PropertyAddress, WriteCheck};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -20,7 +21,7 @@ use zweidraehte_client::{
     BusError as Error, ConnectorInfo, GroupAddress, GroupValueEncoding, IndividualAddress, InterfaceObjectType, KnxBus,
     KnxConnector, SecurityEntry, SecurityStore,
 };
-use zweidraehte_client::{ManagementCredential, ManagementCredentials};
+use zweidraehte_client::{ManagementCredential, ManagementKeys};
 use zweidraehte_proto::crypto::ccm;
 use zweidraehte_proto::crypto::scf::SecurityControlField;
 use zweidraehte_proto::encoding::cemi::CemiMessageCode;
@@ -150,7 +151,7 @@ fn secure_bus(entry: SecurityEntry) -> (KnxBus, MockBus, SharedSeqStore) {
     let mut security = SecurityStore::with_store(Box::new(store.clone()));
     security.set_device_security(device_ia(), entry);
 
-    let bus = KnxBus::with_connector_and_security(connector, info, security);
+    let bus = KnxBus::builder().with_security(security).attach(connector, info);
     (bus, MockBus { from_client: to_device_rx, to_client: to_client_tx }, store)
 }
 
@@ -346,7 +347,7 @@ async fn broadcast_scan_waits_through_negative_local_confirmation() {
 
     let found = bus
         .network_management()
-        .read_individual_addresses(Duration::from_secs(1))
+        .read_individual_addresses(AddressTarget::ProgrammingMode, Duration::from_secs(1))
         .await
         .expect("scan survives negative local confirmation");
 
@@ -367,7 +368,7 @@ async fn successful_secure_sync_selects_fdsk_without_probing_dd0() {
         let disconnect = mock.recv().await;
         assert_eq!(KnxMessageBuffer::from_buffer(disconnect.as_slice()).get_tpci(), Some(Tpci::Disconnect));
     });
-    let keys = ManagementCredentials::for_serial(SERIAL).with_fdsk(&FDSK);
+    let keys = ManagementKeys::for_serial(SERIAL).with_fdsk(&FDSK);
 
     let (connection, access) =
         bus.connect_management(device_ia(), keys, false).await.expect("verified FDSK opens management access");
@@ -418,7 +419,10 @@ async fn an_immediately_repeated_connection_reuses_the_recent_sync() {
     first.close().await.expect("first connection closes");
     let mut second = bus.connect_device(device_ia()).await.expect("recent FDSK state opens directly");
     assert!(second.is_secure_management(), "reusing a sync must retain the secure-channel identity");
-    let value = second.property_read(0, 11, 1, 1).await.expect("direct FDSK request succeeds");
+    let value = second
+        .property_read(PropertyAddress::indexed(0, 11).expect("PID fits one octet"), 1, 1)
+        .await
+        .expect("direct FDSK request succeeds");
     assert_eq!(value, SERIAL);
     drop(device.await.expect("mock device runs to completion"));
 }
@@ -477,7 +481,10 @@ async fn secure_connect_and_property_read_roundtrip() {
     });
 
     let mut dev = bus.connect_device(device_ia()).await.expect("secure connect succeeds");
-    let value = dev.property_read(0, 11, 1, 1).await.expect("wrapped property read succeeds");
+    let value = dev
+        .property_read(PropertyAddress::indexed(0, 11).expect("PID fits one octet"), 1, 1)
+        .await
+        .expect("wrapped property read succeeds");
     assert_eq!(value, SERIAL);
 
     device.await.expect("mock device runs to completion");
@@ -527,7 +534,13 @@ async fn connectionless_plaintext_cannot_complete_secure_reads() {
         });
 
         let mut connection = bus.connect_device(device_ia()).await.expect("secure connection opens");
-        assert_eq!(connection.property_read(0, 11, 1, 1).await.expect("authenticated response"), [0xBB]);
+        assert_eq!(
+            connection
+                .property_read(PropertyAddress::indexed(0, 11).expect("PID fits one octet"), 1, 1)
+                .await
+                .expect("authenticated response"),
+            [0xBB]
+        );
         assert_eq!(store.load_device_seq(&SERIAL), 101);
         drop(device.await.expect("mock completes"));
     }
@@ -550,8 +563,14 @@ async fn negative_confirmation_terminates_exchange_before_reuse() {
     });
 
     let mut connection = bus.connect_device(device_ia()).await.expect("connection opens");
-    assert!(matches!(connection.memory_write(0x100, &[1]).await, Err(Error::NegativeConfirmation)));
-    assert!(matches!(connection.memory_write(0x101, &[2]).await, Err(Error::TransportClosed)));
+    assert!(matches!(
+        connection.memory_write(MemorySpace::Standard, 0x100, &[1], WriteCheck::Acknowledged).await,
+        Err(Error::NegativeConfirmation)
+    ));
+    assert!(matches!(
+        connection.memory_write(MemorySpace::Standard, 0x101, &[2], WriteCheck::Acknowledged).await,
+        Err(Error::TransportClosed)
+    ));
     let mut mock = device.await.expect("mock completes");
     tokio::time::advance(Duration::from_secs(10)).await;
     tokio::task::yield_now().await;
@@ -574,7 +593,10 @@ async fn sequence_store_failure_reports_its_cause_without_transmitting() {
     store.1.store(true, Ordering::Relaxed);
 
     for _ in 0..2 {
-        let error = connection.property_read(0, 11, 1, 1).await.expect_err("reservation fails");
+        let error = connection
+            .property_read(PropertyAddress::indexed(0, 11).expect("PID fits one octet"), 1, 1)
+            .await
+            .expect_err("reservation fails");
         assert!(matches!(&error, Error::Io(error) if error.to_string() == "sequence journal unavailable"));
         assert!(mock.from_client.try_recv().is_err(), "failed reservation sends no data");
     }
@@ -595,7 +617,10 @@ async fn secure_retransmission_reuses_bytes_and_reserved_sequence() {
         mock
     });
     let mut connection = bus.connect_device(device_ia()).await.expect("secure connection opens");
-    connection.memory_write(0x100, &[1]).await.expect("retransmission is acknowledged");
+    connection
+        .memory_write(MemorySpace::Standard, 0x100, &[1], WriteCheck::Acknowledged)
+        .await
+        .expect("retransmission is acknowledged");
     drop(device.await.expect("mock completes"));
 }
 
@@ -625,8 +650,17 @@ async fn response_before_ack_keeps_exchange_owned_until_transport_completes() {
         mock
     });
     let mut connection = bus.connect_device(device_ia()).await.expect("connection opens");
-    assert_eq!(connection.property_read(0, 11, 1, 1).await.expect("response completes after ACK"), [0xBB]);
-    connection.memory_write(0x100, &[1]).await.expect("next exchange owns its transmission");
+    assert_eq!(
+        connection
+            .property_read(PropertyAddress::indexed(0, 11).expect("PID fits one octet"), 1, 1)
+            .await
+            .expect("response completes after ACK"),
+        [0xBB]
+    );
+    connection
+        .memory_write(MemorySpace::Standard, 0x100, &[1], WriteCheck::Acknowledged)
+        .await
+        .expect("next exchange owns its transmission");
     drop(device.await.expect("mock completes"));
 }
 
@@ -645,7 +679,10 @@ async fn foreign_negative_confirmation_cannot_fail_our_exchange() {
         mock
     });
     let mut connection = bus.connect_device(device_ia()).await.expect("connection opens");
-    connection.memory_write(0x100, &[1]).await.expect("own ACK completes the write");
+    connection
+        .memory_write(MemorySpace::Standard, 0x100, &[1], WriteCheck::Acknowledged)
+        .await
+        .expect("own ACK completes the write");
     drop(device.await.expect("mock completes"));
 }
 
@@ -749,7 +786,10 @@ async fn tool_key_write_uses_old_key_for_request_and_new_key_for_response_and_re
     connection.write_tool_key(NEW_KEY).await.expect("new-key confirmation authenticates");
     connection.close().await.expect("first connection closes");
     let mut connection = bus.connect_device(device_ia()).await.expect("reconnect synchronizes with the committed key");
-    let value = connection.property_read(0, 11, 1, 1).await.expect("new-key management request succeeds");
+    let value = connection
+        .property_read(PropertyAddress::indexed(0, 11).expect("PID fits one octet"), 1, 1)
+        .await
+        .expect("new-key management request succeeds");
     assert_eq!(value, SERIAL);
 
     drop(device.await.expect("mock device runs to completion"));
@@ -839,7 +879,10 @@ async fn persisted_counters_do_not_suppress_eager_sync() {
     });
 
     let mut connection = bus.connect_device(device_ia()).await.expect("known-state connection synchronizes eagerly");
-    let value = connection.property_read(0, 11, 1, 1).await.expect("property read succeeds without replay");
+    let value = connection
+        .property_read(PropertyAddress::indexed(0, 11).expect("PID fits one octet"), 1, 1)
+        .await
+        .expect("property read succeeds without replay");
     assert_eq!(value, SERIAL);
     drop(device.await.expect("mock device runs to completion"));
     assert!(store.load_client_seq() > DEVICE_EXPECTS_CLIENT);
@@ -902,7 +945,7 @@ async fn credential_fallback_synchronizes_tool_key_then_fdsk() {
         mock
     });
 
-    let keys = ManagementCredentials::for_serial(SERIAL).with_tool_key(&STALE_TOOL_KEY).with_fdsk(&FDSK);
+    let keys = ManagementKeys::for_serial(SERIAL).with_tool_key(&STALE_TOOL_KEY).with_fdsk(&FDSK);
     let (connection, access) =
         bus.connect_management(device_ia(), keys, false).await.expect("FDSK fallback opens management access");
     assert_eq!(access, ManagementCredential::Fdsk);
@@ -993,8 +1036,14 @@ async fn stale_handles_cannot_use_or_close_a_replacement_connection() {
             });
             let current = current.expect("replacement connection opens");
 
-            assert!(matches!(old.property_read(0, 11, 1, 1).await, Err(Error::TransportClosed)));
-            assert!(matches!(old.property_write(0, 54, 1, 1, &[0]).await, Err(Error::TransportClosed)));
+            assert!(matches!(
+                old.property_read(PropertyAddress::indexed(0, 11).expect("PID fits one octet"), 1, 1).await,
+                Err(Error::TransportClosed)
+            ));
+            assert!(matches!(
+                old.property_write(PropertyAddress::indexed(0, 54).expect("PID fits one octet"), 1, 1, &[0]).await,
+                Err(Error::TransportClosed)
+            ));
             assert!(matches!(old.write_tool_key([0x55; 16]).await, Err(Error::TransportClosed)));
             assert!(matches!(old.close().await, Err(Error::TransportClosed)));
             assert!(matches!(mock.from_client.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
@@ -1020,8 +1069,14 @@ async fn stale_secure_handle_preserves_replacement_keys_and_counters() {
     let mut current = current.expect("replacement secure connection opens");
     let counters = (store.load_client_seq(), store.load_device_seq(&SERIAL));
 
-    assert!(matches!(old.property_read(0, 11, 1, 1).await, Err(Error::TransportClosed)));
-    assert!(matches!(old.property_write(0, 54, 1, 1, &[0]).await, Err(Error::TransportClosed)));
+    assert!(matches!(
+        old.property_read(PropertyAddress::indexed(0, 11).expect("PID fits one octet"), 1, 1).await,
+        Err(Error::TransportClosed)
+    ));
+    assert!(matches!(
+        old.property_write(PropertyAddress::indexed(0, 54).expect("PID fits one octet"), 1, 1, &[0]).await,
+        Err(Error::TransportClosed)
+    ));
     assert!(matches!(old.write_tool_key([0x55; 16]).await, Err(Error::TransportClosed)));
     assert!(matches!(old.close().await, Err(Error::TransportClosed)));
     assert_eq!((store.load_client_seq(), store.load_device_seq(&SERIAL)), counters);
@@ -1029,22 +1084,25 @@ async fn stale_secure_handle_preserves_replacement_keys_and_counters() {
 
     // A real encrypted roundtrip proves the old handle did not rotate the live
     // channel, in addition to the absence of outgoing stale requests above.
-    let (value, ()) = tokio::join!(current.property_read(0, 11, 1, 1), async {
-        let request = mock.recv().await;
-        let (plain, _) = channel.unwrap(&request).expect("replacement retains its key");
-        assert_eq!(KnxMessageBuffer::from_buffer(plain).get_apci_code(), ApciCode::PropertyValueRead);
-        bus_ack(&mock, 0);
-        let response = frames::build_individual_frame(
-            device_ia(),
-            client_ia(),
-            Tpci::DataConnected(0),
-            ApciCode::PropertyValueResponse,
-            PropertyValueResponse::msg_len(SERIAL.len()),
-            |buf| PropertyValueResponse::write(buf, 0, 11, 1, 1, &SERIAL),
-        );
-        let (response, _) = channel.wrap(u16::from_be_bytes(device_ia().0), &response);
-        mock.indicate(&response);
-    });
+    let (value, ()) = tokio::join!(
+        current.property_read(PropertyAddress::indexed(0, 11).expect("PID fits one octet"), 1, 1),
+        async {
+            let request = mock.recv().await;
+            let (plain, _) = channel.unwrap(&request).expect("replacement retains its key");
+            assert_eq!(KnxMessageBuffer::from_buffer(plain).get_apci_code(), ApciCode::PropertyValueRead);
+            bus_ack(&mock, 0);
+            let response = frames::build_individual_frame(
+                device_ia(),
+                client_ia(),
+                Tpci::DataConnected(0),
+                ApciCode::PropertyValueResponse,
+                PropertyValueResponse::msg_len(SERIAL.len()),
+                |buf| PropertyValueResponse::write(buf, 0, 11, 1, 1, &SERIAL),
+            );
+            let (response, _) = channel.wrap(u16::from_be_bytes(device_ia().0), &response);
+            mock.indicate(&response);
+        }
+    );
     assert_eq!(value.expect("replacement responds"), SERIAL);
 }
 
@@ -1082,7 +1140,10 @@ async fn memory_auto_verify_waits_for_the_write_generated_response() {
     });
 
     let mut connection = bus.connect_device(device_ia()).await.expect("plain connection opens");
-    connection.memory_write_auto_verify(ADDRESS, &DATA).await.expect("the write response verifies the data");
+    connection
+        .memory_write(MemorySpace::Standard, u32::from(ADDRESS), &DATA, WriteCheck::DeviceVerify)
+        .await
+        .expect("the write response verifies the data");
 
     device.await.expect("mock device runs to completion");
 }
@@ -1225,7 +1286,10 @@ async fn replayed_device_frame_is_dropped() {
     });
 
     let mut dev = bus.connect_device(device_ia()).await.expect("secure connect succeeds");
-    let value = dev.property_read(0, 11, 1, 1).await.expect("genuine response arrives after the replay");
+    let value = dev
+        .property_read(PropertyAddress::indexed(0, 11).expect("PID fits one octet"), 1, 1)
+        .await
+        .expect("genuine response arrives after the replay");
     assert_eq!(value, [0xEE]);
     drop(device.await.expect("mock device runs to completion"));
 }
@@ -1243,10 +1307,6 @@ fn secured_ga() -> GroupAddress {
     GroupAddress::from_three_level(2, 0, 3)
 }
 
-fn secured_ga_raw() -> u16 {
-    u16::from_be_bytes(secured_ga().0)
-}
-
 /// A bus whose keyring secures [`secured_ga`] and nothing else.
 fn group_secure_bus() -> (KnxBus, MockBus, SharedSeqStore) {
     let (to_device_tx, to_device_rx) = mpsc::unbounded_channel();
@@ -1256,9 +1316,9 @@ fn group_secure_bus() -> (KnxBus, MockBus, SharedSeqStore) {
 
     let store = SharedSeqStore::default();
     let mut security = SecurityStore::with_store(Box::new(store.clone()));
-    security.set_group_key(secured_ga_raw(), GROUP_KEY);
+    security.set_group_key(secured_ga(), GROUP_KEY);
 
-    let bus = KnxBus::with_connector_and_security(connector, info, security);
+    let bus = KnxBus::builder().with_security(security).attach(connector, info);
     (bus, MockBus { from_client: to_device_rx, to_client: to_client_tx }, store)
 }
 

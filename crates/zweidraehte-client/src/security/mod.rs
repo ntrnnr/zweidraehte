@@ -23,11 +23,6 @@ pub mod store;
 
 pub use channel::{SecureChannel, group_unwrap, group_wrap};
 pub use keyring::{DeviceSecurityMode, SecurityEntry, SecurityStore, knx_sequence_timestamp_floor};
-// Compatibility for zweietscompat's rust-oracle compiler/materialization imports.
-// Remove after that consumer adopts configuration and publishes its client pin.
-// Project resolution is deliberately absent from this bus-security facade.
-#[cfg(feature = "commissioning")]
-pub use crate::configuration::{ResolvedIpSecureConfiguration, ResolvedKeyMaterial};
 pub use store::{MemSeqStore, SeqNumberStore};
 #[cfg(feature = "keyring")]
 pub use zweidraehte_ets_files::keyring::{Keyring, KeyringDevice, KnxKeysError};
