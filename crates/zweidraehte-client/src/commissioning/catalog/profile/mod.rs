@@ -8,8 +8,6 @@ pub use flavour::{ManagementModel, ResourceFlavour};
 pub use resolved::{AssociationTableEntrySize, ImageRequirement, ResolvedProfile};
 pub(crate) use resolved::{DeclaredProperty, schema_selector};
 
-use std::collections::BTreeMap;
-use zweidraehte_ets_files::product::ProductData;
 pub use zweidraehte_project::{MaskIdentity, ObjectSelector, Occurrence, ResourceId};
 
 /// Identity of the selected programming configuration inside a mask entry.
@@ -85,12 +83,12 @@ pub struct ResourceAccessRights {
 
 /// Facts obtained without mutating the target device.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProfileDiscovery {
-    pub dd0: u16,
-    pub management_descriptor_01: Option<[u8; 10]>,
+pub(crate) struct ProfileDiscovery {
+    pub(crate) dd0: u16,
+    pub(crate) management_descriptor_01: Option<[u8; 10]>,
     /// Result of a mask-defined management-style probe, when the style is not
     /// a constant resource.
-    pub management_style: Option<ResourceManagementStyle>,
+    pub(crate) management_style: Option<ResourceManagementStyle>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,49 +97,48 @@ pub enum VariantHint {
     LegacyVersion(i32),
 }
 
-/// Inputs to exact profile resolution.
-pub struct ProfileRequest<'a> {
-    pub discovery: ProfileDiscovery,
-    pub product: Option<&'a ProductData>,
-    pub variant_hint: VariantHint,
-}
-
-/// Which identity selects metadata during offline compilation.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ProfileSelectionSource {
-    /// Resolve actual discovery evidence, requiring PID 72 for ambiguous DD0.
-    #[default]
-    DeviceDiscovery,
-    /// Select the application's effective profile, checking any supplied facts.
-    /// This never supplies discovery evidence for physical preparation.
-    ApplicationProfile,
-}
-
-/// Device facts and explicit choices used to resolve a product's exact profile.
-/// This contains no catalog resources or independently resolved procedures.
+/// Device identity and explicit choices that select one exact profile.
+///
+/// This holds only what a caller can know about a target: its DD0, its
+/// optional Device Object PID 72, an observed management style, and a variant
+/// choice. The product, when there is one, comes from the device being
+/// resolved. Per-target refinements that depend on the resolved profile, such
+/// as the association-table row width or observed property types, are added
+/// to the [`super::ResolvedProfile`] instead.
+///
+/// ```
+/// use zweidraehte_client::commissioning::{ProfileSelection, ResourceManagementStyle};
+///
+/// let selection = ProfileSelection::discovered(0x07B0)
+///     .with_management_style(ResourceManagementStyle::LoadStateMachine);
+/// assert_eq!(selection.dd0(), 0x07B0);
+/// assert_eq!(selection.management_descriptor_01(), None);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileSelection {
-    pub discovery: ProfileDiscovery,
-    pub source: ProfileSelectionSource,
-    pub variant_hint: VariantHint,
-    pub association_table_entry_size: Option<AssociationTableEntrySize>,
-    /// PDT numbers the target reported for properties Master Data leaves
-    /// untyped. Downloads no longer read them during preparation: a write
-    /// of such a property reads the description when it executes. An
-    /// offline caller may still supply them to compile typed operands.
-    pub observed_property_types: BTreeMap<(ObjectSelector, u16), u8>,
+    pub(crate) discovery: ProfileDiscovery,
+    pub(crate) variant_hint: VariantHint,
 }
 
 impl ProfileSelection {
-    pub fn new(discovery: ProfileDiscovery) -> Self {
+    /// Select by the target's reported (or the product's authored) DD0.
+    pub fn discovered(dd0: u16) -> Self {
         Self {
-            discovery,
-            source: ProfileSelectionSource::DeviceDiscovery,
+            discovery: ProfileDiscovery { dd0, management_descriptor_01: None, management_style: None },
             variant_hint: VariantHint::Automatic,
-            association_table_entry_size: None,
-            observed_property_types: BTreeMap::new(),
         }
+    }
+
+    /// Qualify an ambiguous DD0 by the target's Device Object PID 72.
+    pub fn with_management_descriptor(mut self, descriptor: [u8; 10]) -> Self {
+        self.discovery.management_descriptor_01 = Some(descriptor);
+        self
+    }
+
+    /// Record the management style a mask-defined probe observed.
+    pub fn with_management_style(mut self, style: ResourceManagementStyle) -> Self {
+        self.discovery.management_style = Some(style);
+        self
     }
 
     pub fn with_variant(mut self, hint: VariantHint) -> Self {
@@ -149,22 +146,20 @@ impl ProfileSelection {
         self
     }
 
-    /// Select application metadata for offline compilation without recording
-    /// the profile's descriptor as an observation. Physical preparation always
-    /// performs its own discovery and does not accept this selection.
-    pub fn with_application_profile(mut self) -> Self {
-        self.source = ProfileSelectionSource::ApplicationProfile;
-        self
+    pub fn dd0(&self) -> u16 {
+        self.discovery.dd0
     }
 
-    pub fn with_association_table_entry_size(mut self, width: AssociationTableEntrySize) -> Self {
-        self.association_table_entry_size = Some(width);
-        self
+    pub fn management_descriptor_01(&self) -> Option<&[u8; 10]> {
+        self.discovery.management_descriptor_01.as_ref()
     }
 
-    pub fn with_observed_property_type(mut self, object: ObjectSelector, property_id: u16, pdt: u8) -> Self {
-        self.observed_property_types.insert((object, property_id), pdt);
-        self
+    pub fn management_style(&self) -> Option<ResourceManagementStyle> {
+        self.discovery.management_style
+    }
+
+    pub fn variant(&self) -> VariantHint {
+        self.variant_hint
     }
 }
 

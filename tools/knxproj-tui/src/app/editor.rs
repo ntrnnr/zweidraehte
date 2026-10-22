@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use zweidraehte_client::commissioning::{ProgrammingCatalog, ProgrammingCatalogLoadRequest};
+use zweidraehte_ets_files::master_data::MasterDataLoadRequest;
 use zweidraehte_ets_files::product::{ProductData, SelectedProduct};
 use zweidraehte_ets_files::runtime::configuration::{ProductConfiguration, apply_configuration};
 use zweidraehte_ets_files::runtime::{BaggageIndex, Translations};
@@ -36,7 +36,7 @@ pub struct EditorDocument {
 /// install a new runtime device while retaining the old product's metadata.
 pub struct PreparedEditorProduct {
     pub(super) device: Device,
-    pub(super) programming_catalog: ProgrammingCatalog,
+    pub(super) master_data: Arc<MasterData>,
     pub(super) language_context: Option<LanguageContext>,
     pub(super) current_language: Option<String>,
 }
@@ -83,10 +83,8 @@ impl EditorDocument {
         let translations = Translations::from_knx(selected.document());
         let product_data = selected.product();
 
-        let programming_catalog =
-            ProgrammingCatalog::load(ProgrammingCatalogLoadRequest::for_product(product_data, master_data))?
-                .into_catalog();
-        let selected = Arc::new(selected.bind_master_data(programming_catalog.document())?);
+        let document = MasterDataLoadRequest::for_product(product_data, master_data).load()?;
+        let selected = Arc::new(selected.bind_master_data(Arc::clone(&document))?);
 
         // Keep the original text for later language changes; translated text
         // must never become the starting point for a different translation.
@@ -101,13 +99,13 @@ impl EditorDocument {
         }
         let language_context =
             (!translations.is_empty()).then_some(LanguageContext { translations, selected, baggage });
-        Ok(PreparedEditorProduct { device, programming_catalog, language_context, current_language })
+        Ok(PreparedEditorProduct { device, master_data: document, language_context, current_language })
     }
 }
 
 impl PreparedEditorProduct {
     pub fn master_data(&self) -> &MasterData {
-        self.programming_catalog.as_ref()
+        &self.master_data
     }
 
     pub fn current_language(&self) -> Option<&str> {

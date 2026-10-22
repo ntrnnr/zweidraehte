@@ -33,8 +33,7 @@ use crate::commissioning::procedure::{
     ProcedureStep, RestartKind, ToolState,
 };
 use crate::commissioning::{
-    CommissioningIntent, DownloadMode, ImageLocation, ProfileDiscovery, ProfileRequest, ProgramSections,
-    ProgrammingCatalog, SparseDeviceImage, TargetSelection, UnloadMode, VariantHint,
+    CommissioningIntent, DownloadMode, ImageLocation, ProgramSections, SparseDeviceImage, TargetSelection, UnloadMode,
 };
 use crate::configuration::ResolvedKeyMaterial;
 use crate::configuration::{

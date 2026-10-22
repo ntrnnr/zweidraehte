@@ -21,14 +21,15 @@ use zweidraehte_client::commissioning::inspection::{
 };
 use zweidraehte_client::commissioning::{
     AssociationTableEntrySize, CommissioningIntent, CompileOptions, CompiledProgram, DownloadMode, ImageSpace,
-    ObjectSelector, ProfileDiscovery, ProfileRequest, ProgramSections, ProgrammingCatalog, ProgrammingInput,
-    ResolvedProfile, ResourceFlavour, TargetSelection, UnloadMode, VariantHint,
+    ObjectSelector, ProfileSelection, ProgramSections, ProgrammingInput, ResolvedProfile, ResourceFlavour,
+    TargetSelection, UnloadMode,
 };
 use zweidraehte_client::configuration::ResolvedKeyMaterial;
 use zweidraehte_client::configuration::{
     DeviceIdentity, InstallationConfiguration, MaterializedDevice, MembershipRole, ObjectMembership, ResolvedDevice,
 };
 use zweidraehte_client::{GroupAddress, IndividualAddress, pid};
+use zweidraehte_ets_files::MasterData;
 use zweidraehte_ets_files::product::{ApplicationProgramRelation, ProductData, SelectedProduct};
 use zweidraehte_ets_files::runtime::Device;
 use zweidraehte_ets_files::runtime::configuration::{ParameterSetting, ProductConfiguration, apply_configuration};
@@ -76,7 +77,7 @@ fn vendor_program_compiles_to_a_stable_download() {
 
     // The co-packaged project-11 Master Data preserves this legacy System 7
     // product's exact resource geometry and procedure semantics.
-    let catalog = ProgrammingCatalog::from_file(master_data).expect("the fixture Master Data parses");
+    let catalog = Arc::new(MasterData::from_file(master_data).expect("the fixture Master Data parses"));
 
     let mut device = Device::from_product(Arc::new(selected), None, None);
     let settings = ProductConfiguration {
@@ -186,11 +187,11 @@ fn published_partial_procedures_compile_for_real_bcu2_and_system_b_products() {
         };
         let selected = SelectedProduct::from_document(document, Some(relation), None)
             .expect("the compiler-only fixture binds its missing hardware relation");
-        let Ok(loaded) = load::load_programming_catalog(selected.product(), explicit_master_data) else {
+        let Ok(loaded) = load::load_master_data(selected.product(), explicit_master_data) else {
             eprintln!("skipping {}: exact versioned Master Data is unavailable", path.display());
             continue;
         };
-        let catalog = loaded.catalog();
+        let catalog = &loaded;
 
         let mut device = Device::from_product(Arc::new(selected), None, None);
         let settings = ProductConfiguration { parameters: Vec::new(), objects: Vec::new() };
@@ -452,7 +453,7 @@ fn operation_data_matches(plan: &CompiledProgram, data: &OperationData, expected
 }
 
 fn compile_plan(
-    catalog: &ProgrammingCatalog,
+    catalog: &Arc<MasterData>,
     profile: &ResolvedProfile,
     product: &ProductData,
     configuration: &zweidraehte_client::configuration::LoweredDeviceConfiguration,
@@ -461,7 +462,7 @@ fn compile_plan(
 ) -> CompiledProgram {
     let input = ProgrammingInput::new(
         MaterializedDevice::new(
-            product.clone().bind_master_data(catalog.document()).expect("fixture document binds"),
+            product.clone().bind_master_data(Arc::clone(catalog)).expect("fixture document binds"),
             configuration.clone(),
             Vec::new(),
             ResolvedKeyMaterial::new(None),
@@ -484,13 +485,9 @@ fn compile_plan(
         })
         .with_data_security(ObservedDataSecurity::Disabled),
     );
-    let mut selection = zweidraehte_client::commissioning::ProfileSelection::new(ProfileDiscovery {
-        dd0: profile.mask().dd0,
-        management_descriptor_01: profile.mask().management_descriptor_01,
-        management_style: profile.management_style(),
-    })
-    .with_variant(profile.variant().legacy_version.map_or(VariantHint::Automatic, VariantHint::LegacyVersion));
-    selection.association_table_entry_size = match profile
+    // A fixed-width System B table declares its own row width; record it as
+    // the observation a live target would supply.
+    let declared = match profile
         .resource("GroupAssociationTable")
         .expect("association resource resolves")
         .map(|resource| resource.flavour())
@@ -502,17 +499,17 @@ fn compile_plan(
         Some(ResourceFlavour::AssociationTableSystemBBig) => Some(AssociationTableEntrySize::FourBytes),
         _ => None,
     };
-    input.compile(&selection).expect("the normalized commissioning plan compiles")
+    let profile = match declared {
+        Some(size) => profile.clone().with_association_table_entry_size(size).expect("declared width agrees"),
+        None => profile.clone(),
+    };
+    input.compile(&profile).expect("the normalized commissioning plan compiles")
 }
 
-fn fixture_profile(catalog: &ProgrammingCatalog, product: &ProductData) -> Option<ResolvedProfile> {
+fn fixture_profile(catalog: &Arc<MasterData>, product: &ProductData) -> Option<ResolvedProfile> {
     let mask = product.mask_version().expect("the product names its mask");
-    let mut profile = catalog
-        .resolve(ProfileRequest {
-            discovery: ProfileDiscovery { dd0: mask.as_u16(), management_descriptor_01: None, management_style: None },
-            product: Some(product),
-            variant_hint: VariantHint::Automatic,
-        })
+    let product = product.clone().bind_master_data(Arc::clone(catalog)).expect("fixture document binds");
+    let mut profile = ResolvedProfile::for_product(&product, &ProfileSelection::discovered(mask.as_u16()))
         .expect("the exact product profile resolves");
 
     if !profile.image_requirements().expect("image requirements resolve").is_empty() {

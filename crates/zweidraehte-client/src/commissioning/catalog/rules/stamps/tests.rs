@@ -1,9 +1,9 @@
 //! Exact family stamp coverage and output geometry.
 
 use super::*;
-use crate::commissioning::catalog::ProgrammingCatalog;
+use crate::commissioning::catalog::profile::ProfileDisposition;
 use crate::commissioning::catalog::profile::testing::{append_xml, edit_profile, fixture_profile};
-use crate::commissioning::catalog::profile::{ProfileDiscovery, ProfileDisposition, ProfileRequest, VariantHint};
+use crate::commissioning::catalog_testing::*;
 use crate::commissioning::error::CompileErrorKind;
 use std::num::NonZeroU16;
 
@@ -145,14 +145,12 @@ fn system7_selects_final_image_properties_like_system_b() {
 fn coupler_model_20_derives_its_exact_procedure_owned_download_stamp() {
     for version in [20, 23] {
         let xml = coupler_2920_download_stamp_catalog(version);
-        let catalog = ProgrammingCatalog::from_xml(&xml).expect("catalog parses");
-        let profile = catalog
-            .resolve(ProfileRequest {
-                discovery: ProfileDiscovery { dd0: 0x2920, management_descriptor_01: None, management_style: None },
-                product: None,
-                variant_hint: VariantHint::Automatic,
-            })
-            .expect("exact Coupler Model 2.0 profile resolves");
+        let catalog = parse_master_data(&xml).expect("catalog parses");
+        let profile = resolve_catalog_profile(&catalog, None, &ProfileSelection {
+            discovery: ProfileDiscovery { dd0: 0x2920, management_descriptor_01: None, management_style: None },
+            variant_hint: VariantHint::Automatic,
+        })
+        .expect("exact Coupler Model 2.0 profile resolves");
         assert_eq!(profile.disposition, ProfileDisposition::CouplerRoutingRequired);
         let stamp = super::procedure_download_stamp(&profile).expect("procedure-owned descriptor binds");
         // Without FirstAppObjectIdx the indexed flavour-1 walk is empty, so the
@@ -186,14 +184,11 @@ fn procedure_owned_download_stamp_rejects_conflicting_selectors() {
         r#"<LdCtrlLoadImageProp ObjType="6" Occurrence="1" PropId="27" />
           <LdCtrlLoadImageProp ObjType="6" Occurrence="0" PropId="27" />"#,
     );
-    let profile = ProgrammingCatalog::from_xml(&xml)
-        .expect("catalog parses")
-        .resolve(ProfileRequest {
-            discovery: ProfileDiscovery { dd0: 0x2920, management_descriptor_01: None, management_style: None },
-            product: None,
-            variant_hint: VariantHint::Automatic,
-        })
-        .expect("profile selection preserves source controls");
+    let profile = resolve_catalog_profile(&parse_master_data(&xml).expect("catalog parses"), None, &ProfileSelection {
+        discovery: ProfileDiscovery { dd0: 0x2920, management_descriptor_01: None, management_style: None },
+        variant_hint: VariantHint::Automatic,
+    })
+    .expect("profile selection preserves source controls");
     let error =
         super::procedure_download_stamp(&profile).expect_err("different procedure stamp selectors are ambiguous");
 
@@ -212,14 +207,11 @@ fn procedure_owned_download_stamp_ignores_known_non_full_applies_to_sections() {
         r#"<LdCtrlLoadImageProp AppliesTo="cfg,config,ap1,ap2" ObjType="6" Occurrence="0" PropId="27" />
           <LdCtrlLoadImageProp ObjType="6" Occurrence="1" PropId="27" />"#,
     );
-    let profile = ProgrammingCatalog::from_xml(&xml)
-        .expect("catalog parses")
-        .resolve(ProfileRequest {
-            discovery: ProfileDiscovery { dd0: 0x2920, management_descriptor_01: None, management_style: None },
-            product: None,
-            variant_hint: VariantHint::Automatic,
-        })
-        .expect("non-full AppliesTo sections do not create a full-download stamp target");
+    let profile = resolve_catalog_profile(&parse_master_data(&xml).expect("catalog parses"), None, &ProfileSelection {
+        discovery: ProfileDiscovery { dd0: 0x2920, management_descriptor_01: None, management_style: None },
+        variant_hint: VariantHint::Automatic,
+    })
+    .expect("non-full AppliesTo sections do not create a full-download stamp target");
     let stamp = super::procedure_download_stamp(&profile).expect("full-download descriptor binds");
 
     assert_eq!(stamp.id.0, "ProcedureDownloadStamp");

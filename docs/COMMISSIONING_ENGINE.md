@@ -157,8 +157,9 @@ so it is a parse error rather than an ignored extension.
 This split lets a newer Master Data file remain inspectable while preventing
 new semantics from being executed accidentally.
 
-`ProgrammingCatalog::from_xml` and `from_file` are therefore parsing and
-diagnostic boundaries, not authority to mutate a device. Before target
+Parsing a `MasterData` document is therefore a diagnostic boundary, not
+authority to mutate a device. Profile resolution rejects a document that names
+an unsupported project schema; an unversioned one stays inspectable offline. Before target
 acquisition performs any bus I/O, `Commissioner::prepare` requires the Master
 Data namespace to identify a supported project-10 through project-23 catalog.
 Selection validates the exact mask and variant; resource and control validation
@@ -168,14 +169,13 @@ at the live commissioning boundary.
 
 A product compiles against its installation's catalog, never directly
 against the Master Data its package was built with.
-`ProgrammingCatalogLoadRequest::Product(&product)` is an alias for the shared
-ETS-files `master_data::MasterDataLoadRequest`, whose
-`MasterDataInstallation` applies the selection rule: start from the
-installation's own catalog and adopt a package document only when it is a
-strictly newer table of the same project schema. Source selection, parsing,
-namespace identity and installation selection live there; the client applies
-its supported-generation policy and computes catalog provenance/fingerprints.
-A catalog already bound to a product retains its existing `Arc`.
+`MasterDataLoadRequest::Product(&product)` in ETS-files
+`master_data` selects it; its `MasterDataInstallation` applies the selection
+rule: start from the installation's own catalog and adopt a package document
+only when it is a strictly newer table of the same project schema. Source
+selection, parsing, namespace identity, installation selection and the
+document fingerprint live there; the client applies its supported-generation
+policy. A catalog already bound to a product retains its existing `Arc`.
 
 By default the installation's own catalog is the newest generation. A cache
 miss downloads `https://update.knx.org/data/XML/project-{version}/knx_master.xml`
@@ -199,10 +199,10 @@ an older schema, or must not be a newer table of the same schema
 `NewerPackageSchema`. A caller still chooses which installation document to
 start from, but never a document the installation would replace.
 
-Project batches use `ProjectProgrammingCatalogs` to offer every participating
+Project batches use `ProjectMasterData` to offer every participating
 product's package document to one installation catalog. Preparation binds the
 selected catalog to each device, and execution reuses it without selecting or
-loading another catalog. `ProjectPlanner::with_catalogs` applies the same
+loading another catalog. `ProjectPlanner::with_master_data` applies the same
 selection to status, previews, and project planning; the frontends propagate
 their explicit installation file to those paths as well as live preparation.
 Switching the selected product in the TUI also replaces its preview catalog.
@@ -1063,7 +1063,7 @@ read-only:
    Parameter-owned properties whose element size neither the profile nor
    global Master Data defines are not read here: their writes read the
    description when they execute, as the reference does. Offline callers may
-   still supply such a PDT through `ProfileSelection` to compile a typed
+   still supply such a PDT through `ResolvedProfile::with_observed_property_type` to compile a typed
    operand, and deployment records retain it for later recompilation. Read the
    current Security IO mode when group-security selection or management
    bootstrap requires it;

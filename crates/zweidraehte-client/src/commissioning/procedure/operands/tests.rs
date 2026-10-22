@@ -1,6 +1,6 @@
 use super::*;
-use crate::commissioning::catalog::ProgrammingCatalog;
-use crate::commissioning::catalog::profile::{ProfileDiscovery, ProfileRequest, ResourceManagementStyle, VariantHint};
+use crate::commissioning::catalog::profile::ResourceManagementStyle;
+use crate::commissioning::catalog_testing::*;
 use crate::commissioning::image::ImageLocation;
 use crate::commissioning::procedure::operands::{MemoryAddress, StandardMemoryService, required_plaintext_apdu};
 use crate::commissioning::procedure::{CachePolicy, OperationExtent, OperationTarget, ProcedureOperation};
@@ -219,15 +219,13 @@ fn system7_property_mapped_lsms_override_legacy_memory_resources() {
         </KNX>"#,
             u8::from(enabled)
         );
-        let profile = ProgrammingCatalog::from_xml(&xml)
-            .expect("synthetic catalog")
-            .resolve(ProfileRequest {
+        let profile =
+            resolve_catalog_profile(&parse_master_data(&xml).expect("synthetic catalog"), None, &ProfileSelection {
                 discovery: ProfileDiscovery {
                     dd0: 0x0705,
                     management_descriptor_01: None,
                     management_style: Some(ResourceManagementStyle::LoadStateMachine),
                 },
-                product: None,
                 variant_hint: VariantHint::Automatic,
             })
             .expect("exact System 7 profile");

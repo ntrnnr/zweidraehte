@@ -1,7 +1,7 @@
 use super::*;
 use crate::commissioning::{AddressAssignment, CommissioningIntent, Diagnostic, DownloadMode};
 use crate::project::persistence::tests::persistence_fixture;
-use crate::project::{ProjectDeviceCommissioningReport, ProjectProgrammingCatalogs};
+use crate::project::{ProjectDeviceCommissioningReport, ProjectMasterData};
 use crate::{BusError, ConnectorInfo, IndividualAddress, KnxConnector};
 use std::sync::{
     Arc,
@@ -224,13 +224,13 @@ async fn connect_failure_and_cancelled_request_finalize_without_connecting_again
     let cancellation = CommissioningCancellation::default();
     cancellation.cancel();
     let products = Default::default();
-    let catalogs = ProjectProgrammingCatalogs::default();
+    let catalogs = ProjectMasterData::default();
     let result = ProjectOperationRequest::new(plan)
         .generate_missing_tool_keys()
         .execute(
             session,
             |_| async { panic!("cancelled request must not connect") },
-            ProjectProgrammingInputs { products: &products, catalogs: &catalogs, keyring: None },
+            ProjectProgrammingInputs { products: &products, master_data: &catalogs, keyring: None },
             &cancellation,
             &mut |_, _| {},
             |_| Ok(()),

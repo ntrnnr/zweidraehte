@@ -1,8 +1,9 @@
 use super::*;
+use crate::commissioning::catalog_testing::*;
 
 #[test]
 fn ordinary_unload_skips_unreferenced_application_image_and_extensions() {
-    let catalog = ProgrammingCatalog::from_xml(CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(CATALOG_XML).expect("catalog parses");
     let product = invalid_application_product();
     let profile = resolve_profile(&catalog, &product);
     let configuration = configuration();
@@ -25,7 +26,7 @@ fn ordinary_unload_skips_unreferenced_application_image_and_extensions() {
 
 #[test]
 fn unload_compiles_only_the_referenced_image_range() {
-    let catalog = ProgrammingCatalog::from_xml(&image_backed_unload_catalog()).expect("catalog parses");
+    let catalog = parse_master_data(&image_backed_unload_catalog()).expect("catalog parses");
     let product = ProductData::default().with_fixture_id("scope-test").with_fixture_segments(vec![
         Segment {
             id: "referenced".to_owned(),
@@ -70,7 +71,7 @@ fn unload_compiles_only_the_referenced_image_range() {
 
 #[test]
 fn unload_fails_closed_when_its_referenced_image_range_is_missing() {
-    let catalog = ProgrammingCatalog::from_xml(&image_backed_unload_catalog()).expect("catalog parses");
+    let catalog = parse_master_data(&image_backed_unload_catalog()).expect("catalog parses");
     let product = ProductData::default().with_fixture_id("scope-test");
     let profile = resolve_profile(&catalog, &product);
 

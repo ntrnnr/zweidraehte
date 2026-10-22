@@ -1,4 +1,5 @@
 use super::*;
+use crate::commissioning::catalog_testing::*;
 
 fn merge_selection_product(with_secondary: bool) -> ProductData {
     let fragments = || {
@@ -41,7 +42,7 @@ fn merge_selection_product(with_secondary: bool) -> ProductData {
 }
 
 fn selected_fragment_ids(product: &ProductData, mode: DownloadMode) -> Result<(Vec<u8>, Vec<u8>), CompileError> {
-    let catalog = ProgrammingCatalog::from_xml(
+    let catalog = parse_master_data(
         r#"<KNX xmlns="http://knx.org/xml/project/23"><MasterData Id="MD" Version="1"><MaskVersions>
         <MaskVersion Id="MV-0012" MaskVersion="18" Name="Merge selection" ManagementModel="Bcu1">
           <HawkConfigurationData><Procedures>
@@ -113,7 +114,7 @@ fn compile_scope(
     mode: DownloadMode,
     automatic_sections: Option<ProgramSections>,
 ) -> Result<crate::commissioning::CompiledProgram, CompileError> {
-    let catalog = ProgrammingCatalog::from_xml(catalog_xml).expect("catalog parses");
+    let catalog = parse_master_data(catalog_xml).expect("catalog parses");
     let product = ProductData::default().with_fixture_id("scope-selection");
     let profile = resolve_profile(&catalog, &product);
     let mut options = compile_options(RestartKind::Basic);
@@ -193,7 +194,7 @@ fn automatic_download_does_not_skip_an_ambiguous_narrower_source() {
 
 #[test]
 fn automatic_download_selects_the_narrowest_published_superset() {
-    let catalog = ProgrammingCatalog::from_xml(CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(CATALOG_XML).expect("catalog parses");
     let product = ProductData::default().with_fixture_id("automatic-scope");
     let profile = resolve_profile(&catalog, &product);
     let mut options = compile_options(RestartKind::Basic);
@@ -220,7 +221,7 @@ fn automatic_download_selects_the_narrowest_published_superset() {
 
 #[test]
 fn automatic_download_marks_a_published_full_superset_as_semantic_full() {
-    let catalog = ProgrammingCatalog::from_xml(CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(CATALOG_XML).expect("catalog parses");
     let product = ProductData::default().with_fixture_id("automatic-full-scope");
     let profile = resolve_profile(&catalog, &product);
     let mut options = compile_options(RestartKind::Basic);
@@ -248,7 +249,7 @@ fn automatic_download_marks_a_published_full_superset_as_semantic_full() {
 
 #[test]
 fn explicit_partial_download_does_not_widen() {
-    let catalog = ProgrammingCatalog::from_xml(CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(CATALOG_XML).expect("catalog parses");
     let product = ProductData::default().with_fixture_id("explicit-scope");
     let profile = resolve_profile(&catalog, &product);
 
@@ -347,7 +348,7 @@ fn configuration_only_has_an_empty_source_instead_of_loading_the_application() {
 #[test]
 fn product_owned_partial_sources_keep_authored_controls_and_requested_sections() {
     let xml = CATALOG_XML.replace("ProcedureType=\"Load\"", "ProcedureType=\"Unused\"");
-    let catalog = ProgrammingCatalog::from_xml(&xml).expect("catalog without Master Data loads parses");
+    let catalog = parse_master_data(&xml).expect("catalog without Master Data loads parses");
     let controls = [("full", 10), ("par", 11), ("grp", 12), ("cfg", 13), ("ap1", 14), ("all", 15)]
         .into_iter()
         .map(|(scope, milli_seconds)| {
@@ -415,7 +416,7 @@ fn product_owned_partial_sources_keep_authored_controls_and_requested_sections()
 // A memory-mapped identity at 260 and PEI type at 265 beside one product
 // segment at 256. The segment size and an optional mask memory window at 256
 // decide whether storage for them exists.
-fn memory_identity_fixture(segment_size: u32, window: Option<u32>) -> (ProgrammingCatalog, ProductData) {
+fn memory_identity_fixture(segment_size: u32, window: Option<u32>) -> (std::sync::Arc<MasterData>, ProductData) {
     let memory = window.map_or_else(String::new, |length| {
         format!(
             r#"<MemorySegments><MemorySegment MemoryType="EEPROM" Length="{length}">
@@ -439,7 +440,7 @@ fn memory_identity_fixture(segment_size: u32, window: Option<u32>) -> (Programmi
         1,
     );
     let xml = xml.replacen("</Resources>", &format!("</Resources>{memory}"), 1);
-    let catalog = ProgrammingCatalog::from_xml(&xml).expect("catalog parses");
+    let catalog = parse_master_data(&xml).expect("catalog parses");
     let product = ProductData::default()
         .with_fixture_id("scoped-image")
         .with_fixture_application_identity(ApplicationIdentity { application_id: [0, 0xfa, 1, 2, 3], pei_type: 17 })

@@ -1,4 +1,5 @@
 use super::*;
+use crate::commissioning::catalog_testing::*;
 
 #[test]
 fn property_backed_table_reference_is_resolved_only_for_the_used_object() {
@@ -17,7 +18,7 @@ fn property_backed_table_reference_is_resolved_only_for_the_used_object() {
             </Resources>
             <Procedures>"#;
     let xml = CATALOG_XML.replacen("<Procedures>", resources, 1);
-    let catalog = ProgrammingCatalog::from_xml(&xml).expect("catalog parses");
+    let catalog = parse_master_data(&xml).expect("catalog parses");
     let product = ProductData::default().with_fixture_id("relative-application-segment");
     let profile = resolve_profile(&catalog, &product);
 
@@ -29,15 +30,13 @@ fn property_backed_table_reference_is_resolved_only_for_the_used_object() {
 
 #[test]
 fn real_shape_system7_compare_uses_global_pid_78_read_width() {
-    let catalog = ProgrammingCatalog::from_xml(SYSTEM7_PROPERTY_CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(SYSTEM7_PROPERTY_CATALOG_XML).expect("catalog parses");
     let product = ProductData::from_mtxml_str(SYSTEM7_MTXML).expect("System 7 product parses");
-    let profile = catalog
-        .resolve(ProfileRequest {
-            discovery: ProfileDiscovery { dd0: 0x0705, management_descriptor_01: None, management_style: None },
-            product: Some(&product),
-            variant_hint: VariantHint::Automatic,
-        })
-        .expect("System 7 profile resolves");
+    let profile = resolve_catalog_profile(&catalog, Some(&product), &ProfileSelection {
+        discovery: ProfileDiscovery { dd0: 0x0705, management_descriptor_01: None, management_style: None },
+        variant_hint: VariantHint::Automatic,
+    })
+    .expect("System 7 profile resolves");
     let mut image = SparseDeviceImage::new();
     image.apply_owned(ImageLocation::standard_memory(0x4000), vec![0; 17]).expect("declared application segment fits");
     let [procedure] = product.load_procedures() else {
@@ -113,7 +112,7 @@ fn real_shape_system7_compare_uses_global_pid_78_read_width() {
 #[test]
 fn system_b_load_appends_unsecured_cleanup_after_authored_restart() {
     let xml = SYSTEM_B_APPLICATION_CATALOG_XML.replace("<LdCtrlDisconnect />", "<LdCtrlRestart />");
-    let catalog = ProgrammingCatalog::from_xml(&xml).expect("catalog parses");
+    let catalog = parse_master_data(&xml).expect("catalog parses");
     let product = system_b_product(false);
 
     for secure_only in [false, true] {
@@ -152,7 +151,7 @@ fn system_b_load_appends_unsecured_cleanup_after_authored_restart() {
 
 #[test]
 fn a_not_loadable_application_compiles_no_download_but_still_takes_an_address() {
-    let catalog = ProgrammingCatalog::from_xml(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
     for behavior in ["DisplayError", "SkipSilently"] {
         let product = system_b_product(false).with_fixture_not_loadable(behavior);
         let profile = resolve_system_b_profile(&catalog, &product);
@@ -179,7 +178,7 @@ fn hardware_without_an_individual_address_refuses_every_bus_intent() {
 
     // PS640 power supplies (M-0164_A-0004-11-5CC2) declare
     // `HasIndividualAddress="false"`: no intent can address them.
-    let catalog = ProgrammingCatalog::from_xml(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
     for (has_individual_address, refused) in [(Some(false), true), (Some(true), false), (None, false)] {
         let mut product = system_b_product(false);
         if let Some(value) = has_individual_address {
@@ -209,7 +208,7 @@ fn hardware_without_an_individual_address_refuses_every_bus_intent() {
 #[test]
 fn automatic_cleanup_cannot_repair_an_unclosed_authored_session() {
     let xml = SYSTEM_B_APPLICATION_CATALOG_XML.replace("<LdCtrlDisconnect />", "");
-    let catalog = ProgrammingCatalog::from_xml(&xml).expect("catalog parses");
+    let catalog = parse_master_data(&xml).expect("catalog parses");
     let product = system_b_product(false);
     let profile = resolve_system_b_profile(&catalog, &product);
     let error = compile_program_fixture(
@@ -229,7 +228,7 @@ fn automatic_cleanup_cannot_repair_an_unclosed_authored_session() {
 #[test]
 fn system_b_load_preserves_authored_disconnect_without_duplicate_cleanup() {
     let xml = SYSTEM_B_APPLICATION_CATALOG_XML.replace("<LdCtrlDisconnect />", "<LdCtrlRestart /><LdCtrlDisconnect />");
-    let catalog = ProgrammingCatalog::from_xml(&xml).expect("catalog parses");
+    let catalog = parse_master_data(&xml).expect("catalog parses");
     let product = system_b_product(false);
     let profile = resolve_system_b_profile(&catalog, &product);
     let options = compile_options(RestartKind::Basic);
@@ -288,16 +287,14 @@ fn progress_message_reference_falls_back_to_the_product_message() {
             &format!("<Messages><Message Id=\"{reference}\" Name=\"Message_Download\" Text=\"Programming application\" /></Messages></Static>"),
             1,
         );
-    let catalog = ProgrammingCatalog::from_xml(SYSTEM7_PROPERTY_CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(SYSTEM7_PROPERTY_CATALOG_XML).expect("catalog parses");
     let product = ProductData::from_mtxml_str(&xml).expect("System 7 product parses");
     assert_eq!(product.message_text(reference), Some("Programming application"));
-    let profile = catalog
-        .resolve(ProfileRequest {
-            discovery: ProfileDiscovery { dd0: 0x0705, management_descriptor_01: None, management_style: None },
-            product: Some(&product),
-            variant_hint: VariantHint::Automatic,
-        })
-        .expect("System 7 profile resolves");
+    let profile = resolve_catalog_profile(&catalog, Some(&product), &ProfileSelection {
+        discovery: ProfileDiscovery { dd0: 0x0705, management_descriptor_01: None, management_style: None },
+        variant_hint: VariantHint::Automatic,
+    })
+    .expect("System 7 profile resolves");
     let [procedure] = product.load_procedures() else {
         panic!("System 7 fixture has one product procedure");
     };

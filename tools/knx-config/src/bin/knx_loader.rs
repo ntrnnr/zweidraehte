@@ -21,8 +21,8 @@ use dialoguer::{Select, theme::ColorfulTheme};
 use zweidraehte_client::cli::{OptionalTargetArgs, SecurityArgs};
 use zweidraehte_client::commissioning::{
     CommissioningCancellation, CommissioningEvent, CommissioningIntent, CommissioningStage, DifferentialDecision,
-    DifferentialFallback, DifferentialPolicy, DownloadMode, ImageSpace, ProfileDiscovery, ProfileRequest,
-    ProgrammingModePolling, TargetSelection, UnloadMode, VariantHint,
+    DifferentialFallback, DifferentialPolicy, DownloadMode, ImageSpace, ProfileSelection, ProgrammingModePolling,
+    TargetSelection, UnloadMode,
 };
 use zweidraehte_client::commissioning::{CompileOptions, ManagementCredential, ObservedTarget, ProgrammingFacts};
 use zweidraehte_client::{BusTarget, MaskVersion};
@@ -1052,16 +1052,7 @@ fn run_check(store: &ProjectStore, master_data: Option<&Path>, security: &Securi
     }
 
     for device in plan.devices() {
-        compile_offline(
-            device,
-            inputs
-                .catalogs()
-                .for_product(device.device().product())
-                .context("while attempting to select product Master Data")?,
-            intent,
-            None,
-        )
-        .context("compile project device")?;
+        compile_offline(device, intent, None).context("compile project device")?;
         for warning in device.warnings() {
             eprintln!("warning: {warning}");
         }
@@ -1215,17 +1206,8 @@ async fn run_programming(
         for planned in plan.devices() {
             let intent = planned.commissioning().intent;
             if operation.includes_application() {
-                let compiled = compile_offline(
-                    planned,
-                    inputs
-                        .programming_inputs()
-                        .catalogs
-                        .for_product(planned.device().product())
-                        .context("while attempting to select product Master Data")?,
-                    intent,
-                    device_mask,
-                )
-                .context("while attempting to compile the device offline")?;
+                let compiled = compile_offline(planned, intent, device_mask)
+                    .context("while attempting to compile the device offline")?;
                 print_compiled(planned, &compiled);
                 dump_blob_files(dump_blobs, &planned.id().0, &compiled)
                     .context("while attempting to export compiled memory blobs")?;
@@ -1540,21 +1522,14 @@ async fn run_sync(
 
 fn compile_offline(
     planned: &PlannedProjectDevice,
-    catalog: zweidraehte_client::commissioning::ProgrammingCatalog,
     intent: CommissioningIntent,
     device_mask: Option<MaskVersion>,
 ) -> Result<zweidraehte_client::commissioning::CompiledProgram> {
     let product_mask = planned.device().product().mask_version().context("product has no mask version")?;
-    let profile = catalog
-        .resolve(ProfileRequest {
-            discovery: ProfileDiscovery {
-                dd0: device_mask.unwrap_or(product_mask).as_u16(),
-                management_descriptor_01: None,
-                management_style: None,
-            },
-            product: Some(planned.device().product()),
-            variant_hint: VariantHint::Automatic,
-        })
+    // The planned device already carries its product's selected Master Data.
+    let profile = planned
+        .device()
+        .resolve_profile(&ProfileSelection::discovered(device_mask.unwrap_or(product_mask).as_u16()))
         .context("while attempting to resolve the exact offline programming profile")?;
     let automatic_sections = matches!(
         intent,
@@ -1588,17 +1563,7 @@ fn compile_offline(
     };
 
     let plan = planned
-        .compile_preview(
-            zweidraehte_client::commissioning::ProfileSelection::new(ProfileDiscovery {
-                dd0: profile.mask().dd0,
-                management_descriptor_01: profile.mask().management_descriptor_01,
-                management_style: profile.management_style(),
-            })
-            .with_variant(profile.variant().legacy_version.map_or(VariantHint::Automatic, VariantHint::LegacyVersion)),
-            intent,
-            options,
-            facts,
-        )
+        .compile_preview(&profile, intent, options, facts)
         .context("while attempting to compile the commissioning plan")?;
     Ok(plan)
 }

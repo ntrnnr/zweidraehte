@@ -410,6 +410,22 @@ mod tests {
         assert!(matches!(MasterDataLoadRequest::Xml("<broken>").load(), Err(MasterDataError::Xml(_))));
     }
 
+    #[test]
+    fn documents_are_identified_by_the_sha256_of_their_exact_bytes() {
+        use sha2::{Digest, Sha256};
+
+        let parsed = XML.parse::<MasterData>().expect("fixture document");
+        let expected: [u8; 32] = Sha256::digest(XML.as_bytes()).into();
+        assert_eq!(parsed.fingerprint(), expected);
+        assert_eq!(parsed, XML.parse::<MasterData>().expect("same bytes parse again"));
+
+        // Semantically identical XML with other bytes is another document:
+        // provenance follows the published file, not its interpretation.
+        let reformatted = XML.replace("/>", " />").parse::<MasterData>().expect("reformatted document");
+        assert_eq!(reformatted.document_version(), parsed.document_version());
+        assert_ne!(reformatted, parsed);
+    }
+
     fn document(schema: u16, version: u64) -> Arc<MasterData> {
         Arc::new(
             format!(r#"<KNX xmlns="http://knx.org/xml/project/{schema}"><MasterData Id="MD-{schema}-{version}" Version="{version}"/></KNX>"#)

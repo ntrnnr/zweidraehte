@@ -208,7 +208,7 @@ fn authored_pointer_resource_supplies_width_without_interface_property_metadata(
 
 #[test]
 fn nested_product_procedure_controls_do_not_preload_property_metadata() {
-    let catalog = ProgrammingCatalog::from_xml(GLOBAL_PROPERTY_METADATA).expect("catalog parses");
+    let catalog = parse_master_data(GLOBAL_PROPERTY_METADATA).expect("catalog parses");
     let nested_controls = vec![LoadControl::Choose(LdCtrlChoose {
         param_ref_id: "P-outer".to_owned(),
         when: vec![LdCtrlWhen {
@@ -246,13 +246,11 @@ fn nested_product_procedure_controls_do_not_preload_property_metadata() {
     let product = ProductData::default()
         .with_fixture_mask_version_id("MV-0705")
         .with_fixture_load_procedures(vec![LoadProcedure { merge_id: None, controls: nested_controls }]);
-    let profile = catalog
-        .resolve(ProfileRequest {
-            discovery: ProfileDiscovery { dd0: 0x0705, management_descriptor_01: None, management_style: None },
-            product: Some(&product),
-            variant_hint: VariantHint::Automatic,
-        })
-        .expect("nested product procedure targets resolve");
+    let profile = resolve_catalog_profile(&catalog, Some(&product), &ProfileSelection {
+        discovery: ProfileDiscovery { dd0: 0x0705, management_descriptor_01: None, management_style: None },
+        variant_hint: VariantHint::Automatic,
+    })
+    .expect("nested product procedure targets resolve");
 
     for property_id in [8, 86, 87] {
         assert!(!profile.interface_objects()[0].properties.iter().any(|property| property.property_id == property_id));
@@ -316,14 +314,11 @@ fn property_metadata_keeps_both_selectors_and_unresolved_pdt_tokens() {
 }
 
 fn global_profile(xml: &str, product: Option<&ProductData>) -> crate::commissioning::ResolvedProfile {
-    ProgrammingCatalog::from_xml(xml)
-        .expect("catalog parses")
-        .resolve(ProfileRequest {
-            discovery: ProfileDiscovery { dd0: 0x0705, management_descriptor_01: None, management_style: None },
-            product,
-            variant_hint: VariantHint::Automatic,
-        })
-        .expect("profile selection does not bind property operands")
+    resolve_catalog_profile(&parse_master_data(xml).expect("catalog parses"), product, &ProfileSelection {
+        discovery: ProfileDiscovery { dd0: 0x0705, management_descriptor_01: None, management_style: None },
+        variant_hint: VariantHint::Automatic,
+    })
+    .expect("profile selection does not bind property operands")
 }
 
 fn numeric_property_profile() -> crate::commissioning::ResolvedProfile {
@@ -363,10 +358,10 @@ fn numeric_lookup_retains_ambiguous_and_unknown_global_entries() {
     for (pid, expected) in
         [(201, Some(3)), (202, Some(4)), (203, None), (204, None), (205, None), (208, Some(7)), (209, Some(10))]
     {
-        let lookup = profile.catalog.property_data_type_lookup(&profile, &object, pid).expect("lookup policy");
+        let lookup = profile.property_data_type_lookup(&object, pid).expect("lookup policy");
         assert_eq!(lookup.well_known.get(&Some(421)), Some(&expected), "PID {pid}");
     }
-    let absent = profile.catalog.property_data_type_lookup(&profile, &object, 206).expect("missing metadata");
+    let absent = profile.property_data_type_lookup(&object, 206).expect("missing metadata");
     assert!(!absent.well_known.contains_key(&Some(421)));
     // Exact PDT identity survives independently of whether it has a usable
     // numeric width. Equal-width alternatives still require discovery.
@@ -384,7 +379,7 @@ fn numeric_lookup_separates_mask_pdt_from_observed_descriptors() {
     );
     profile.observed_property_types.insert((indexed.clone(), 201), 3);
     profile.observed_property_types.insert((ObjectSelector::Index { index: 99 }, 201), 22);
-    let lookup = profile.catalog.property_data_type_lookup(&profile, &indexed, 201).expect("independent seeds");
+    let lookup = profile.property_data_type_lookup(&indexed, 201).expect("independent seeds");
     assert_eq!(lookup.indexed[&3].object_type, Some(421));
     assert_eq!(lookup.indexed[&3].property_data_type, Some(4));
     assert_eq!(lookup.indexed[&3].descriptor, Some(3));
@@ -395,7 +390,7 @@ fn numeric_lookup_separates_mask_pdt_from_observed_descriptors() {
     assert_eq!(lookup.initial_descriptor, None);
     assert_eq!(lookup.well_known[&Some(421)], Some(3));
     let typed = ObjectSelector::Type { object_type: 421, occurrence: Occurrence::Absent };
-    let typed_lookup = profile.catalog.property_data_type_lookup(&profile, &typed, 201).expect("typed fallback seeds");
+    let typed_lookup = profile.property_data_type_lookup(&typed, 201).expect("typed fallback seeds");
     assert_eq!(typed_lookup.indexed, lookup.indexed, "classic typed fallback needs all indexed objects");
 }
 
@@ -405,12 +400,12 @@ fn numeric_lookup_does_not_seed_future_declarations() {
     let typed = ObjectSelector::Type { object_type: 421, occurrence: Occurrence::Absent };
     let indexed = ObjectSelector::Index { index: 3 };
     let profile = numeric_property_profile();
-    let before = profile.catalog.property_data_type_lookup(&profile, &typed, 201).expect("initial lookup");
+    let before = profile.property_data_type_lookup(&typed, 201).expect("initial lookup");
     let profile = profile.with_procedure_property_declarations([
         (DeclaredProperty::new(&typed, 201), "PDT-22"),
         (DeclaredProperty::new(&indexed, 201), "PDT-3"),
     ]);
-    let after = profile.catalog.property_data_type_lookup(&profile, &typed, 201).expect("deferred declaration lookup");
+    let after = profile.property_data_type_lookup(&typed, 201).expect("deferred declaration lookup");
     assert_eq!(after, before);
     assert_eq!(after.initial_descriptor, None);
     assert_eq!(after.declaration_types.get("PDT-22"), Some(&22));
@@ -425,11 +420,11 @@ fn numeric_lookup_typed_descriptor_cache_ignores_occurrence_and_rejects_conflict
     let mut profile = numeric_property_profile();
     profile.observed_property_types.insert((zero.clone(), 201), 22);
     for target in [&absent, &zero] {
-        let lookup = profile.catalog.property_data_type_lookup(&profile, target, 201).expect("shared typed cache");
+        let lookup = profile.property_data_type_lookup(target, 201).expect("shared typed cache");
         assert_eq!(lookup.initial_descriptor, Some(22));
     }
     profile.observed_property_types.insert((absent.clone(), 201), 3);
-    assert!(profile.catalog.property_data_type_lookup(&profile, &absent, 201).is_err());
+    assert!(profile.property_data_type_lookup(&absent, 201).is_err());
 }
 
 #[test]
@@ -438,12 +433,12 @@ fn numeric_lookup_preserves_scoped_and_unscoped_master_metadata_without_suppleme
     let indexed = ObjectSelector::Index { index: 0 };
     let typed = ObjectSelector::Type { object_type: 0, occurrence: Occurrence::Absent };
     for target in [&indexed, &typed] {
-        let lookup = profile.catalog.property_data_type_lookup(&profile, target, 13).expect("global policy");
+        let lookup = profile.property_data_type_lookup(target, 13).expect("global policy");
         assert_eq!(lookup.well_known.get(&None), Some(&Some(3)));
         assert_eq!(lookup.well_known.get(&Some(0)), Some(&Some(22)));
     }
     // A roster declaration is an indexed seed, never an invented global PDT.
-    let lookup = profile.catalog.property_data_type_lookup(&profile, &typed, 201).expect("separate namespaces");
+    let lookup = profile.property_data_type_lookup(&typed, 201).expect("separate namespaces");
     assert_eq!(lookup.well_known.len(), 1);
     assert!(!lookup.well_known.contains_key(&None));
 }
@@ -466,7 +461,7 @@ fn numeric_lookup_rejects_duplicate_roster_indices_properties_and_global_scopes(
     ] {
         let xml = GLOBAL_PROPERTY_METADATA.replace(needle, replacement);
         let profile = global_profile(&xml, None);
-        assert!(profile.catalog.property_data_type_lookup(&profile, &target, 78).is_err(), "{needle}");
+        assert!(profile.property_data_type_lookup(&target, 78).is_err(), "{needle}");
     }
 }
 
@@ -585,8 +580,9 @@ fn unselected_nested_property_ambiguity_does_not_prevent_other_operands() {
 
 #[test]
 fn legacy_hardware_flavour_supplies_its_scalar_read_width_without_a_global_property_catalogue() {
-    let profile = ProgrammingCatalog::from_xml(
-        r#"<KNX xmlns="http://knx.org/xml/project/11">
+    let profile = resolve_catalog_profile(
+        &parse_master_data(
+            r#"<KNX xmlns="http://knx.org/xml/project/11">
           <MasterData Id="MD" Version="1"><MaskVersions>
             <MaskVersion Id="MV-0705" MaskVersion="1797" Name="System 7"
               ManagementModel="BimM112" MediumTypeRefId="MT-0">
@@ -608,13 +604,14 @@ fn legacy_hardware_flavour_supplies_its_scalar_read_width_without_a_global_prope
             </MaskVersion>
           </MaskVersions></MasterData>
         </KNX>"#,
+        )
+        .expect("legacy catalog parses"),
+        None,
+        &ProfileSelection {
+            discovery: ProfileDiscovery { dd0: 0x0705, management_descriptor_01: None, management_style: None },
+            variant_hint: VariantHint::Automatic,
+        },
     )
-    .expect("legacy catalog parses")
-    .resolve(ProfileRequest {
-        discovery: ProfileDiscovery { dd0: 0x0705, management_descriptor_01: None, management_style: None },
-        product: None,
-        variant_hint: VariantHint::Automatic,
-    })
     .expect("legacy profile resolves");
     for read in [false, true] {
         assert_eq!(

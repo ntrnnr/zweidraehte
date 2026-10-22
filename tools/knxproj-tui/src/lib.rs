@@ -23,18 +23,17 @@ pub fn error_message(error: &dyn std::error::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::error_message;
-    use zweidraehte_client::commissioning::ProgrammingCatalogLoadError;
     use zweidraehte_ets_files::MasterDataError;
 
     #[test]
     fn catalog_error_display_includes_the_source_path_and_io_cause() {
-        let error = zweidraehte_client::project::Error::from(ProgrammingCatalogLoadError::from(MasterDataError::Io {
+        let error = zweidraehte_client::project::Error::from(MasterDataError::Io {
             path: "knx_master.xml".into(),
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "fixture file is missing"),
-        }));
+        });
         assert_eq!(
             error_message(&error),
-            "cannot load programming catalog: cannot read ETS master data from knx_master.xml: fixture file is missing"
+            "cannot load Master Data: cannot read ETS master data from knx_master.xml: fixture file is missing"
         );
     }
 }

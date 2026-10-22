@@ -6,7 +6,7 @@ use crate::app::ProjectContext;
 use std::collections::BTreeMap;
 use zweidraehte_client::commissioning::{
     CommissioningIntent, CompileOptions, DownloadMode, ImageLocation, ImageRequirement, ImageSpace, NativeImageRegion,
-    ObjectSelector, Occurrence, ProfileDiscovery, ProfileSelection, ProgramImage, ProgrammingInput, TargetSelection,
+    ObjectSelector, Occurrence, ProfileSelection, ProgramImage, ProgrammingInput, TargetSelection,
 };
 use zweidraehte_client::configuration::{
     DeviceIdentity, InstallationConfiguration, MembershipRole as ClientMembershipRole,
@@ -325,12 +325,11 @@ impl ProductEditor {
                 (location.clone(), name)
             })
             .collect::<Vec<(ParameterLocation, String)>>();
-        let catalog = &self.view.programming_catalog;
+        // The editor bound its product to the selected Master Data when it
+        // was prepared, so the resolved device already carries that document.
         let mask = resolved.product().mask_version().ok_or_else(|| "product has no exact mask version".to_owned())?;
         let device = resolved
             .into_materialized(ResolvedKeyMaterial::new(identity.serial_number))
-            .map_err(|error| error.to_string())?
-            .bind_master_data(catalog.document())
             .map_err(|error| error.to_string())?;
         let input =
             ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Automatic), CompileOptions {
@@ -339,12 +338,11 @@ impl ProductEditor {
                 progress_messages_by_reference: BTreeMap::new(),
                 progress_messages_by_id: BTreeMap::new(),
             });
-        let selection = ProfileSelection::new(ProfileDiscovery {
-            dd0: mask.as_u16(),
-            management_descriptor_01: None,
-            management_style: None,
-        });
-        let image = input.preview(&selection).map_err(|error| error.to_string())?;
+        let profile = input
+            .device()
+            .resolve_profile(&ProfileSelection::discovered(mask.as_u16()))
+            .map_err(|error| error.to_string())?;
+        let image = input.preview(&profile).map_err(|error| error.to_string())?;
         let annotations = ParameterAnnotations::new(&parameters, image.regions());
         Ok(ConfigurationPreview { image, annotations })
     }

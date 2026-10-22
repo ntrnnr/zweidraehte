@@ -1,14 +1,16 @@
 //! An exact selection into immutable Master Data, not a second property schema.
 
 use super::{
-    ManagementModel, MaskIdentity, ObjectSelector, ProfileDisposition, ProfileVariant, ResourceFlavour, ResourceId,
-    ResourceManagementStyle,
+    ManagementModel, MaskIdentity, ObjectSelector, ProfileDisposition, ProfileSelection, ProfileVariant,
+    ResourceFlavour, ResourceId, ResourceManagementStyle,
 };
-use crate::commissioning::catalog::ProgrammingCatalog;
-use crate::commissioning::catalog::SelectedResource;
+use crate::commissioning::catalog::{SelectedResource, bound_master_data, resolve_profile};
 use crate::commissioning::error::AssociationTableEntrySizeError;
 use crate::commissioning::error::CompileError;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+use zweidraehte_ets_files::MasterData;
+use zweidraehte_ets_files::product::ProductData;
 use zweidraehte_ets_files::schema::master_data::{HawkConfigurationData, InterfaceObject, MaskVersion};
 
 /// Identity is selected by the catalog and remains coupled to its source.
@@ -26,8 +28,11 @@ pub struct ResolvedProfile {
     pub(in crate::commissioning::catalog) management_model: ManagementModel,
     pub(in crate::commissioning::catalog) management_style: Option<ResourceManagementStyle>,
     pub(in crate::commissioning::catalog) disposition: ProfileDisposition,
-    pub(in crate::commissioning::catalog) master_data_fingerprint: [u8; 32],
-    pub(crate) catalog: ProgrammingCatalog,
+    /// The document every resource and procedure below is selected from.
+    pub(crate) master_data: Arc<MasterData>,
+    /// The product this profile was resolved for. Compilation refuses a
+    /// profile resolved for another product, or for none.
+    pub(crate) product_id: Option<String>,
     pub(crate) source_mask_index: usize,
     pub(crate) source_variant_index: usize,
     pub(crate) association_entry_size: Option<AssociationTableEntrySize>,
@@ -41,6 +46,24 @@ pub struct ResolvedProfile {
 }
 
 impl ResolvedProfile {
+    /// Resolve a profile from Master Data alone, without a product.
+    ///
+    /// This serves catalog inspection and audits. Product-dependent choices
+    /// (variant selection, the BCU2 realization, product compatibility) are
+    /// not made, and the result cannot be compiled; resolve for a product with
+    /// [`Self::for_product`] instead.
+    pub fn resolve(master_data: &Arc<MasterData>, selection: &ProfileSelection) -> Result<Self, CompileError> {
+        resolve_profile(master_data, None, selection)
+    }
+
+    /// Resolve the product's profile against the Master Data bound to it.
+    ///
+    /// Returns an error when the product has no bound document, or when the
+    /// selection does not identify a profile compatible with the product.
+    pub fn for_product(product: &ProductData, selection: &ProfileSelection) -> Result<Self, CompileError> {
+        resolve_profile(bound_master_data(product)?, Some(product), selection)
+    }
+
     pub fn mask(&self) -> &MaskIdentity {
         &self.mask
     }
@@ -57,7 +80,7 @@ impl ResolvedProfile {
         &self.disposition
     }
     pub fn master_data_fingerprint(&self) -> [u8; 32] {
-        self.master_data_fingerprint
+        self.master_data.fingerprint()
     }
 
     pub fn source(&self) -> &HawkConfigurationData {
@@ -65,7 +88,7 @@ impl ResolvedProfile {
     }
 
     pub fn mask_source(&self) -> &MaskVersion {
-        &self.catalog.master_data.mask_versions().expect("selected mask catalogue").versions[self.source_mask_index]
+        &self.master_data.mask_versions().expect("selected mask catalogue").versions[self.source_mask_index]
     }
 
     pub fn interface_objects(&self) -> &[InterfaceObject] {
@@ -100,7 +123,7 @@ impl ResolvedProfile {
     }
 
     pub fn resource(&self, name: &str) -> Result<Option<SelectedResource<'_>>, CompileError> {
-        self.catalog.selected_resource(self, name)
+        self.selected_resource(name)
     }
 
     pub fn resource_by_id(&self, id: &ResourceId) -> Result<Option<SelectedResource<'_>>, CompileError> {
@@ -113,7 +136,7 @@ impl ResolvedProfile {
         property_id: u16,
         read: bool,
     ) -> Result<Option<u32>, CompileError> {
-        self.catalog.selected_property_element_size(self, object, property_id, read)
+        self.selected_property_element_size(object, property_id, read)
     }
 
     pub fn image_requirements(&self) -> Result<Vec<ImageRequirement>, CompileError> {
@@ -161,7 +184,7 @@ impl ResolvedProfile {
     /// sizes a described property control from this table, since it holds no
     /// Master Data of its own.
     pub(crate) fn property_data_type_widths(&self, read: bool) -> BTreeMap<u8, u32> {
-        let master_data = &self.catalog.master_data;
+        let master_data = &self.master_data;
         (0..=u8::MAX)
             .filter_map(|number| {
                 let token = master_data.property_data_type_token(u16::from(number))?;
@@ -194,7 +217,7 @@ impl ResolvedProfile {
     ) -> Result<Self, CompileError> {
         let object = schema_selector(object);
 
-        let master_data = &self.catalog.master_data;
+        let master_data = &self.master_data;
         let Some(token) = master_data.property_data_type_token(u16::from(pdt)) else {
             return Err(CompileError::invalid(format!(
                 "property {property_id} on {object:?}: target reports PDT {pdt:#04x}, which Master Data does not declare"
@@ -209,8 +232,8 @@ impl ResolvedProfile {
         };
 
         let typed = (
-            self.catalog.metadata_property_width(&self, &object, property_id, false, None)?,
-            self.catalog.metadata_property_width(&self, &object, property_id, true, None)?,
+            self.metadata_property_width(&object, property_id, false, None)?,
+            self.metadata_property_width(&object, property_id, true, None)?,
         );
         match typed {
             (None, None) => {}

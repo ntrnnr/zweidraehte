@@ -1,4 +1,5 @@
 use super::*;
+use crate::commissioning::catalog_testing::*;
 use crate::commissioning::{DifferentialPolicy, DownloadMode, ProgrammingModePolling, UnloadMode};
 use crate::project::tests::secure_fixture;
 use crate::project::{ProjectStatusCache, ProjectStatusInputs, ProjectStatusRequest, SerialAddressingSupport};
@@ -38,7 +39,7 @@ fn secure_inputs(
     // by ETS-files. Filesystem acquisition itself is exercised independently.
     let inputs = ProjectOperationInputs {
         store,
-        resources: ProductInputs { products: fixture.products, catalogs: fixture.catalogs },
+        resources: ProductInputs { products: fixture.products, master_data: fixture.catalogs },
         keyring: Some(fixture.keyring),
         selected,
         selection,
@@ -203,9 +204,9 @@ fn owned_and_borrowed_planning_keep_selection_intent_catalogs_and_requirements()
                 assert_eq!(left.desired_manifest(), right.desired_manifest());
                 assert_eq!(left.serial_addressing(), SerialAddressingSupport::Supported);
                 let catalog =
-                    inputs.programming_inputs().catalogs.for_product(left.device().product()).expect("catalog");
+                    inputs.programming_inputs().master_data.for_product(left.device().product()).expect("catalog");
                 assert!(std::sync::Arc::ptr_eq(
-                    &catalog.document(),
+                    &std::sync::Arc::clone(&catalog),
                     left.device().product().master_data().expect("bound catalog")
                 ));
             }
@@ -237,7 +238,6 @@ fn explicit_previous_address_survives_reconfiguration_and_removes_physical_requi
 
 #[test]
 fn bcu1_and_unknown_masks_keep_serial_metadata_without_selecting_serial_management() {
-    use crate::commissioning::ProgrammingCatalog;
     use zweidraehte_ets_files::product::SelectedProduct;
 
     for (mask, model, expected) in [
@@ -252,7 +252,7 @@ fn bcu1_and_unknown_masks_keep_serial_metadata_without_selecting_serial_manageme
             document.manufacturer_data.manufacturer.application_programs.programs[0].mask_version = mask.into();
             let product = ProjectProduct::new(SelectedProduct::from_document(document, None, None).expect("product"));
             inputs.resources.products.insert(id.clone(), product);
-            let catalog = ProgrammingCatalog::from_xml(&format!(
+            let catalog = parse_master_data(&format!(
                 r#"
                 <KNX xmlns="http://knx.org/xml/project/23"><MasterData Version="1"><MaskVersions>
                   <MaskVersion Id="{}" MaskVersion="65535" Name="target" ManagementModel="{model}"/>
@@ -260,7 +260,7 @@ fn bcu1_and_unknown_masks_keep_serial_metadata_without_selecting_serial_manageme
                 if mask.is_empty() { "MV-07B0" } else { mask }
             ))
             .expect("catalog");
-            inputs.resources.catalogs = ProjectProgrammingCatalogs::with_installation(catalog);
+            inputs.resources.master_data = ProjectMasterData::with_installation(catalog);
 
             let plan = inputs.plan().expect("management-only plan");
             let device = plan.device(&id).expect("target");

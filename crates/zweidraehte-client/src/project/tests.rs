@@ -1,13 +1,12 @@
 //! Project planning and durable recovery tests.
+use crate::commissioning::catalog_testing::*;
 use crate::configuration::{ProcedureParameter, ProcedureParameterValue};
 use crate::security::KeyringDevice;
 use zweidraehte_proto::address::IndividualAddress;
 
 pub(in crate::project) mod preparation;
 
-use crate::commissioning::{
-    CommissioningIntent, DifferentialPolicy, DownloadMode, ProgramSections, ProgrammingCatalog, TargetSelection,
-};
+use crate::commissioning::{CommissioningIntent, DifferentialPolicy, DownloadMode, ProgramSections, TargetSelection};
 use crate::configuration::ResolvedKeyMaterial;
 use crate::project::error::Error;
 use std::collections::{BTreeMap, BTreeSet};
@@ -195,8 +194,8 @@ fn application_unload_removes_a_sender_from_regenerated_siat() {
 pub(in crate::project) struct SecureFixture {
     pub project: AuthoredProject,
     pub products: BTreeMap<ProjectDeviceId, ProjectProduct>,
-    pub catalog: ProgrammingCatalog,
-    pub catalogs: ProjectProgrammingCatalogs,
+    pub catalog: std::sync::Arc<MasterData>,
+    pub catalogs: ProjectMasterData,
     pub keyring: Keyring,
     pub state: MutableProjectState,
     pub sender: IndividualAddress,
@@ -247,12 +246,12 @@ area 1 bench {
     let document = zweidraehte_ets_files::runtime::parser::parse_application_program(&xml).expect("product parses");
     let product = ProjectProduct::new(SelectedProduct::from_document(document, None, None).expect("product selection"));
     let products = project.devices.keys().map(|id| (id.clone(), product.clone())).collect();
-    let catalog = ProgrammingCatalog::from_xml(r#"<KNX xmlns="http://knx.org/xml/project/23"><MasterData Id="planning" Version="1"><MaskVersions>
+    let catalog = parse_master_data(r#"<KNX xmlns="http://knx.org/xml/project/23"><MasterData Id="planning" Version="1"><MaskVersions>
       <MaskVersion Id="MV-0705" MaskVersion="1797" Name="System 7" ManagementModel="BimM112" MediumTypeRefId="MT-0"><HawkConfigurationData>
         <Features><Feature Name="FirstAppObjectIdx" Value="3"/></Features>
         <Resources><Resource Name="ManagementStyle"><Location AddressSpace="Constant" StartAddress="2"/><ResourceType Length="1"/></Resource><Resource Name="GroupObjectTable"><Location AddressSpace="StandardMemory" StartAddress="16896"/><ResourceType Length="31" Flavour="GroupObjectTable_M112"/><AccessRights Read="Configuration" Write="Configuration"/></Resource></Resources>
       </HawkConfigurationData></MaskVersion></MaskVersions></MasterData></KNX>"#).expect("catalog parses");
-    let catalogs = ProjectProgrammingCatalogs::with_installation(catalog.clone());
+    let catalogs = ProjectMasterData::with_installation(catalog.clone());
     let sender = IndividualAddress::new(1, 1, 11);
     let keyring = Keyring::new("bench".into(), "test".into(), "test".into())
         .with_group_keys(BTreeMap::from([(0x0801, [0x33; 16])]))
@@ -291,9 +290,9 @@ fn shared_product_definitions_keep_device_edits_independent() {
 
 #[test]
 fn status_preview_and_batch_share_evaluation_and_secure_peer_scope() {
-    let SecureFixture { project, products, catalog, catalogs, keyring, state, sender } = secure_fixture();
+    let SecureFixture { project, products, catalog: _, catalogs, keyring, state, sender } = secure_fixture();
     let planner =
-        ProjectPlanner::new(&project, Some(&state), &products, None, Some(&keyring)).with_catalogs(Some(&catalogs));
+        ProjectPlanner::new(&project, Some(&state), &products, None, Some(&keyring)).with_master_data(&catalogs);
     let id = ProjectDeviceId("receiver".into());
     let selection = BTreeSet::from([id.clone()]);
     let view = planner.programming_view_for(&selection).expect("status evaluates secure peers");
@@ -320,8 +319,7 @@ fn status_preview_and_batch_share_evaluation_and_secure_peer_scope() {
     assert_eq!(keys.tool_key(), Some(&[0x22; 16]));
     assert_eq!(keys.fdsk(), Some(&[0x11; 16]));
     assert_eq!(keys.application_security().expect("security configured").siat(), &[(sender, 123)]);
-    let preview =
-        planned.device.project_preview(&id, &project.devices[&id], None, &catalog).expect("same device previews");
+    let preview = planned.device.project_preview(&id, &project.devices[&id], None).expect("same device previews");
     let mut manifest = preview.manifest.clone();
     manifest.insert(
         ProgrammingSection::Address,
@@ -377,7 +375,7 @@ fn status_preview_and_batch_share_evaluation_and_secure_peer_scope() {
         .with_group_addresses(vec![(0x0801, vec![sender])]),
     ];
     let imported_batch = ProjectPlanner::new(&imported_project, None, &products, None, Some(&imported))
-        .with_catalogs(Some(&catalogs))
+        .with_master_data(&catalogs)
         .plan_commissioning(&[id.clone()], BatchSelection::Selected, CommissioningIntent::Download(DownloadMode::Full))
         .expect("imported managed sender evaluates without becoming a target");
     assert_eq!(imported_batch.devices().len(), 1);
@@ -386,7 +384,7 @@ fn status_preview_and_batch_share_evaluation_and_secure_peer_scope() {
 
     let missing_sender_products = BTreeMap::from([(id.clone(), products[&id].clone())]);
     let missing = ProjectPlanner::new(&imported_project, None, &missing_sender_products, None, Some(&imported))
-        .with_catalogs(Some(&catalogs))
+        .with_master_data(&catalogs)
         .plan_commissioning(&[id], BatchSelection::Selected, CommissioningIntent::Download(DownloadMode::Full));
     assert!(
         matches!(missing, Err(Error::MissingSenderInput { device, address }) if device == sender_id.0 && address == sender)

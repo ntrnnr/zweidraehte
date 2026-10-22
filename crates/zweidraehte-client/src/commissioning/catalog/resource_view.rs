@@ -1,6 +1,6 @@
 //! Select one authored resource, then bind only the operand the caller uses.
 
-use super::{CompileError, ProgrammingCatalog};
+use super::CompileError;
 use crate::commissioning::catalog::profile::{
     AssociationTableEntrySize, ObjectSelector, Occurrence, ReadAccess, ResolvedProfile, ResourceAccessRights,
     ResourceFlavour, ResourceId, ResourceManagementStyle, WriteAccess,
@@ -62,13 +62,9 @@ impl ResolvedProfile {
     }
 }
 
-impl ProgrammingCatalog {
-    pub(crate) fn selected_resource<'a>(
-        &'a self,
-        profile: &'a ResolvedProfile,
-        name: &str,
-    ) -> Result<Option<SelectedResource<'a>>, CompileError> {
-        let variant = profile.source();
+impl ResolvedProfile {
+    pub(crate) fn selected_resource<'a>(&'a self, name: &str) -> Result<Option<SelectedResource<'a>>, CompileError> {
+        let variant = self.source();
         let mut candidates = Vec::new();
         for (index, resource) in variant.resources.iter().flat_map(|resources| &resources.resources).enumerate() {
             if resource.name != name {
@@ -80,7 +76,7 @@ impl ProgrammingCatalog {
                 candidates.push((index, resource));
             }
         }
-        let style = profile.management_style.map(management_style_name);
+        let style = self.management_style.map(management_style_name);
         let matches_style = |resource: &Resource| style.is_some_and(|style| resource.declares_management_style(style));
         let qualified = candidates.iter().any(|(_, resource)| matches_style(resource));
         let mut selected = candidates.iter().filter(|(_, resource)| {
@@ -100,8 +96,8 @@ impl ProgrammingCatalog {
                 )));
             }
         };
-        resolve_resource_style(source, profile.management_style)?;
-        Ok(Some(SelectedResource { id: ResourceId(source.name.clone()), source, profile, source_index }))
+        resolve_resource_style(source, self.management_style)?;
+        Ok(Some(SelectedResource { id: ResourceId(source.name.clone()), source, profile: self, source_index }))
     }
 }
 

@@ -1,17 +1,16 @@
 //! Resolve the selected property's wire geometry directly from authored metadata.
 
-use super::{CompileError, ProgrammingCatalog, ResourceOrder, SelectedResource};
+use super::{CompileError, ResourceOrder, SelectedResource};
 use crate::commissioning::catalog::profile::{DeclaredProperty, ObjectSelector, Occurrence, ResolvedProfile};
 use crate::commissioning::procedure::{IndexedPropertyDataTypeSeed, PropertyDataTypeLookup};
 use std::collections::{BTreeMap, BTreeSet};
 use zweidraehte_ets_files::schema::master_data::{AddressSpaceLocation, InterfaceObject, Location};
 
-impl ProgrammingCatalog {
+impl ResolvedProfile {
     /// Capture immutable metadata and initial observations without treating
     /// future procedure declarations as already executed descriptor updates.
     pub(crate) fn property_data_type_lookup(
         &self,
-        profile: &ResolvedProfile,
         selector: &ObjectSelector,
         property_id: u16,
     ) -> Result<PropertyDataTypeLookup, CompileError> {
@@ -41,7 +40,7 @@ impl ProgrammingCatalog {
 
         // Retain every indexed object: classic typed discovery first resolves
         // an index and then applies that index's distinct mask/cache policy.
-        for object in profile.interface_objects() {
+        for object in self.interface_objects() {
             let properties: Vec<_> = object.properties.iter().filter(|p| p.property_id == property_id).collect();
             let property_data_type = match properties.as_slice() {
                 [] => None,
@@ -99,7 +98,7 @@ impl ProgrammingCatalog {
             ObjectSelector::Index { .. } => None,
         };
         let mut typed_descriptors = BTreeMap::new();
-        for ((object, pid), pdt) in &profile.observed_property_types {
+        for ((object, pid), pdt) in &self.observed_property_types {
             if *pid != property_id {
                 continue;
             }
@@ -130,14 +129,13 @@ impl ProgrammingCatalog {
     /// causing the native image builder to allocate a buffer for it.
     pub(crate) fn procedure_property_buffer_width(
         &self,
-        profile: &ResolvedProfile,
         selector: &ObjectSelector,
         property_id: u16,
     ) -> Result<Option<u32>, CompileError> {
-        if self.roster_types_property(profile, selector, property_id)? {
-            return self.metadata_property_width(profile, selector, property_id, false, None);
+        if self.roster_types_property(selector, property_id)? {
+            return self.metadata_property_width(selector, property_id, false, None);
         }
-        Ok(profile
+        Ok(self
             .declared_property_types
             .get(&DeclaredProperty::new(selector, property_id))
             .and_then(|property_type| self.pdt_width(property_type, None, false)))
@@ -145,37 +143,35 @@ impl ProgrammingCatalog {
 
     pub(crate) fn selected_property_element_size(
         &self,
-        profile: &ResolvedProfile,
         selector: &ObjectSelector,
         property_id: u16,
         read: bool,
     ) -> Result<Option<u32>, CompileError> {
-        self.property_width(profile, selector, property_id, read, None)
+        self.property_width(selector, property_id, read, None)
     }
 
     pub(crate) fn property_width(
         &self,
-        profile: &ResolvedProfile,
         selector: &ObjectSelector,
         property_id: u16,
         read: bool,
         resources: Option<&[(SelectedResource<'_>, Option<u32>)]>,
     ) -> Result<Option<u32>, CompileError> {
-        let declared = profile
+        let declared = self
             .declared_property_types
             .get(&DeclaredProperty::new(selector, property_id))
             .map(|property_type| (property_type, self.pdt_width(property_type, None, read)));
-        if let Some(width) = self.metadata_property_width(profile, selector, property_id, read, resources)? {
+        if let Some(width) = self.metadata_property_width(selector, property_id, read, resources)? {
             // Typed access resolves an exact well-known PDT before consulting
             // the descriptor cache updated by declarations. Indexed access has
             // a different priority. A width inferred from ambiguous global PDTs
             // is not evidence of that typed fast path.
             if let Some((property_type, declared_width)) = declared
                 && declared_width != Some(width)
-                && !self.roster_types_property(profile, selector, property_id)?
+                && !self.roster_types_property(selector, property_id)?
             {
                 if let ObjectSelector::Type { object_type, .. } = selector {
-                    let lookup = self.property_data_type_lookup(profile, selector, property_id)?;
+                    let lookup = self.property_data_type_lookup(selector, property_id)?;
                     if lookup
                         .well_known
                         .get(&Some(*object_type))
@@ -202,9 +198,9 @@ impl ProgrammingCatalog {
 
         // Master Data leaves some application properties untyped. The target's
         // own property description then supplies the PDT, observed during
-        // preparation or recorded with an offline profile selection.
+        // preparation or recorded with an offline self selection.
         let key = (crate::commissioning::catalog::profile::schema_selector(selector.clone()), property_id);
-        let observed = profile.observed_property_types.get(&key);
+        let observed = self.observed_property_types.get(&key);
         Ok(observed.and_then(|pdt| {
             let token = self.master_data.property_data_type_token(u16::from(*pdt))?;
             self.pdt_width(token, None, read)
@@ -214,14 +210,13 @@ impl ProgrammingCatalog {
     /// Width declared by Master Data alone, without target observations.
     pub(crate) fn metadata_property_width(
         &self,
-        profile: &ResolvedProfile,
         selector: &ObjectSelector,
         property_id: u16,
         read: bool,
         resources: Option<&[(SelectedResource<'_>, Option<u32>)]>,
     ) -> Result<Option<u32>, CompileError> {
-        let objects = roster_objects(profile, selector)?;
-        let standard = super::rules::ip::standard_property(profile, selector, property_id);
+        let objects = roster_objects(self, selector)?;
+        let standard = super::rules::ip::standard_property(self, selector, property_id);
         if let Some(object) = objects.first() {
             let explicit: Vec<_> =
                 object.properties.iter().filter(|property| property.property_id == property_id).collect();
@@ -273,7 +268,7 @@ impl ProgrammingCatalog {
         let resources = if let Some(resources) = resources {
             resources
         } else {
-            resolved_resources = property_resources(profile, selector, property_id)?;
+            resolved_resources = property_resources(self, selector, property_id)?;
             &resolved_resources
         };
         let mut hints: Vec<_> = resources
@@ -305,13 +300,8 @@ impl ProgrammingCatalog {
     }
 
     /// Whether the mask's interface-object roster itself declares the PID.
-    fn roster_types_property(
-        &self,
-        profile: &ResolvedProfile,
-        selector: &ObjectSelector,
-        property_id: u16,
-    ) -> Result<bool, CompileError> {
-        Ok(roster_objects(profile, selector)?
+    fn roster_types_property(&self, selector: &ObjectSelector, property_id: u16) -> Result<bool, CompileError> {
+        Ok(roster_objects(self, selector)?
             .first()
             .is_some_and(|object| object.properties.iter().any(|property| property.property_id == property_id)))
     }

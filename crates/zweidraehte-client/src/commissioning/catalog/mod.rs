@@ -1,22 +1,23 @@
 //! Versioned Master Data, exact target selection and resource-resolution order.
+//!
+//! Master Data is used directly as [`MasterData`]: the product carries the
+//! document it compiles against, and a [`ResolvedProfile`] keeps a handle to
+//! the same document. No second catalog handle exists that could disagree.
 
-mod loading;
 mod property_view;
 mod resource_view;
+mod schema;
 
 use crate::commissioning::error::CompileError;
-pub use loading::{
-    LoadedProgrammingCatalog, ProgrammingCatalogLoadError, ProgrammingCatalogLoadRequest, ProgrammingCatalogProvenance,
-    ProgrammingCatalogSource,
-};
 pub(crate) use property_view::{property_location, property_object_matches, property_resources};
 pub use resource_view::SelectedResource;
 pub(crate) use resource_view::{ResourceOrder, validate_access};
+pub(crate) use schema::{bound_master_data, validate_for_live_commissioning};
 
-use self::loading::validate_mask_tokens;
+use self::schema::{supported_master_data_schema, validate_mask_tokens};
 use crate::commissioning::catalog::profile::{
-    MaskIdentity, ProfileDiscovery, ProfileDisposition, ProfileRequest, ProfileVariant, ResolvedProfile,
-    ResourceManagementStyle, VariantHint,
+    MaskIdentity, ProfileDisposition, ProfileSelection, ProfileVariant, ResolvedProfile, ResourceManagementStyle,
+    VariantHint,
 };
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -26,122 +27,95 @@ use zweidraehte_ets_files::schema::master_data::{
     AddressSpaceLocation, HawkConfigurationData, MaskVersion, ResourceManagementStyle as XmlManagementStyle,
 };
 
-/// Versioned, immutable Master Data plus its content fingerprint.
-#[derive(Debug, Clone)]
-pub struct ProgrammingCatalog {
-    pub(crate) master_data: Arc<MasterData>,
-    fingerprint: [u8; 32],
+/// Resolve the exact mask, configuration variant, resources, and procedures
+/// needed by the compiler.
+///
+/// Exact identity precedes variant and access selection. Similar mask numbers
+/// never supply missing behavior or resources.
+///
+/// When the selection leaves an ambiguous DD0 unqualified, the product's own
+/// programming profile ([`ProductData::programming_profile_id`]) selects among
+/// the masks sharing it. This covers both a descriptor-qualified authored mask
+/// and the plain `MV-0300` application alias. It is application metadata, not
+/// a device observation: a supplied PID 72 always takes precedence, and
+/// physical discovery reads PID 72 whenever DD0 is ambiguous, so this rule only
+/// serves offline compilation.
+pub(crate) fn resolve_profile(
+    master_data: &Arc<MasterData>,
+    product: Option<&ProductData>,
+    selection: &ProfileSelection,
+) -> Result<ResolvedProfile, CompileError> {
+    // Raw documents may be newer or older than the compiler understands. An
+    // unversioned document stays usable for offline inspection; live
+    // preparation additionally requires the namespace.
+    if let Some(version) = master_data.schema_version() {
+        supported_master_data_schema(version)?;
+    }
+
+    let discovery = &selection.discovery;
+    let mask = match authored_profile(master_data, product, selection) {
+        Some(mask) => mask,
+        None => resolve_exact_mask(master_data, discovery.dd0, discovery.management_descriptor_01.as_ref())?,
+    };
+    verify_product_compatibility(master_data, mask, product)?;
+
+    let (variant_index, variant) = select_variant(mask, product, selection.variant_hint)?;
+    let disposition = classify_variant(mask, variant);
+    validate_mask_tokens(mask)?;
+
+    // The engine programs devices through bus management services. Local
+    // interface qualifiers remain catalog metadata for auditing; USB versus
+    // tunnel transport is supplied by the caller when preparing/executing.
+    // Resource selection also depends on the management realization.
+    let management_style = resolve_management_style(mask, variant, product, discovery.management_style)?;
+
+    let source_mask_index = master_data
+        .mask_versions()
+        .expect("selected mask catalogue")
+        .versions
+        .iter()
+        .position(|candidate| std::ptr::eq(candidate, mask))
+        .expect("selected mask belongs to catalogue");
+
+    Ok(ResolvedProfile {
+        mask: mask_identity(mask),
+        variant: profile_variant(variant_index, variant),
+        management_model: mask.management_model.parse().map_err(|_| {
+            CompileError::unsupported(format!("unknown Master Data management model {:?}", mask.management_model))
+        })?,
+        management_style,
+        disposition,
+        master_data: Arc::clone(master_data),
+        product_id: product.map(|product| product.id().to_owned()),
+        source_mask_index,
+        source_variant_index: variant_index,
+        association_entry_size: None,
+        observed_property_types: Default::default(),
+        declared_property_types: Default::default(),
+        tool_managed_ip: None,
+    })
 }
 
-impl PartialEq for ProgrammingCatalog {
-    fn eq(&self, other: &Self) -> bool {
-        self.fingerprint == other.fingerprint
+/// The product's programming profile, when it alone can disambiguate DD0.
+///
+/// Only an unqualified, ambiguous DD0 matching that profile's own code
+/// selects it. Every other case resolves by discovery evidence, so a
+/// contradicting observation is still reported against the device.
+fn authored_profile<'a>(
+    master_data: &'a MasterData,
+    product: Option<&ProductData>,
+    selection: &ProfileSelection,
+) -> Option<&'a MaskVersion> {
+    let product = product?;
+    let discovery = &selection.discovery;
+    if discovery.management_descriptor_01.is_some() {
+        return None;
     }
-}
-impl Eq for ProgrammingCatalog {}
-
-impl AsRef<MasterData> for ProgrammingCatalog {
-    /// Borrow the same document that supplies compilation metadata.
-    fn as_ref(&self) -> &MasterData {
-        &self.master_data
-    }
-}
-
-impl ProgrammingCatalog {
-    pub fn fingerprint(&self) -> [u8; 32] {
-        self.fingerprint
-    }
-
-    /// Resolve the exact mask, configuration variant, resources, and
-    /// procedures needed by the compiler.
-    pub fn resolve(&self, request: ProfileRequest<'_>) -> Result<ResolvedProfile, CompileError> {
-        // Exact identity precedes variant and access selection. Similar mask
-        // numbers never supply missing behavior or resources.
-        let mask = self.resolve_exact_mask(&request.discovery)?;
-        self.resolve_with_mask(request, mask)
-    }
-
-    /// Resolve a product's application profile for explicit offline authoring.
-    ///
-    /// Application aliases select metadata without fabricating device facts.
-    /// The supplied DD0 must match that profile, and any supplied PID 72 must
-    /// agree with it. Use [`Self::resolve`] for physical-device discovery,
-    /// including its requirement for PID 72 when DD0 is ambiguous.
-    ///
-    /// Returns an error for a missing product, unknown profile, conflicting
-    /// identity evidence or unsupported programming configuration.
-    pub fn resolve_application_profile(&self, request: ProfileRequest<'_>) -> Result<ResolvedProfile, CompileError> {
-        let product =
-            request.product.ok_or_else(|| CompileError::invalid("application profile selection requires a product"))?;
-        let mask = self.master_data.get_mask_version(product.programming_profile_id()).ok_or_else(|| {
-            CompileError::unsupported(format!(
-                "Master Data has no application profile {:?} for authored mask {:?}",
-                product.programming_profile_id(),
-                product.mask_version_id()
-            ))
-        })?;
-        if request.discovery.dd0 != mask.mask_version_code {
-            return Err(CompileError::invalid(format!(
-                "application profile {} does not match supplied DD0 {:04X}",
-                mask.id, request.discovery.dd0
-            )));
-        }
-        if let Some(observed) = request.discovery.management_descriptor_01
-            && mask.management_descriptor_01 != Some(observed)
-        {
-            return Err(CompileError::invalid(format!(
-                "application profile {} contradicts observed PID 72 {:?}",
-                mask.id, observed
-            )));
-        }
-        self.resolve_with_mask(request, mask)
-    }
-
-    fn resolve_with_mask(
-        &self,
-        request: ProfileRequest<'_>,
-        mask: &MaskVersion,
-    ) -> Result<ResolvedProfile, CompileError> {
-        self.verify_product_compatibility(mask, request.product)?;
-
-        let (variant_index, variant) = select_variant(mask, request.product, request.variant_hint)?;
-        let disposition = classify_variant(mask, variant);
-        validate_mask_tokens(mask)?;
-
-        // The engine programs devices through bus management services. Local
-        // interface qualifiers remain catalog metadata for auditing; USB versus
-        // tunnel transport is supplied by the caller when preparing/executing.
-        // Resource selection also depends on the management realization.
-        let management_style =
-            resolve_management_style(mask, variant, request.product, request.discovery.management_style)?;
-
-        let source_mask_index = self
-            .master_data
-            .mask_versions()
-            .expect("selected mask catalogue")
-            .versions
-            .iter()
-            .position(|candidate| std::ptr::eq(candidate, mask))
-            .expect("selected mask belongs to catalogue");
-
-        Ok(ResolvedProfile {
-            mask: mask_identity(mask),
-            variant: profile_variant(variant_index, variant),
-            management_model: mask.management_model.parse().map_err(|_| {
-                CompileError::unsupported(format!("unknown Master Data management model {:?}", mask.management_model))
-            })?,
-            management_style,
-            disposition,
-            master_data_fingerprint: self.fingerprint,
-            catalog: self.clone(),
-            source_mask_index,
-            source_variant_index: variant_index,
-            association_entry_size: None,
-            observed_property_types: Default::default(),
-            declared_property_types: Default::default(),
-            tool_managed_ip: None,
-        })
-    }
+    // A unique DD0 needs no disambiguation.
+    master_data.get_mask_versions_by_code(discovery.dd0).nth(1)?;
+    master_data
+        .get_mask_version(product.programming_profile_id())
+        .filter(|mask| mask.mask_version_code == discovery.dd0)
 }
 
 pub(super) fn mask_identity(mask: &MaskVersion) -> MaskIdentity {
@@ -266,96 +240,95 @@ fn unique_variant(mask: &MaskVersion, legacy_version: i32) -> Result<(usize, &Ha
 
     Ok(result)
 }
-impl ProgrammingCatalog {
-    /// Whether DD0 alone is insufficient and Device Object PID 72 must be
-    /// read before selecting an exact mask profile.
-    pub fn requires_management_descriptor_01(&self, dd0: u16) -> Result<bool, CompileError> {
-        let mut candidates = self.master_data.get_mask_versions_by_code(dd0);
-        candidates
-            .next()
-            .ok_or_else(|| CompileError::unsupported(format!("Master Data has no mask for DD0 {dd0:04X}")))?;
+/// Whether DD0 alone is insufficient and Device Object PID 72 must be
+/// read before selecting an exact mask profile.
+pub(crate) fn requires_management_descriptor_01(master_data: &MasterData, dd0: u16) -> Result<bool, CompileError> {
+    let mut candidates = master_data.get_mask_versions_by_code(dd0);
+    candidates.next().ok_or_else(|| CompileError::unsupported(format!("Master Data has no mask for DD0 {dd0:04X}")))?;
 
-        Ok(candidates.next().is_some())
-    }
+    Ok(candidates.next().is_some())
+}
 
-    pub(super) fn resolve_exact_mask(&self, discovery: &ProfileDiscovery) -> Result<&MaskVersion, CompileError> {
-        let candidates: Vec<_> = self.master_data.get_mask_versions_by_code(discovery.dd0).collect();
+pub(super) fn resolve_exact_mask<'a>(
+    master_data: &'a MasterData,
+    dd0: u16,
+    management_descriptor_01: Option<&[u8; 10]>,
+) -> Result<&'a MaskVersion, CompileError> {
+    let candidates: Vec<_> = master_data.get_mask_versions_by_code(dd0).collect();
 
-        match candidates.as_slice() {
-            [] => Err(CompileError::unsupported(format!("Master Data has no mask for DD0 {:04X}", discovery.dd0))),
-            [mask] => {
-                if discovery.management_descriptor_01.is_some()
-                    && discovery.management_descriptor_01 != mask.management_descriptor_01
-                {
-                    return Err(CompileError::invalid(format!(
-                        "DD0 {:04X} has no profile matching observed PID 72 {:?}",
-                        discovery.dd0, discovery.management_descriptor_01
-                    )));
-                }
-
-                Ok(mask)
+    match candidates.as_slice() {
+        [] => Err(CompileError::unsupported(format!("Master Data has no mask for DD0 {:04X}", dd0))),
+        [mask] => {
+            if management_descriptor_01.is_some() && management_descriptor_01 != mask.management_descriptor_01.as_ref()
+            {
+                return Err(CompileError::invalid(format!(
+                    "DD0 {:04X} has no profile matching observed PID 72 {:?}",
+                    dd0, management_descriptor_01
+                )));
             }
-            _ if discovery.management_descriptor_01.is_none() => Err(CompileError::missing_evidence(format!(
-                "DD0 {:04X} is ambiguous; read Device Object PID 72 before selecting a profile",
-                discovery.dd0
-            ))),
-            _ => {
-                let descriptor = discovery.management_descriptor_01.as_ref();
-                let mut matching =
-                    candidates.into_iter().filter(|mask| mask.management_descriptor_01.as_ref() == descriptor);
-                let mask = matching.next().ok_or_else(|| {
-                    CompileError::invalid(format!(
-                        "DD0 {:04X} has no profile matching observed PID 72 {:?}",
-                        discovery.dd0, discovery.management_descriptor_01
-                    ))
-                })?;
 
-                if matching.next().is_some() {
-                    return Err(CompileError::invalid(format!(
-                        "DD0 {:04X} and PID 72 still identify multiple profiles",
-                        discovery.dd0
-                    )));
-                }
+            Ok(mask)
+        }
+        _ if management_descriptor_01.is_none() => Err(CompileError::missing_evidence(format!(
+            "DD0 {:04X} is ambiguous; read Device Object PID 72 before selecting a profile",
+            dd0
+        ))),
+        _ => {
+            let mut matching = candidates
+                .into_iter()
+                .filter(|mask| mask.management_descriptor_01.as_ref() == management_descriptor_01);
+            let mask = matching.next().ok_or_else(|| {
+                CompileError::invalid(format!(
+                    "DD0 {:04X} has no profile matching observed PID 72 {:?}",
+                    dd0, management_descriptor_01
+                ))
+            })?;
 
-                Ok(mask)
+            if matching.next().is_some() {
+                return Err(CompileError::invalid(format!(
+                    "DD0 {:04X} and PID 72 still identify multiple profiles",
+                    dd0
+                )));
             }
+
+            Ok(mask)
         }
     }
+}
 
-    pub(super) fn verify_product_compatibility(
-        &self,
-        device_mask: &MaskVersion,
-        product: Option<&ProductData>,
-    ) -> Result<(), CompileError> {
-        let Some(product) = product else {
-            return Ok(());
-        };
+pub(super) fn verify_product_compatibility(
+    master_data: &MasterData,
+    device_mask: &MaskVersion,
+    product: Option<&ProductData>,
+) -> Result<(), CompileError> {
+    let Some(product) = product else {
+        return Ok(());
+    };
 
-        let product_mask = self.master_data.get_mask_version(product.programming_profile_id()).ok_or_else(|| {
-            CompileError::unsupported(format!("Master Data has no product mask ID {:?}", product.mask_version_id()))
-        })?;
+    let product_mask = master_data.get_mask_version(product.programming_profile_id()).ok_or_else(|| {
+        CompileError::unsupported(format!("Master Data has no product mask ID {:?}", product.mask_version_id()))
+    })?;
 
-        if !device_mask.is_downward_compatible_with(product_mask.mask_version_code) {
-            return Err(CompileError::invalid(format!(
-                "product mask {} is not compatible with device mask {}",
-                product_mask.id, device_mask.id
-            )));
-        }
-
-        // Descriptor-qualified profiles sharing DD0 are different execution
-        // architectures, not downward-compatible aliases.
-        if device_mask.mask_version_code == product_mask.mask_version_code
-            && (device_mask.management_descriptor_01.is_some() || product_mask.management_descriptor_01.is_some())
-            && device_mask.id != product_mask.id
-        {
-            return Err(CompileError::invalid(format!(
-                "product mask {} is not compatible with device mask {}",
-                product_mask.id, device_mask.id
-            )));
-        }
-
-        Ok(())
+    if !device_mask.is_downward_compatible_with(product_mask.mask_version_code) {
+        return Err(CompileError::invalid(format!(
+            "product mask {} is not compatible with device mask {}",
+            product_mask.id, device_mask.id
+        )));
     }
+
+    // Descriptor-qualified profiles sharing DD0 are different execution
+    // architectures, not downward-compatible aliases.
+    if device_mask.mask_version_code == product_mask.mask_version_code
+        && (device_mask.management_descriptor_01.is_some() || product_mask.management_descriptor_01.is_some())
+        && device_mask.id != product_mask.id
+    {
+        return Err(CompileError::invalid(format!(
+            "product mask {} is not compatible with device mask {}",
+            product_mask.id, device_mask.id
+        )));
+    }
+
+    Ok(())
 }
 
 pub(super) fn resolve_management_style(

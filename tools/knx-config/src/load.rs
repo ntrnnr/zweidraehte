@@ -1,11 +1,13 @@
 //! Product-file and master-data loading shared by both binaries.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
-use zweidraehte_client::commissioning::{LoadedProgrammingCatalog, ProgrammingCatalog, ProgrammingCatalogLoadRequest};
+use zweidraehte_ets_files::MasterData;
 use zweidraehte_ets_files::archive::{KnxprodArchive, ProgramSelection};
+use zweidraehte_ets_files::master_data::MasterDataLoadRequest;
 use zweidraehte_ets_files::product::ProductData;
 use zweidraehte_ets_files::runtime::Translations;
 use zweidraehte_ets_files::schema::ApplicationProgram;
@@ -45,30 +47,26 @@ pub fn load_program_selection(
         .map_err(Into::into)
 }
 
-/// Select the product's installation catalog, from `installation` when supplied.
-pub fn load_programming_catalog(
-    product: &ProductData,
-    installation: Option<&Path>,
-) -> Result<LoadedProgrammingCatalog> {
-    ProgrammingCatalog::load(ProgrammingCatalogLoadRequest::for_product(product, installation))
+/// Select the product's installation Master Data, from `installation` when supplied.
+pub fn load_master_data(product: &ProductData, installation: Option<&Path>) -> Result<Arc<MasterData>> {
+    MasterDataLoadRequest::for_product(product, installation)
+        .load()
         .context("while attempting to load product Master Data")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zweidraehte_client::commissioning::ProgrammingCatalogLoadError;
     use zweidraehte_ets_files::MasterDataError;
 
     #[test]
     fn catalog_reporting_retains_the_typed_error_and_its_cause() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("missing-master.xml");
-        let error = load_programming_catalog(&ProductData::default(), Some(&path)).err().expect("missing catalog");
+        let error = load_master_data(&ProductData::default(), Some(&path)).expect_err("missing catalog");
 
-        let cause = error.downcast_ref::<ProgrammingCatalogLoadError>().expect("typed catalog error");
-        assert!(matches!(cause, ProgrammingCatalogLoadError::MasterData(MasterDataError::Io { source, .. })
-            if source.kind() == std::io::ErrorKind::NotFound));
+        let cause = error.downcast_ref::<MasterDataError>().expect("typed catalog error");
+        assert!(matches!(cause, MasterDataError::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound));
         let report = format!("{error:#}");
         assert!(report.contains("while attempting to load product Master Data"));
         assert!(report.contains(&path.display().to_string()));

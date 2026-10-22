@@ -489,7 +489,7 @@ impl ProjectCommissioningSession {
                 store.keys().map(|keys| keys as &dyn zweidraehte_project::KeyMaterialSource),
                 inputs.keyring,
             )
-            .with_catalogs(Some(inputs.catalogs))
+            .with_master_data(inputs.master_data)
             .plan_commissioning(
                 &[original.id.clone()],
                 super::BatchSelection::Selected,
@@ -563,7 +563,7 @@ impl ProjectCommissioningSession {
 /// Static project inputs acquired before any queue mutation begins.
 pub struct ProjectProgrammingInputs<'a> {
     pub products: &'a BTreeMap<ProjectDeviceId, super::ProjectProduct>,
-    pub catalogs: &'a super::ProjectProgrammingCatalogs,
+    pub master_data: &'a super::ProjectMasterData,
     pub keyring: Option<&'a Keyring>,
 }
 
@@ -587,7 +587,7 @@ mod queue_tests {
         let receiver = ProjectDeviceId("receiver".into());
         let mut plan =
             ProjectPlanner::new(store.authored(), store.state(), &fixture.products, None, Some(&fixture.keyring))
-                .with_catalogs(Some(&fixture.catalogs))
+                .with_master_data(&fixture.catalogs)
                 .plan_commissioning(
                     std::slice::from_ref(&receiver),
                     BatchSelection::Selected,
@@ -630,7 +630,7 @@ mod queue_tests {
         let receiver = ProjectDeviceId("receiver".into());
         let initial =
             ProjectPlanner::new(store.authored(), store.state(), &fixture.products, None, Some(&fixture.keyring))
-                .with_catalogs(Some(&fixture.catalogs))
+                .with_master_data(&fixture.catalogs)
                 .plan_commissioning(
                     &[receiver.clone()],
                     BatchSelection::Selected,
@@ -648,7 +648,7 @@ mod queue_tests {
                 original,
                 &ProjectProgrammingInputs {
                     products: &fixture.products,
-                    catalogs: &fixture.catalogs,
+                    master_data: &fixture.catalogs,
                     keyring: Some(&fixture.keyring),
                 },
                 Default::default(),

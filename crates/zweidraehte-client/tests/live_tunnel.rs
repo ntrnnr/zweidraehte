@@ -23,12 +23,10 @@
 use std::net::SocketAddrV4;
 use std::time::Duration;
 
-use zweidraehte_client::commissioning::{
-    ImageLocation, ImageSpace, ProfileDiscovery, ProfileRequest, ProgrammingCatalog, ProgrammingCatalogLoadRequest,
-    VariantHint,
-};
+use zweidraehte_client::commissioning::{ImageLocation, ImageSpace, ProfileSelection, ResolvedProfile};
 use zweidraehte_client::security::Keyring;
 use zweidraehte_client::{GroupAddress, GroupValueEncoding, IndividualAddress, KnxBus, SecurityEntry, SecurityStore};
+use zweidraehte_ets_files::master_data::MasterDataLoadRequest;
 
 /// PID_SERIAL_NUMBER on the Device Object.
 const PID_SERIAL_NUMBER: u16 = 11;
@@ -280,22 +278,12 @@ async fn system7_load_states_readable() {
     };
 
     // This protocol-only test has no product; select its catalog explicitly.
-    let Ok(loaded) = ProgrammingCatalog::load(ProgrammingCatalogLoadRequest::Version(23)) else {
+    let Ok(master_data) = MasterDataLoadRequest::Version(23).load() else {
         eprintln!("skipped: no project-23 Master Data (enable master-data-download)");
         return;
     };
-    let profile = loaded
-        .catalog()
-        .resolve(ProfileRequest {
-            discovery: ProfileDiscovery {
-                dd0: zweidraehte_client::MaskVersion::System7Tp1.as_u16(),
-                management_descriptor_01: None,
-                management_style: None,
-            },
-            product: None,
-            variant_hint: VariantHint::Automatic,
-        })
-        .expect("the exact MV-0705 profile resolves");
+    let selection = ProfileSelection::discovered(zweidraehte_client::MaskVersion::System7Tp1.as_u16());
+    let profile = ResolvedProfile::resolve(&master_data, &selection).expect("the exact MV-0705 profile resolves");
 
     let status_addresses = [
         "GroupAddressTableLoadStatus",
@@ -341,7 +329,7 @@ async fn system7_load_states_readable() {
     bus.disconnect().await.expect("tunnel disconnects");
 }
 
-fn standard_memory_resource(profile: &zweidraehte_client::commissioning::ResolvedProfile, name: &str) -> u32 {
+fn standard_memory_resource(profile: &ResolvedProfile, name: &str) -> u32 {
     let resource = profile
         .resource(name)
         .expect("exact resource selection is unambiguous")

@@ -1,5 +1,5 @@
 use super::*;
-use crate::commissioning::ProgrammingCatalog;
+use crate::commissioning::catalog_testing::*;
 use crate::project::tests::secure_fixture;
 use std::path::PathBuf;
 use zweidraehte_project::{KeyOrigin, MutableProjectState};
@@ -11,7 +11,7 @@ fn partial_scopes_merge_only_with_the_same_complete_input_revision() {
     let sender = ProjectDeviceId("sender".into());
     let planner =
         ProjectPlanner::new(&fixture.project, Some(&fixture.state), &fixture.products, None, Some(&fixture.keyring))
-            .with_catalogs(Some(&fixture.catalogs));
+            .with_master_data(&fixture.catalogs);
     let mut first = planner.programming_snapshot_for(&BTreeSet::from([receiver.clone()])).expect("receiver status");
     let second = planner.programming_snapshot_for(&BTreeSet::from([sender.clone()])).expect("sender status");
     assert_eq!(first.revision(), second.revision());
@@ -23,7 +23,7 @@ fn partial_scopes_merge_only_with_the_same_complete_input_revision() {
     let mut changed = fixture.state.clone();
     changed.client_next += 1;
     let newer = ProjectPlanner::new(&fixture.project, Some(&changed), &fixture.products, None, Some(&fixture.keyring))
-        .with_catalogs(Some(&fixture.catalogs))
+        .with_master_data(&fixture.catalogs)
         .programming_snapshot_for(&BTreeSet::from([receiver.clone()]))
         .expect("new durable evidence");
     assert_ne!(first.revision(), newer.revision());
@@ -38,13 +38,12 @@ fn snapshot_retains_the_catalog_resolution_diagnostic() {
     use std::error::Error as _;
 
     let fixture = secure_fixture();
-    let catalog =
-        ProgrammingCatalog::from_xml(r#"<KNX xmlns="http://knx.org/xml/project/23"><MasterData Version="1" /></KNX>"#)
-            .expect("inspectable empty catalog");
-    let catalogs = ProjectProgrammingCatalogs::with_installation(catalog);
+    let catalog = parse_master_data(r#"<KNX xmlns="http://knx.org/xml/project/23"><MasterData Version="1" /></KNX>"#)
+        .expect("inspectable empty catalog");
+    let catalogs = ProjectMasterData::with_installation(catalog);
     let scope = fixture.project.devices.keys().cloned().collect();
     let error = ProjectPlanner::new(&fixture.project, None, &fixture.products, None, Some(&fixture.keyring))
-        .with_catalogs(Some(&catalogs))
+        .with_master_data(&catalogs)
         .programming_snapshot_for(&scope)
         .expect_err("catalog cannot resolve the device mask");
 
@@ -62,9 +61,9 @@ fn snapshot_retains_the_catalog_resolution_diagnostic() {
 fn revision_tracks_drafts_catalog_bytes_and_redacted_keyring_credentials() {
     let mut fixture = secure_fixture();
     let scope = fixture.project.devices.keys().cloned().collect();
-    let snapshot = |project: &AuthoredProject, catalogs: &ProjectProgrammingCatalogs, keyring: &Keyring| {
+    let snapshot = |project: &AuthoredProject, catalogs: &ProjectMasterData, keyring: &Keyring| {
         ProjectPlanner::new(project, None, &fixture.products, None, Some(keyring))
-            .with_catalogs(Some(catalogs))
+            .with_master_data(catalogs)
             .programming_snapshot_for(&scope)
             .expect("snapshot")
     };
@@ -73,11 +72,11 @@ fn revision_tracks_drafts_catalog_bytes_and_redacted_keyring_credentials() {
     draft.language = Some("de-DE".into());
     assert_eq!(draft.source(), fixture.project.source(), "model edits need not change source text");
     assert_ne!(original.revision(), snapshot(&draft, &fixture.catalogs, &fixture.keyring).revision());
-    let changed_catalog = ProgrammingCatalog::from_xml(
-        &fixture.catalog.document().source_xml().replace("Version=\"1\"", "Version=\"2\""),
+    let changed_catalog = parse_master_data(
+        &std::sync::Arc::clone(&fixture.catalog).source_xml().replace("Version=\"1\"", "Version=\"2\""),
     )
     .expect("another catalog revision");
-    let changed_catalogs = ProjectProgrammingCatalogs::with_installation(changed_catalog);
+    let changed_catalogs = ProjectMasterData::with_installation(changed_catalog);
     assert_ne!(original.revision(), snapshot(&fixture.project, &changed_catalogs, &fixture.keyring).revision());
     fixture.keyring.devices[0] = fixture.keyring.devices[0].clone().with_tool_key(Some([0x55; 16]));
     let changed = snapshot(&fixture.project, &fixture.catalogs, &fixture.keyring);

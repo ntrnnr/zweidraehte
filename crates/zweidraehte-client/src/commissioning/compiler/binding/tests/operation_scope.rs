@@ -1,4 +1,5 @@
 use super::*;
+use crate::commissioning::catalog_testing::*;
 
 #[test]
 fn unused_conflicting_high_memory_resources_do_not_select_services() {
@@ -15,7 +16,7 @@ fn unused_conflicting_high_memory_resources_do_not_select_services() {
       </Resource>
     </Resources><Procedures>"#,
     );
-    let catalog = ProgrammingCatalog::from_xml(&xml).expect("catalog preserves authored alternatives");
+    let catalog = parse_master_data(&xml).expect("catalog preserves authored alternatives");
     let product = ProductData::default().with_fixture_id("unused-memory");
     for intent in [CommissioningIntent::AssignAddress, CommissioningIntent::Unload(UnloadMode::Application)] {
         for credential in [ManagementCredential::Plaintext, ManagementCredential::ToolKey] {
@@ -37,7 +38,7 @@ fn unused_conflicting_high_memory_resources_do_not_select_services() {
 
 #[test]
 fn address_assignment_skips_application_image_and_extensions() {
-    let catalog = ProgrammingCatalog::from_xml(CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(CATALOG_XML).expect("catalog parses");
     let product = invalid_application_product();
     let profile = resolve_profile(&catalog, &product);
     let configuration = configuration();
@@ -60,7 +61,7 @@ fn address_assignment_skips_application_image_and_extensions() {
 
 #[test]
 fn coupler_routing_profiles_compile_every_intent() {
-    let catalog = ProgrammingCatalog::from_xml(CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(CATALOG_XML).expect("catalog parses");
     let product = ProductData::default().with_fixture_id("extension-preflight");
     let mut profile = resolve_profile(&catalog, &product);
     profile.set_test_disposition(crate::commissioning::ProfileDisposition::CouplerRoutingRequired);
@@ -91,7 +92,7 @@ fn coupler_routing_profiles_compile_every_intent() {
 
 #[test]
 fn unknown_plugin_remains_required_for_address_assignment() {
-    let catalog = ProgrammingCatalog::from_xml(CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(CATALOG_XML).expect("catalog parses");
     let product = ProductData::default().with_fixture_id("plugin-preflight");
     let mut profile = resolve_profile(&catalog, &product);
     profile.set_test_disposition(crate::commissioning::ProfileDisposition::UnsupportedPlugin {
@@ -115,7 +116,7 @@ fn unknown_plugin_remains_required_for_address_assignment() {
 
 #[test]
 fn downloads_still_fail_closed_on_invalid_application_images() {
-    let catalog = ProgrammingCatalog::from_xml(CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(CATALOG_XML).expect("catalog parses");
     let product = invalid_application_product();
     let profile = resolve_profile(&catalog, &product);
     let configuration = configuration();
@@ -138,7 +139,7 @@ fn downloads_still_fail_closed_on_invalid_application_images() {
 
 #[test]
 fn product_procedure_validation_remains_scoped_to_downloads() {
-    let catalog = ProgrammingCatalog::from_xml(CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(CATALOG_XML).expect("catalog parses");
     let product = ProductData::default()
         .with_fixture_id("scope-test")
         .with_fixture_load_procedure_style(LoadProcedureStyle::Default)

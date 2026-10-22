@@ -338,7 +338,7 @@ fn management_inputs(
             let product = resources.products[&target.id].product();
             // Missing programming metadata is not a reason to withhold
             // management access. Unknown support uses the known address.
-            target.serial_addressing = match resources.catalogs.for_product(product) {
+            target.serial_addressing = match resources.master_data.for_product(product) {
                 Ok(catalog) => SerialAddressingSupport::for_product(product, &catalog),
                 Err(Error::MissingCatalog { .. }) => SerialAddressingSupport::Unknown,
                 Err(error) => return Err(error),

@@ -2,8 +2,8 @@
 
 use crate::bus::access::ManagementCredential;
 use crate::commissioning::CompileOptions;
-use crate::commissioning::catalog::ProgrammingCatalog;
-use crate::commissioning::catalog::profile::{ProfileDiscovery, ProfileRequest, ResolvedProfile, VariantHint};
+use crate::commissioning::catalog::profile::ResolvedProfile;
+use crate::commissioning::catalog_testing::*;
 use crate::commissioning::compiler::program::CompiledProgram;
 use crate::commissioning::error::CompileError;
 use crate::commissioning::input::facts::{ObservedTarget, ProgrammingFacts};
@@ -26,7 +26,7 @@ pub(in crate::commissioning) const SYSTEM_300_EXECUTABLE_DESCRIPTOR: [u8; 10] = 
 pub(in crate::commissioning) const SYSTEM_300_PLUGIN_DESCRIPTOR: [u8; 10] = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
 pub(in crate::commissioning) fn compile(
-    catalog: &ProgrammingCatalog,
+    catalog: &std::sync::Arc<MasterData>,
     profile: ResolvedProfile,
     product: &ProductData,
     topology: TopologyConfiguration,
@@ -35,7 +35,7 @@ pub(in crate::commissioning) fn compile(
 }
 
 pub(in crate::commissioning) fn compile_with_mode(
-    catalog: &ProgrammingCatalog,
+    catalog: &std::sync::Arc<MasterData>,
     profile: ResolvedProfile,
     product: &ProductData,
     topology: TopologyConfiguration,
@@ -45,7 +45,7 @@ pub(in crate::commissioning) fn compile_with_mode(
 }
 
 pub(in crate::commissioning) fn compile_at(
-    catalog: &ProgrammingCatalog,
+    catalog: &std::sync::Arc<MasterData>,
     profile: ResolvedProfile,
     product: &ProductData,
     topology: TopologyConfiguration,
@@ -64,33 +64,24 @@ pub(in crate::commissioning) fn compile_at(
         progress_messages_by_id: BTreeMap::new(),
     };
 
-    let selection = crate::commissioning::ProfileSelection::new(ProfileDiscovery {
-        dd0: profile.mask().dd0,
-        management_descriptor_01: profile.mask().management_descriptor_01,
-        management_style: profile.management_style(),
-    })
-    .with_variant(profile.variant().legacy_version.map_or(VariantHint::Automatic, VariantHint::LegacyVersion));
-    programming_input(catalog, product, &configuration, CommissioningIntent::Download(mode), options)
-        .compile(&selection)
+    programming_input(catalog, product, &configuration, CommissioningIntent::Download(mode), options).compile(&profile)
 }
 
 pub(in crate::commissioning) fn resolve_profile(
-    catalog: &ProgrammingCatalog,
+    catalog: &std::sync::Arc<MasterData>,
     dd0: u16,
     descriptor: Option<[u8; 10]>,
     product: &ProductData,
 ) -> ResolvedProfile {
-    catalog
-        .resolve(ProfileRequest {
-            discovery: ProfileDiscovery { dd0, management_descriptor_01: descriptor, management_style: None },
-            product: Some(product),
-            variant_hint: VariantHint::Automatic,
-        })
-        .unwrap_or_else(|error| panic!("profile {:04X} resolves: {error:#?}", dd0))
+    resolve_catalog_profile(catalog, Some(product), &ProfileSelection {
+        discovery: ProfileDiscovery { dd0, management_descriptor_01: descriptor, management_style: None },
+        variant_hint: VariantHint::Automatic,
+    })
+    .unwrap_or_else(|error| panic!("profile {:04X} resolves: {error:#?}", dd0))
 }
 
 pub(in crate::commissioning) fn programming_input(
-    catalog: &ProgrammingCatalog,
+    catalog: &std::sync::Arc<MasterData>,
     product: &ProductData,
     configuration: &LoweredDeviceConfiguration,
     intent: CommissioningIntent,
@@ -106,7 +97,7 @@ pub(in crate::commissioning) fn programming_input(
     };
     ProgrammingInput::new(
         MaterializedDevice::new(
-            product.clone().bind_master_data(catalog.document()).expect("fixture document binds"),
+            product.clone().bind_master_data(std::sync::Arc::clone(catalog)).expect("fixture document binds"),
             configuration.clone(),
             Vec::new(),
             keys,
@@ -198,7 +189,7 @@ pub(in crate::commissioning) fn product(
     ProductData::from_mtxml_str(&xml).expect("architecture product parses")
 }
 
-pub(in crate::commissioning) fn catalog(version: u16) -> ProgrammingCatalog {
+pub(in crate::commissioning) fn catalog(version: u16) -> std::sync::Arc<MasterData> {
     edited_catalog(version, |xml| xml)
 }
 
@@ -206,6 +197,6 @@ pub(in crate::commissioning) fn catalog(version: u16) -> ProgrammingCatalog {
 pub(in crate::commissioning) fn edited_catalog(
     version: u16,
     edit: impl FnOnce(String) -> String,
-) -> ProgrammingCatalog {
-    ProgrammingCatalog::from_xml(&edit(architecture_master_data(version))).expect("architecture Master Data parses")
+) -> std::sync::Arc<MasterData> {
+    parse_master_data(&edit(architecture_master_data(version))).expect("architecture Master Data parses")
 }

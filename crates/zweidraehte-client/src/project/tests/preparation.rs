@@ -90,7 +90,7 @@ async fn queued_programming_persists_before_next_preflight_and_retains_reports()
         .expect("fixture catalogue binds");
         let product = ProjectProduct::new(selected);
         let products = store.authored().devices.keys().map(|id| (id.clone(), product.clone())).collect();
-        let catalogs = ProjectProgrammingCatalogs::default();
+        let catalogs = ProjectMasterData::default();
         let mut initial = ProjectPlanner::new(store.authored(), store.state(), &products, None, None)
             .plan_commissioning(&[], BatchSelection::All, CommissioningIntent::Download(DownloadMode::Full))
             .expect("static queue validates");
@@ -182,7 +182,7 @@ async fn queued_programming_persists_before_next_preflight_and_retains_reports()
                 .execute(
                     session,
                     |_| async { Ok(bus) },
-                    ProjectProgrammingInputs { products: &products, catalogs: &catalogs, keyring: None },
+                    ProjectProgrammingInputs { products: &products, master_data: &catalogs, keyring: None },
                     &cancellation,
                     &mut progress,
                     |device| {

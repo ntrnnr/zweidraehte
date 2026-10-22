@@ -1,16 +1,18 @@
 //! Public compile and preview tests use complete product and target fixtures.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use zweidraehte_client::IndividualAddress;
 use zweidraehte_client::commissioning::ImageLocation;
 use zweidraehte_client::commissioning::input::{CommissioningIntent, DownloadMode, ProgrammingInput, TargetSelection};
 use zweidraehte_client::commissioning::inspection::ProcedureOperation;
-use zweidraehte_client::commissioning::{CompileErrorKind, CompileOptions, ProgrammingCatalog};
+use zweidraehte_client::commissioning::{CompileErrorKind, CompileOptions, ResolvedProfile};
 use zweidraehte_client::commissioning::{DesiredDataSecurity, ManagementCredential, ObservedDataSecurity};
 use zweidraehte_client::commissioning::{ObservedTarget, ProgrammingFacts};
-use zweidraehte_client::commissioning::{ProfileDiscovery, ProfileSelection, ResourceManagementStyle};
+use zweidraehte_client::commissioning::{ProfileSelection, ResourceManagementStyle};
 use zweidraehte_client::configuration::ResolvedKeyMaterial;
 use zweidraehte_client::configuration::{LoweredDeviceConfiguration, MaterializedDevice};
+use zweidraehte_ets_files::MasterData;
 use zweidraehte_ets_files::product::ProductData;
 
 const MASTER_DATA: &str = r#"
@@ -44,22 +46,27 @@ const PRODUCT: &str = r#"
   </ApplicationPrograms></Manufacturer></ManufacturerData>
 </KNX>"#;
 
-fn fixture() -> (ProgrammingCatalog, ProfileSelection, MaterializedDevice, CompileOptions) {
+fn parse_master_data(xml: &str) -> Result<Arc<MasterData>, zweidraehte_ets_files::MasterDataError> {
+    xml.parse().map(Arc::new)
+}
+
+/// Resolve the input's product once; compile and preview take that profile.
+fn resolve(input: &ProgrammingInput, selection: &ProfileSelection) -> ResolvedProfile {
+    input.device().resolve_profile(selection).expect("fixture profile resolves")
+}
+
+fn fixture() -> (Arc<MasterData>, ProfileSelection, MaterializedDevice, CompileOptions) {
     fixture_catalog(MASTER_DATA)
 }
 
-fn fixture_catalog(xml: &str) -> (ProgrammingCatalog, ProfileSelection, MaterializedDevice, CompileOptions) {
-    let catalog = ProgrammingCatalog::from_xml(xml).expect("synthetic catalog parses");
+fn fixture_catalog(xml: &str) -> (Arc<MasterData>, ProfileSelection, MaterializedDevice, CompileOptions) {
+    let catalog = parse_master_data(xml).expect("synthetic catalog parses");
     let product = ProductData::from_mtxml_str(PRODUCT).expect("synthetic product parses");
-    let profile = ProfileSelection::new(ProfileDiscovery {
-        dd0: 0x0012,
-        management_descriptor_01: None,
-        management_style: Some(ResourceManagementStyle::Simple),
-    });
+    let selection = ProfileSelection::discovered(0x0012).with_management_style(ResourceManagementStyle::Simple);
     let address = IndividualAddress::new(1, 1, 23);
     let configuration = LoweredDeviceConfiguration::new(address, Some(15));
     let device = MaterializedDevice::new(
-        product.bind_master_data(catalog.document()).expect("fixture document binds"),
+        product.bind_master_data(Arc::clone(&catalog)).expect("fixture document binds"),
         configuration,
         Vec::new(),
         ResolvedKeyMaterial::new(None),
@@ -70,13 +77,13 @@ fn fixture_catalog(xml: &str) -> (ProgrammingCatalog, ProfileSelection, Material
         progress_messages_by_reference: BTreeMap::new(),
         progress_messages_by_id: BTreeMap::new(),
     };
-    (catalog, profile, device, options)
+    (catalog, selection, device, options)
 }
 
 #[test]
 fn management_credentials_do_not_change_authored_control_guards() {
     for credential in [ManagementCredential::Plaintext, ManagementCredential::ToolKey] {
-        let (_catalog, profile, device, options) = fixture();
+        let (_catalog, selection, device, options) = fixture();
         let facts = ProgrammingFacts::new(ObservedTarget {
             credential,
             ..plain_facts().target.expect("fixture has target evidence")
@@ -88,8 +95,8 @@ fn management_credentials_do_not_change_authored_control_guards() {
 
         assert_eq!(input.observed_facts(), facts);
 
-        input.preview(&profile).expect("disabled application image compiles");
-        let program = input.compile(&profile).expect("selected management credential lowers");
+        input.preview(&resolve(&input, &selection)).expect("disabled application image compiles");
+        let program = input.compile(&resolve(&input, &selection)).expect("selected management credential lowers");
         let write = program
             .procedure()
             .expect("download procedure")
@@ -106,13 +113,13 @@ fn management_credentials_do_not_change_authored_control_guards() {
 
 #[test]
 fn a_requested_address_does_not_implicitly_select_plaintext_management() {
-    let (_catalog, profile, device, options) = fixture();
+    let (_catalog, selection, device, options) = fixture();
     let input = ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options);
     assert_eq!(input.observed_facts(), ProgrammingFacts::default());
 
-    let image = input.preview(&profile).expect("image remains inspectable");
+    let image = input.preview(&resolve(&input, &selection)).expect("image remains inspectable");
     assert!(!image.image().is_empty());
-    let error = input.compile(&profile).expect_err("target access must be supplied");
+    let error = input.compile(&resolve(&input, &selection)).expect_err("target access must be supplied");
 
     assert_eq!(error.kind, CompileErrorKind::MissingEvidence);
     assert!(error.message.contains("target"));
@@ -120,13 +127,14 @@ fn a_requested_address_does_not_implicitly_select_plaintext_management() {
 
 #[test]
 fn missing_acquisition_facts_do_not_prevent_image_inspection() {
-    let (_catalog, profile, device, mut options) = fixture();
+    let (_catalog, selection, device, mut options) = fixture();
     options.target = TargetSelection::SerialNumber([0, 0xfa, 0, 0, 0, 23]);
     let input = ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options);
 
-    let image = input.preview(&profile).expect("the complete desired image remains inspectable");
+    let image = input.preview(&resolve(&input, &selection)).expect("the complete desired image remains inspectable");
     assert!(!image.image().is_empty());
-    let error = input.compile(&profile).expect_err("execution cannot be bound without acquisition facts");
+    let error =
+        input.compile(&resolve(&input, &selection)).expect_err("execution cannot be bound without acquisition facts");
     assert_eq!(error.kind, CompileErrorKind::MissingEvidence);
     assert!(error.message.contains("target"));
 }
@@ -146,7 +154,7 @@ fn selected_candidate_resolves_choices_merges_and_scope_before_image() {
            </choose>
            <LdCtrlDelay AppliesTo="par" MilliSeconds="900" />"#,
     );
-    let catalog = ProgrammingCatalog::from_xml(&source).expect("branching catalog parses");
+    let catalog = parse_master_data(&source).expect("branching catalog parses");
     let product = ProductData::from_mtxml_str(PRODUCT)
         .expect("fixture product")
         .with_fixture_load_procedure_style(LoadProcedureStyle::Merged)
@@ -159,18 +167,14 @@ fn selected_candidate_resolves_choices_merges_and_scope_before_image() {
                 ..Default::default()
             })],
         }]);
-    let profile = ProfileSelection::new(ProfileDiscovery {
-        dd0: 0x0012,
-        management_descriptor_01: None,
-        management_style: Some(ResourceManagementStyle::Simple),
-    });
+    let selection = ProfileSelection::discovered(0x0012).with_management_style(ResourceManagementStyle::Simple);
     let mut configuration = device.configuration().clone();
     configuration.procedure_parameters.insert("DownloadPath".to_owned(), ProcedureParameter {
         active: true,
         value: ProcedureParameterValue::Unsigned(9),
     });
     let device = MaterializedDevice::new(
-        product.bind_master_data(catalog.document()).expect("fixture document binds"),
+        product.bind_master_data(Arc::clone(&catalog)).expect("fixture document binds"),
         configuration,
         Vec::new(),
         ResolvedKeyMaterial::new(None),
@@ -178,8 +182,8 @@ fn selected_candidate_resolves_choices_merges_and_scope_before_image() {
     let input =
         ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options).facts(plain_facts());
 
-    input.preview(&profile).expect("unselected property needs no image facts");
-    let program = input.compile(&profile).expect("flat recipe binds the declared placement");
+    input.preview(&resolve(&input, &selection)).expect("unselected property needs no image facts");
+    let program = input.compile(&resolve(&input, &selection)).expect("flat recipe binds the declared placement");
     let procedure = program.procedure().expect("download has executable controls");
     assert_eq!(procedure.steps.len(), 3);
     assert_eq!(procedure.steps[1].path.control_indices, [1, 1, 0, 0]);
@@ -198,20 +202,16 @@ fn unload_probe_uses_selected_branch_and_declared_placement() {
             <when test="9"><LdCtrlWriteMem Address="256" Size="1024" Verify="false" /></when>
            </choose>"#,
     );
-    let catalog = ProgrammingCatalog::from_xml(&source).expect("unload catalog parses");
+    let catalog = parse_master_data(&source).expect("unload catalog parses");
     let product = ProductData::from_mtxml_str(PRODUCT).expect("fixture product");
-    let profile = ProfileSelection::new(ProfileDiscovery {
-        dd0: 0x0012,
-        management_descriptor_01: None,
-        management_style: Some(ResourceManagementStyle::Simple),
-    });
+    let selection = ProfileSelection::discovered(0x0012).with_management_style(ResourceManagementStyle::Simple);
     let mut configuration = device.configuration().clone();
     configuration.procedure_parameters.insert("DownloadPath".to_owned(), ProcedureParameter {
         active: true,
         value: ProcedureParameterValue::Unsigned(9),
     });
     let device = MaterializedDevice::new(
-        product.bind_master_data(catalog.document()).expect("fixture document binds"),
+        product.bind_master_data(Arc::clone(&catalog)).expect("fixture document binds"),
         configuration,
         Vec::new(),
         ResolvedKeyMaterial::new(None),
@@ -219,7 +219,7 @@ fn unload_probe_uses_selected_branch_and_declared_placement() {
     let input = ProgrammingInput::new(device, CommissioningIntent::Unload(UnloadMode::Application), options)
         .facts(plain_facts());
 
-    let imaged = input.preview(&profile).expect("probe clips to the declared four-byte segment");
+    let imaged = input.preview(&resolve(&input, &selection)).expect("probe clips to the declared four-byte segment");
     assert_eq!(
         imaged
             .image()
@@ -228,7 +228,7 @@ fn unload_probe_uses_selected_branch_and_declared_placement() {
             .data(),
         [1, 2, 3, 4]
     );
-    let program = input.compile(&profile).expect("scoped recipe lowers");
+    let program = input.compile(&resolve(&input, &selection)).expect("scoped recipe lowers");
     let write = &program.procedure().expect("unload controls exist").steps[1];
     assert!(matches!(write.operation, ProcedureOperation::Write { extent, .. } if extent.byte_length == 4));
 }
@@ -245,24 +245,20 @@ fn unload_comparison_of_a_prior_read_requires_no_desired_image_bytes() {
            <LdCtrlCompareMem Address="256" Size="4" />"#,
     );
     let device = fixture_catalog(&source).2;
-    let profile = ProfileSelection::new(ProfileDiscovery {
-        dd0: 0x0012,
-        management_descriptor_01: None,
-        management_style: Some(ResourceManagementStyle::Simple),
-    });
+    let selection = ProfileSelection::discovered(0x0012).with_management_style(ResourceManagementStyle::Simple);
     let input = ProgrammingInput::new(device, CommissioningIntent::Unload(UnloadMode::Application), options)
         .facts(plain_facts());
 
-    let imaged = input.preview(&profile).expect("no desired product bytes are needed");
+    let imaged = input.preview(&resolve(&input, &selection)).expect("no desired product bytes are needed");
     assert!(imaged.image().is_empty());
-    let program = input.compile(&profile).expect("comparison binds to the prior read");
+    let program = input.compile(&resolve(&input, &selection)).expect("comparison binds to the prior read");
     assert!(program.procedure().expect("unload has controls").steps.iter().any(|step| matches!(
         step.operation,
         ProcedureOperation::Compare { comparison: Comparison::ImageExact { length: 4, .. }, .. }
     )));
 }
 
-fn automatic_fixture() -> (ProgrammingCatalog, ProfileSelection, MaterializedDevice, CompileOptions) {
+fn automatic_fixture() -> (Arc<MasterData>, ProfileSelection, MaterializedDevice, CompileOptions) {
     let (_, _, _, options) = fixture();
     let source = MASTER_DATA.replace(
         "<Procedures>",
@@ -273,25 +269,21 @@ fn automatic_fixture() -> (ProgrammingCatalog, ProfileSelection, MaterializedDev
           <LdCtrlDisconnect />
         </Procedure>"#,
     );
-    let catalog = ProgrammingCatalog::from_xml(&source).expect("partial and full procedures parse");
+    let catalog = parse_master_data(&source).expect("partial and full procedures parse");
     let device = fixture_catalog(&source).2;
-    let profile = ProfileSelection::new(ProfileDiscovery {
-        dd0: 0x0012,
-        management_descriptor_01: None,
-        management_style: Some(ResourceManagementStyle::Simple),
-    });
+    let selection = ProfileSelection::discovered(0x0012).with_management_style(ResourceManagementStyle::Simple);
 
-    (catalog, profile, device, options)
+    (catalog, selection, device, options)
 }
 
 #[test]
 fn disabled_security_requires_observation_only_when_group_scope_is_selected() {
     use zweidraehte_client::commissioning::input::ProgramSections;
 
-    let (catalog, profile, device, options) = automatic_fixture();
+    let (catalog, selection, device, options) = automatic_fixture();
     let product = device.product().clone().with_fixture_data_secure(true);
     let device = MaterializedDevice::new(
-        product.bind_master_data(catalog.document()).expect("fixture document binds"),
+        product.bind_master_data(Arc::clone(&catalog)).expect("fixture document binds"),
         device.configuration().clone(),
         Vec::new(),
         ResolvedKeyMaterial::new(None),
@@ -305,9 +297,9 @@ fn disabled_security_requires_observation_only_when_group_scope_is_selected() {
                 ProgrammingInput::new(device.clone(), CommissioningIntent::Download(DownloadMode::Automatic), options)
                     .facts(plain_facts().with_data_security(mode));
 
-            input.preview(&profile).expect("disabled desired security has no image writes");
+            input.preview(&resolve(&input, &selection)).expect("disabled desired security has no image writes");
 
-            let result = input.compile(&profile);
+            let result = input.compile(&resolve(&input, &selection));
             if sections == ProgramSections::PARAMETERS || mode == ObservedDataSecurity::Disabled {
                 let program = result.expect("selected scope needs no security transition");
                 assert_eq!(
@@ -342,11 +334,11 @@ fn plain_facts() -> ProgrammingFacts {
 
 #[test]
 fn preview_and_compile_share_the_desired_image() {
-    let (_, profile, device, options) = fixture();
+    let (_, selection, device, options) = fixture();
     let input =
         ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options).facts(plain_facts());
-    let image = input.preview(&profile).expect("desired image compiles");
-    let program = input.compile(&profile).expect("program compiles");
+    let image = input.preview(&resolve(&input, &selection)).expect("desired image compiles");
+    let program = input.compile(&resolve(&input, &selection)).expect("program compiles");
     assert_eq!(image.image(), program.image());
 }
 
@@ -361,7 +353,7 @@ fn one_compiler_uses_each_products_exact_document_even_with_the_same_schema() {
         let input = ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options)
             .facts(plain_facts());
 
-        let program = input.compile(&selection).expect("product supplies its own catalog");
+        let program = input.compile(&resolve(&input, &selection)).expect("product supplies its own catalog");
         assert!(program.procedure().expect("download procedure").steps.iter().any(|step| {
             matches!(step.operation, ProcedureOperation::Delay { milliseconds } if milliseconds == delay)
         }));
@@ -380,7 +372,28 @@ fn loose_input_requires_an_associated_document_before_resolution() {
         MaterializedDevice::new(product, device.configuration().clone(), Vec::new(), ResolvedKeyMaterial::new(None));
     let input = ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options);
 
-    let error = input.compile(&selection).expect_err("compilation cannot choose another source");
+    let error = input.device().resolve_profile(&selection).expect_err("resolution cannot choose another source");
     assert_eq!(error.kind, CompileErrorKind::MissingEvidence);
     assert!(error.message.contains("Master Data"));
+}
+
+#[test]
+fn compilation_refuses_a_profile_resolved_for_another_target() {
+    let (catalog, selection, device, options) = fixture();
+    let input =
+        ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Full), options).facts(plain_facts());
+
+    // An audit profile made from Master Data alone skipped every
+    // product-dependent choice, so it cannot stand in for this product's.
+    let productless = ResolvedProfile::resolve(&catalog, &selection).expect("catalog profile resolves");
+    let error = input.compile(&productless).expect_err("a productless profile does not compile");
+    assert_eq!(error.kind, CompileErrorKind::InvalidInput);
+
+    // The same product bound to another document selects other resources.
+    let other = MASTER_DATA.replace(r#"Version="1""#, r#"Version="2""#);
+    let (_, _, other_device, _) = fixture_catalog(&other);
+    let foreign = other_device.resolve_profile(&selection).expect("other document resolves");
+    let error = input.preview(&foreign).expect_err("a profile from another document does not compile");
+    assert_eq!(error.kind, CompileErrorKind::InvalidInput);
+    assert!(error.message.contains("other Master Data"));
 }

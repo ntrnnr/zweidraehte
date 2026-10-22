@@ -1,6 +1,7 @@
 //! Static target acquisition policy before any device can be discovered.
 
-use crate::commissioning::{ManagementModel, ProgrammingCatalog};
+use crate::commissioning::ManagementModel;
+use zweidraehte_ets_files::MasterData;
 use zweidraehte_ets_files::product::ProductData;
 
 /// Evidence for serial-number management from the exact product mask entry.
@@ -16,8 +17,8 @@ pub enum SerialAddressingSupport {
 
 impl SerialAddressingSupport {
     /// Inspect the exact product entry without live discovery or family guesses.
-    pub fn for_product(product: &ProductData, catalog: &ProgrammingCatalog) -> Self {
-        let Some(mask) = catalog.as_ref().get_mask_version(product.mask_version_id()) else {
+    pub fn for_product(product: &ProductData, master_data: &MasterData) -> Self {
+        let Some(mask) = master_data.get_mask_version(product.mask_version_id()) else {
             return Self::Unknown;
         };
         // A product's full mask identifier selects the entry, including any
@@ -43,10 +44,11 @@ impl SerialAddressingSupport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commissioning::catalog_testing::*;
 
     #[test]
     fn exact_catalog_evidence_controls_serial_addressing() {
-        let catalog = ProgrammingCatalog::from_xml(
+        let catalog = parse_master_data(
             r#"
             <KNX xmlns="http://knx.org/xml/project/23"><MasterData Version="1"><MaskVersions>
               <MaskVersion Id="MV-0012" MaskVersion="18" Name="BCU1" ManagementModel="Bcu1"/>

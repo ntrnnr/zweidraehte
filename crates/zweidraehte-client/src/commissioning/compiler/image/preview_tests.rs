@@ -1,7 +1,6 @@
 use super::*;
-use crate::commissioning::catalog::ProgrammingCatalog;
-use crate::commissioning::catalog::profile::ProfileDiscovery;
 use crate::commissioning::catalog::profile::{ObjectSelector, Occurrence};
+use crate::commissioning::catalog_testing::*;
 use crate::commissioning::error::CompileError;
 use crate::commissioning::image::ImageSpace;
 use crate::commissioning::image::{ImageLocation, ImageSegment, NativeImageRegion, SparseDeviceImage};
@@ -101,14 +100,14 @@ fn exact_frontend_previews_cover_classic_programming_families() {
 #[test]
 fn pending_full_preview_does_not_invent_table_width_or_block_address_only_preview() {
     let catalog = catalog(23);
-    let xml = catalog.document().source_xml().replace(
+    let xml = catalog.source_xml().replace(
         "<Resource Name=\"ApplicationDataPtr\"",
         r#"<Resource Name="GroupAssociationTable" Access="remote">
           <Location AddressSpace="StandardMemory" StartAddress="1024"/>
           <ResourceType Length="2" Flavour="AssociationTable_SystemB"/>
         </Resource><Resource Name="ApplicationDataPtr""#,
     );
-    let catalog = ProgrammingCatalog::from_xml(&xml).expect("pending capability fixture parses");
+    let catalog = parse_master_data(&xml).expect("pending capability fixture parses");
     let product = product("MV-07B0", "DefaultProcedure", true, false);
     let configuration = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15))
         .with_com_objects(product.com_objects().to_vec());
@@ -120,7 +119,7 @@ fn pending_full_preview_does_not_invent_table_width_or_block_address_only_previe
     ]));
 
     let device = MaterializedDevice::new(product, configuration, Vec::new(), ResolvedKeyMaterial::new(None))
-        .bind_master_data(catalog.document())
+        .bind_master_data(std::sync::Arc::clone(&catalog))
         .expect("fixture catalogue binds");
     let input = ProgrammingInput::new(device, CommissioningIntent::AssignAddress, CompileOptions {
         target: TargetSelection::ExistingAddress(IndividualAddress::new(1, 1, 1)),
@@ -128,12 +127,11 @@ fn pending_full_preview_does_not_invent_table_width_or_block_address_only_previe
         progress_messages_by_reference: BTreeMap::new(),
         progress_messages_by_id: BTreeMap::new(),
     });
-    let selection = crate::commissioning::ProfileSelection::new(ProfileDiscovery {
-        dd0: 0x07b0,
-        management_descriptor_01: None,
-        management_style: None,
-    });
-    let image = input.preview(&selection).expect("address-only preview never needs table width");
+    let selection = ProfileSelection {
+        discovery: ProfileDiscovery { dd0: 0x07b0, management_descriptor_01: None, management_style: None },
+        variant_hint: VariantHint::Automatic,
+    };
+    let image = input.preview_selection(&selection).expect("address-only preview never needs table width");
     assert!(image.is_complete());
     assert!(image.image().is_empty());
 }
@@ -180,24 +178,27 @@ fn frontend_preview_preserves_product_segment_boundaries_and_capacity() {
 }
 
 fn configuration_preview(
-    catalog: &ProgrammingCatalog,
+    catalog: &std::sync::Arc<MasterData>,
     product: &ProductData,
     configuration: &LoweredDeviceConfiguration,
 ) -> Result<crate::commissioning::ProgramImage, CompileError> {
     let device =
         MaterializedDevice::new(product.clone(), configuration.clone(), Vec::new(), ResolvedKeyMaterial::new(None))
-            .bind_master_data(catalog.document())
+            .bind_master_data(std::sync::Arc::clone(catalog))
             .expect("exact fixture catalogue binds");
-    let selection = crate::commissioning::ProfileSelection::new(ProfileDiscovery {
-        dd0: product.mask_version().expect("fixture mask").as_u16(),
-        management_descriptor_01: None,
-        management_style: None,
-    });
+    let selection = ProfileSelection {
+        discovery: ProfileDiscovery {
+            dd0: product.mask_version().expect("fixture mask").as_u16(),
+            management_descriptor_01: None,
+            management_style: None,
+        },
+        variant_hint: VariantHint::Automatic,
+    };
     let input = ProgrammingInput::new(device, CommissioningIntent::Download(DownloadMode::Automatic), CompileOptions {
         target: TargetSelection::ExistingAddress(configuration.individual_address),
         automatic_sections: None,
         progress_messages_by_reference: BTreeMap::new(),
         progress_messages_by_id: BTreeMap::new(),
     });
-    input.preview(&selection)
+    input.preview_selection(&selection)
 }

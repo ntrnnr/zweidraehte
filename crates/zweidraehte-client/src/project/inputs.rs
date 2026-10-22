@@ -3,8 +3,8 @@
 use super::product::ProductCache;
 use super::revision::{FileRevision, file_digest};
 use super::{
-    BatchSelection, ProgrammingBatchPlan, ProjectCommissioningSession, ProjectPlanner, ProjectProduct,
-    ProjectProgrammingCatalogs, ProjectProgrammingInputs,
+    BatchSelection, ProgrammingBatchPlan, ProjectCommissioningSession, ProjectMasterData, ProjectPlanner,
+    ProjectProduct, ProjectProgrammingInputs,
 };
 use crate::commissioning::{CommissioningIntent, TargetSelection};
 use crate::project::error::{Error, Result};
@@ -59,17 +59,17 @@ pub enum ProjectSetupRequirement {
     PhysicalTarget { device: ProjectDeviceId },
 }
 
-/// One immutable set of product documents and their selected catalogs.
+/// One immutable set of product documents and their selected Master Data.
 #[derive(Debug)]
 pub(super) struct ProductInputs {
     pub products: BTreeMap<ProjectDeviceId, ProjectProduct>,
-    pub catalogs: ProjectProgrammingCatalogs,
+    pub master_data: ProjectMasterData,
 }
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct ProjectResourceCache {
     products: ProductCache,
-    catalogs: Option<([u8; 32], ProjectProgrammingCatalogs)>,
+    master_data: Option<([u8; 32], ProjectMasterData)>,
 }
 
 #[derive(Clone, Copy)]
@@ -94,23 +94,23 @@ impl ProjectResourceCache {
         // Watch an explicit installation catalog's bytes before reading. Only
         // products with an explicitly bound catalog leave it unused; automatic
         // sources retain their resolver.
-        let catalogs = if let Some(path) = master_data.filter(|_| needs_catalog) {
+        let selected = if let Some(path) = master_data.filter(|_| needs_catalog) {
             let digest = file_digest(path)?;
             files.0.insert(path.to_path_buf(), digest);
-            match &self.catalogs {
-                Some((previous, catalogs)) if Some(*previous) == digest => catalogs.clone(),
+            match &self.master_data {
+                Some((previous, selected)) if Some(*previous) == digest => selected.clone(),
                 _ => {
-                    let catalogs = ProjectProgrammingCatalogs::load_for(&products, Some(path))?;
-                    self.catalogs = digest.map(|digest| (digest, catalogs.clone()));
-                    catalogs
+                    let selected = ProjectMasterData::load_for(&products, Some(path))?;
+                    self.master_data = digest.map(|digest| (digest, selected.clone()));
+                    selected
                 }
             }
         } else if matches!(acquisition, CatalogAcquisition::Automatic) {
-            ProjectProgrammingCatalogs::load_for(&products, None)?
+            ProjectMasterData::load_for(&products, None)?
         } else {
-            ProjectProgrammingCatalogs::default()
+            ProjectMasterData::default()
         };
-        Ok(ProductInputs { products, catalogs })
+        Ok(ProductInputs { products, master_data: selected })
     }
 }
 
@@ -194,7 +194,7 @@ impl ProjectOperationInputs {
     pub fn programming_inputs(&self) -> ProjectProgrammingInputs<'_> {
         ProjectProgrammingInputs {
             products: &self.resources.products,
-            catalogs: &self.resources.catalogs,
+            master_data: &self.resources.master_data,
             keyring: self.keyring.as_ref(),
         }
     }
@@ -209,7 +209,7 @@ impl ProjectOperationInputs {
             self.store.keys().map(|keys| keys as &dyn KeyMaterialSource),
             self.keyring.as_ref(),
         )
-        .with_catalogs(Some(&self.resources.catalogs))
+        .with_master_data(&self.resources.master_data)
     }
 
     /// Evaluate this request and recheck its files before returning the plan.

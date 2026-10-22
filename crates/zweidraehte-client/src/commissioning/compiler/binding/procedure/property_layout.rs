@@ -56,10 +56,7 @@ impl ProcedureLowerer<'_> {
         let included = |name: &str| name != "PeiprogId" || self.context.peiprog_identity_reference;
         let identity = |name: &str| matches!(name, "ApplicationId" | "PeiprogId");
         let width = |read| {
-            profile
-                .catalog
-                .property_width(profile, object, property_id, read, Some(&resources))
-                .map_err(|error| error.with_path(path))
+            profile.property_width(object, property_id, read, Some(&resources)).map_err(|error| error.with_path(path))
         };
         let write_width = if wire_read == Some(false)
             || parameter_owned

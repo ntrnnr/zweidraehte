@@ -17,6 +17,8 @@ regex = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
 uuid = { version = "1.21.0", features = ["v4"] }
+# Every parsed Master Data document carries its content fingerprint.
+sha2 = { workspace = true, features = ["std"] }
 
 # Archive support
 zip = { version = "2.2", default-features = false, features = ["deflate"], optional = true }
@@ -37,14 +39,13 @@ aes = { version = "0.8", optional = true }
 cbc = { version = "0.1", optional = true }
 hmac = { version = "0.12", optional = true }
 pbkdf2 = { version = "0.12", optional = true }
-sha2 = { workspace = true, features = ["std"], optional = true }
 getrandom = { version = "0.3", optional = true }
 serde_json = { workspace = true, optional = true }
 boa_engine = { version = "0.22.0", optional = true, default-features = false }
 
 [features]
 default = []
-archives = ["dep:zip", "dep:sha2", "dep:serde_json"]
+archives = ["dep:zip", "dep:serde_json"]
 signing = [
     "archives",
     "dep:sha1",
@@ -58,7 +59,6 @@ knxkeys = [
     "dep:cbc",
     "dep:hmac",
     "dep:pbkdf2",
-    "dep:sha2",
     "dep:getrandom",
 ]
 master-data-download = ["dep:reqwest", "dep:directories"]

@@ -1,9 +1,6 @@
 //! One compiler owns the mutable image and procedure; its input is borrowed.
-use crate::commissioning::catalog::ProgrammingCatalog;
 use crate::commissioning::catalog::profile::ImageRequirement;
-use crate::commissioning::catalog::profile::{
-    ProfileRequest, ProfileSelection, ProfileSelectionSource, ResolvedProfile,
-};
+use crate::commissioning::catalog::profile::ResolvedProfile;
 use crate::commissioning::compiler::image::ProgramImage;
 use crate::commissioning::compiler::program::CompiledProgram;
 use crate::commissioning::compiler::selection::RecipeSet;
@@ -78,29 +75,30 @@ fn refuse_unprogrammable(input: &ProgrammingInput, profile: &ResolvedProfile) ->
 }
 
 impl<'a> ProgramCompiler<'a> {
-    pub(crate) fn new(input: &'a ProgrammingInput, selection: &ProfileSelection) -> Result<Self, CompileError> {
-        refuse_unaddressable(input)?;
-        refuse_not_loadable(input)?;
-        let catalog = ProgrammingCatalog::for_product(input.device.product())?;
-
-        let request = ProfileRequest {
-            discovery: selection.discovery.clone(),
-            product: Some(input.device.product()),
-            variant_hint: selection.variant_hint,
-        };
-        let mut profile = match selection.source {
-            ProfileSelectionSource::DeviceDiscovery => catalog.resolve(request),
-            ProfileSelectionSource::ApplicationProfile => catalog.resolve_application_profile(request),
-        }?;
-
-        if let Some(width) = selection.association_table_entry_size {
-            profile = profile.with_association_table_entry_size(width)?;
+    /// Compile against a profile the caller resolved for this exact product.
+    ///
+    /// The profile is the single resolution of this target: the compiler never
+    /// resolves again, so the caller cannot audit one profile while compiling
+    /// another. A profile resolved for another product or Master Data
+    /// document is refused.
+    pub(crate) fn new(input: &'a ProgrammingInput, profile: &ResolvedProfile) -> Result<Self, CompileError> {
+        let product = input.device.product();
+        if profile.product_id.as_deref() != Some(product.id()) {
+            return Err(CompileError::invalid(format!(
+                "profile {} was resolved for {}, not for product `{}`",
+                profile.mask(),
+                profile.product_id.as_deref().map_or("no product".to_owned(), |id| format!("product `{id}`")),
+                product.id()
+            )));
         }
-        for ((object, property_id), pdt) in &selection.observed_property_types {
-            profile = profile.with_observed_property_type(object.clone(), *property_id, *pdt)?;
+        if product.master_data() != Some(&profile.master_data) {
+            return Err(CompileError::invalid(format!(
+                "profile {} was resolved from other Master Data than product `{}` is bound to",
+                profile.mask(),
+                product.id()
+            )));
         }
-
-        Self::from_profile(input, profile)
+        Self::from_profile(input, profile.clone())
     }
 
     pub(crate) fn from_profile(

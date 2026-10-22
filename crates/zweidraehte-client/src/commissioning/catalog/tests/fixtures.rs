@@ -1,7 +1,8 @@
 //! Shared synthetic catalog fixtures; no downloaded or vendor contents.
 
-use super::super::{CompileError, ProgrammingCatalog};
-use crate::commissioning::catalog::profile::{ProfileDiscovery, ProfileRequest, ResolvedProfile, VariantHint};
+use super::super::CompileError;
+use crate::commissioning::catalog::profile::ResolvedProfile;
+use crate::commissioning::catalog_testing::*;
 use std::path::PathBuf;
 use zweidraehte_ets_files::product::ProductData;
 
@@ -213,7 +214,7 @@ pub(super) fn product(mask: &str, load_style: &str, modern_coupler: bool) -> Pro
     product_with_schema(23, mask, load_style, modern_coupler)
 }
 
-pub(super) fn product_with_schema(version: u16, mask: &str, load_style: &str, modern_coupler: bool) -> ProductData {
+fn product_with_schema(version: u16, mask: &str, load_style: &str, modern_coupler: bool) -> ProductData {
     product_with_namespace(&format!("http://knx.org/xml/project/{version}"), mask, load_style, modern_coupler)
 }
 
@@ -248,20 +249,20 @@ pub(super) fn unauditable_catalog() -> String {
 }
 
 pub(super) fn resolve_location_cases() -> ResolvedProfile {
-    ProgrammingCatalog::from_xml(RESOURCE_LOCATION_CASES)
-        .expect("catalog parses")
-        .resolve(ProfileRequest {
+    resolve_catalog_profile(
+        &parse_master_data(RESOURCE_LOCATION_CASES).expect("catalog parses"),
+        None,
+        &ProfileSelection {
             discovery: ProfileDiscovery { dd0: 0x0013, management_descriptor_01: None, management_style: None },
-            product: None,
             variant_hint: VariantHint::Automatic,
-        })
-        .expect("location profile resolves")
+        },
+    )
+    .expect("location profile resolves")
 }
 
 pub(super) fn resolve_resource_selection(xml: &str) -> Result<ResolvedProfile, CompileError> {
-    ProgrammingCatalog::from_xml(xml).expect("syntax remains parseable").resolve(ProfileRequest {
+    resolve_catalog_profile(&parse_master_data(xml).expect("syntax remains parseable"), None, &ProfileSelection {
         discovery: ProfileDiscovery { dd0: 0x0012, management_descriptor_01: None, management_style: None },
-        product: None,
         variant_hint: VariantHint::Automatic,
     })
 }

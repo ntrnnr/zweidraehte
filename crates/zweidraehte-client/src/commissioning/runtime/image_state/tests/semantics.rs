@@ -1,5 +1,6 @@
 //! Preserve behavioral regressions from the former management simulator.
 use super::*;
+use crate::commissioning::catalog_testing::*;
 use crate::commissioning::runtime::TransferContext;
 
 fn numeric_lookup_comparison(lookup: PropertyDataTypeLookup) -> ProcedureOperation {
@@ -725,8 +726,8 @@ use crate::commissioning::error::{CleanupOperation, TransportCause};
 use crate::commissioning::image::ImageSegment;
 use std::cell::Cell;
 
-fn observation_catalog(resources: &str) -> crate::commissioning::catalog::ProgrammingCatalog {
-    crate::commissioning::catalog::ProgrammingCatalog::from_xml(&format!(r#"
+fn observation_catalog(resources: &str) -> std::sync::Arc<MasterData> {
+    parse_master_data(&format!(r#"
       <KNX xmlns="http://knx.org/xml/project/20"><MasterData Id="MD" Version="1"><MaskVersions>
         <MaskVersion Id="MV-0012" MaskVersion="18" Name="BCU1" ManagementModel="Bcu1" MediumTypeRefId="MT-0">
           <HawkConfigurationData><Features><Feature Name="AuthorizeLevels" Value="16"/></Features>
@@ -738,7 +739,6 @@ fn observation_catalog(resources: &str) -> crate::commissioning::catalog::Progra
 
 #[tokio::test]
 async fn discovery_reads_identity_before_authorization_and_failed_serial_reads_do_not_publish_facts() {
-    use crate::commissioning::catalog::profile::VariantHint;
     use crate::commissioning::input::CompileOptions;
     use crate::commissioning::input::{CommissioningIntent, ProgrammingInput, TargetSelection};
     use crate::commissioning::runtime::commissioner::Commissioner;
@@ -821,20 +821,21 @@ async fn discovery_reads_identity_before_authorization_and_failed_serial_reads_d
 
 #[tokio::test]
 async fn serial_resources_use_the_same_zero_based_occurrence_binding_as_control_properties() {
-    use crate::commissioning::catalog::profile::{ProfileDiscovery, ProfileRequest, VariantHint};
     use crate::commissioning::runtime::prepare::profile::read_profile_serial_number;
 
     for (occurrence, instance) in [("", 1), (r#"Occurrence="0""#, 1), (r#"Occurrence="1""#, 2)] {
-        let profile = observation_catalog(&format!(
-            r#"<Resource Name="DeviceSerialNumber" Access="remote">
+        let profile = resolve_catalog_profile(
+            &observation_catalog(&format!(
+                r#"<Resource Name="DeviceSerialNumber" Access="remote">
           <Location AddressSpace="Property" InterfaceObjectRef="0" PropertyID="11" StartAddress="0" {occurrence}/>
           <ResourceType Length="6"/></Resource>"#
-        ))
-        .resolve(ProfileRequest {
-            discovery: ProfileDiscovery { dd0: 0x0012, management_descriptor_01: None, management_style: None },
-            product: None,
-            variant_hint: VariantHint::Automatic,
-        })
+            )),
+            None,
+            &ProfileSelection {
+                discovery: ProfileDiscovery { dd0: 0x0012, management_descriptor_01: None, management_style: None },
+                variant_hint: VariantHint::Automatic,
+            },
+        )
         .expect("serial resource profile");
         let (bus, rx) = bus();
         let mut session =
@@ -3030,7 +3031,6 @@ fn differential_and_optimistic_ranges_keep_their_distinct_equal_edge_policies() 
 #[tokio::test]
 async fn address_write_status_survives_failed_verification_and_cleanup_tries_both_addresses() {
     use crate::bus::access::ManagementCredential;
-    use crate::commissioning::catalog::profile::{ProfileDiscovery, ProfileRequest, VariantHint};
     use crate::commissioning::compiler::compile_fixture;
     use crate::commissioning::input::CompileOptions;
     use crate::commissioning::input::facts::{ObservedTarget, ProgrammingFacts};
@@ -3045,13 +3045,11 @@ async fn address_write_status_survives_failed_verification_and_cleanup_tries_bot
         <Location AddressSpace="SystemProperty" InterfaceObjectRef="3" PropertyID="54" StartAddress="0"/>
         <ResourceType Length="1"/></Resource>"#,
     );
-    let profile = catalog
-        .resolve(ProfileRequest {
-            discovery: ProfileDiscovery { dd0: 0x0012, management_descriptor_01: None, management_style: None },
-            product: None,
-            variant_hint: VariantHint::Automatic,
-        })
-        .expect("addressing profile");
+    let profile = resolve_catalog_profile(&catalog, None, &ProfileSelection {
+        discovery: ProfileDiscovery { dd0: 0x0012, management_descriptor_01: None, management_style: None },
+        variant_hint: VariantHint::Automatic,
+    })
+    .expect("addressing profile");
     let mut input = ProgrammingInput::new(
         MaterializedDevice::new(
             ProductData::default().with_fixture_mask_version_id("MV-0012"),

@@ -42,7 +42,7 @@ impl ProcedureLowerer<'_> {
 
         let profile = self.context.profile;
         let resources = property_resources(profile, object, control.prop_id)?;
-        Ok(profile.catalog.property_width(profile, object, control.prop_id, false, Some(&resources))?.is_none())
+        Ok(profile.property_width(object, control.prop_id, false, Some(&resources))?.is_none())
     }
 
     /// Whether an image-backed property write has no image layout at all.
@@ -58,12 +58,7 @@ impl ProcedureLowerer<'_> {
         // whether it has an image source; repeated geometries can still omit it.
         if control.start_element.unwrap_or(1) != 0
             && control.count.unwrap_or(1) != 0
-            && self
-                .context
-                .profile
-                .catalog
-                .procedure_property_buffer_width(self.context.profile, &object, control.prop_id)?
-                .is_some()
+            && self.context.profile.procedure_property_buffer_width(&object, control.prop_id)?.is_some()
         {
             return Ok(false);
         }
@@ -195,12 +190,7 @@ impl ProcedureLowerer<'_> {
             && start_element != 0
             && count != 0
             && (self.feature_supplies(&object, start_element, count)
-                || self
-                    .context
-                    .profile
-                    .catalog
-                    .procedure_property_buffer_width(self.context.profile, &object, control.prop_id)?
-                    .is_some())
+                || self.context.profile.procedure_property_buffer_width(&object, control.prop_id)?.is_some())
             && let Some(length) = write_length
         {
             let offset = u32::from(start_element - 1)
@@ -318,10 +308,8 @@ impl ProcedureLowerer<'_> {
                 crate::commissioning::procedure::operands::property_target(&object, control.prop_id, start_element)
                     .map_err(|error| error.with_path(path))?;
             let profile = self.context.profile;
-            let lookup = profile
-                .catalog
-                .property_data_type_lookup(profile, &object, control.prop_id)
-                .map_err(|error| error.with_path(path))?;
+            let lookup =
+                profile.property_data_type_lookup(&object, control.prop_id).map_err(|error| error.with_path(path))?;
             let cache = compare_cache_policy(control.allow_cached_value);
             let invert = control.invert.unwrap_or(false);
             let retry_interval_milliseconds = control.retry_interval;
@@ -506,10 +494,8 @@ impl ProcedureLowerer<'_> {
                 return Err(CompileError::at(path, "described image read requires ordinary property elements"));
             }
             let profile = self.context.profile;
-            let lookup = profile
-                .catalog
-                .property_data_type_lookup(profile, &object, control.prop_id)
-                .map_err(|error| error.with_path(path))?;
+            let lookup =
+                profile.property_data_type_lookup(&object, control.prop_id).map_err(|error| error.with_path(path))?;
             // No image segment is needed to compile a read: the reference
             // discovers its PDT before deciding which bytes the image owns.
             // Keep that lookup live rather than inventing an initial buffer.

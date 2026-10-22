@@ -27,7 +27,7 @@ fn association_entry_size_resolves_generic_profile_without_changing_other_facts(
                 .expect("known flavour"),
             Some(flavour.parse().expect("known resource flavour"))
         );
-        assert_eq!(resolved.master_data_fingerprint, original.master_data_fingerprint);
+        assert_eq!(resolved.master_data_fingerprint(), original.master_data_fingerprint());
         assert_eq!(resolved.mask, original.mask);
         assert_eq!(resolved.clone().with_association_table_entry_size(size).expect("same size agrees"), resolved);
     }

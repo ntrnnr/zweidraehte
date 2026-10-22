@@ -1,4 +1,4 @@
-use crate::commissioning::catalog::ProgrammingCatalog;
+use crate::commissioning::catalog_testing::*;
 use crate::commissioning::compiler::image::application_identity_resource_value;
 use crate::commissioning::compiler::image::parameters::encode_parameter;
 use crate::commissioning::compiler::image::tables::{
@@ -20,7 +20,7 @@ use zweidraehte_ets_files::product::{
 use zweidraehte_ets_files::product::{ComObjectDef, ParameterByteOrder};
 use zweidraehte_proto::address::IndividualAddress;
 
-use crate::commissioning::catalog::profile::{ProfileDiscovery, ProfileRequest, ResourceFlavour, VariantHint};
+use crate::commissioning::catalog::profile::ResourceFlavour;
 use crate::configuration::GroupLink;
 
 mod identity;
@@ -30,7 +30,7 @@ mod reservations;
 mod scoped;
 mod tables;
 
-fn plain_fixture() -> (ProgrammingCatalog, ResolvedProfile, ProductData, LoweredDeviceConfiguration) {
+fn plain_fixture() -> (std::sync::Arc<MasterData>, ResolvedProfile, ProductData, LoweredDeviceConfiguration) {
     // These tests exercise image behavior. Remove the independently tested
     // ROM fixup so an unrelated Master Data function is not a dependency.
     let (before, tail) = BCU1_MTXML.split_once("<FixupList>").expect("fixture has fixups");
@@ -40,7 +40,7 @@ fn plain_fixture() -> (ProgrammingCatalog, ResolvedProfile, ProductData, Lowered
     let mut segments = product.segments().to_vec();
     segments[0].data[80] = 2;
     let product = product.with_fixture_segments(segments);
-    let catalog = ProgrammingCatalog::from_xml(r#"<KNX xmlns="http://knx.org/xml/project/20"><MasterData Id="MD" Version="1"><MaskVersions /></MasterData></KNX>"#).expect("empty catalog parses");
+    let catalog = parse_master_data(r#"<KNX xmlns="http://knx.org/xml/project/20"><MasterData Id="MD" Version="1"><MaskVersions /></MasterData></KNX>"#).expect("empty catalog parses");
     let mut project = LoweredDeviceConfiguration::new(IndividualAddress::new(1, 1, 1), Some(15));
     project.links.push(GroupLink { group_address: GroupAddress::from_three_level(1, 2, 3), com_object: 0 });
     let configuration = project.with_com_objects(product.com_objects().to_vec());
@@ -93,7 +93,7 @@ fn image_context<'a>(
 }
 
 fn compile_unload(
-    _catalog: &ProgrammingCatalog,
+    _catalog: &std::sync::Arc<MasterData>,
     profile: &ResolvedProfile,
     product: &ProductData,
     configuration: &LoweredDeviceConfiguration,
@@ -106,7 +106,7 @@ fn compile_unload(
 }
 
 fn compile_full_image(
-    _catalog: &ProgrammingCatalog,
+    _catalog: &std::sync::Arc<MasterData>,
     profile: &ResolvedProfile,
     product: &ProductData,
     configuration: &LoweredDeviceConfiguration,
@@ -167,7 +167,7 @@ fn table_profile_for_mask(mask: u16, model: &str, address: &str, association: &s
         )
     })
     .collect();
-    let catalog = ProgrammingCatalog::from_xml(&format!(
+    let catalog = parse_master_data(&format!(
         r#"
         <KNX xmlns="http://knx.org/xml/project/20"><MasterData Id="MD" Version="1"><MaskVersions>
           <MaskVersion Id="MV-{mask:04X}" MaskVersion="{mask}" Name="Image fixture" ManagementModel="{model}" MediumTypeRefId="MT-0">
@@ -178,21 +178,19 @@ fn table_profile_for_mask(mask: u16, model: &str, address: &str, association: &s
         </MaskVersions></MasterData></KNX>"#
     ))
     .expect("image catalogue parses");
-    catalog
-        .resolve(ProfileRequest {
-            discovery: ProfileDiscovery {
-                dd0: mask,
-                management_descriptor_01: None,
-                management_style: Some(if model == "Bcu1" {
-                    crate::commissioning::catalog::profile::ResourceManagementStyle::Simple
-                } else {
-                    crate::commissioning::catalog::profile::ResourceManagementStyle::LoadStateMachine
-                }),
-            },
-            product: None,
-            variant_hint: VariantHint::Automatic,
-        })
-        .expect("image profile resolves")
+    resolve_catalog_profile(&catalog, None, &ProfileSelection {
+        discovery: ProfileDiscovery {
+            dd0: mask,
+            management_descriptor_01: None,
+            management_style: Some(if model == "Bcu1" {
+                crate::commissioning::catalog::profile::ResourceManagementStyle::Simple
+            } else {
+                crate::commissioning::catalog::profile::ResourceManagementStyle::LoadStateMachine
+            }),
+        },
+        variant_hint: VariantHint::Automatic,
+    })
+    .expect("image profile resolves")
 }
 
 #[test]

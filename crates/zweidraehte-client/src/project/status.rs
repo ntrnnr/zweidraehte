@@ -6,7 +6,7 @@
 
 use super::inputs::{CatalogAcquisition, ProductInputs, ProjectResourceCache};
 use super::revision::FileRevision;
-use super::{BatchSelection, ProgrammingView, ProjectPlanner, ProjectProduct, ProjectProgrammingCatalogs};
+use super::{BatchSelection, ProgrammingView, ProjectMasterData, ProjectPlanner, ProjectProduct};
 use crate::commissioning::{CommissioningIntent, DownloadMode};
 use crate::project::error::{Error, Result};
 use crate::security::Keyring;
@@ -165,8 +165,8 @@ impl ProjectStatusInputs {
     pub fn products(&self) -> &BTreeMap<ProjectDeviceId, ProjectProduct> {
         &self.resources.products
     }
-    pub fn catalogs(&self) -> &ProjectProgrammingCatalogs {
-        &self.resources.catalogs
+    pub fn master_data(&self) -> &ProjectMasterData {
+        &self.resources.master_data
     }
     pub fn planner(&self) -> ProjectPlanner<'_> {
         ProjectPlanner::new(
@@ -176,7 +176,7 @@ impl ProjectStatusInputs {
             self.store.keys().map(|keys| keys as &dyn KeyMaterialSource),
             self.keyring.as_ref(),
         )
-        .with_catalogs(Some(&self.resources.catalogs))
+        .with_master_data(&self.resources.master_data)
     }
 
     pub fn snapshot(&self) -> Result<ProgrammingSnapshot> {
@@ -218,7 +218,7 @@ impl ProjectPlanner<'_> {
             hash.part(id.0.as_bytes());
             hash.json(product.document())?;
             hash.json(&product.product().programming_identity())?;
-            let catalog = self.catalogs.cloned().unwrap_or_default().for_product(product.product())?;
+            let catalog = self.master_data.cloned().unwrap_or_default().for_product(product.product())?;
             hash.part(&catalog.fingerprint());
         }
         if let Some(keys) = self.keys {

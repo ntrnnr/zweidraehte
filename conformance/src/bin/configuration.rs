@@ -42,15 +42,15 @@ use zweidraehte_client::commissioning::{
     Commissioner, CommissionerOptions, CommissioningCancellation, CommissioningEvent, CommissioningIntent,
     CommissioningSectionOutcome, CommissioningStage, CompileOptions, CompiledProgram, DownloadMode, ExecutionReport,
     ImageSpace, ManagementAccessOptions, ManagementModel, MutationStatus, ObjectSelector, PreparationOptions,
-    ProgramSections, ProgrammingCatalog, ProgrammingCatalogLoadRequest, ProgrammingInput, ProgrammingModePolling,
-    ResourceManagementStyle, RestartKind, TargetSelection, UnloadMode,
+    ProgramSections, ProgrammingInput, ProgrammingModePolling, ResourceManagementStyle, RestartKind, TargetSelection,
+    UnloadMode,
 };
 use zweidraehte_client::configuration::ResolvedKeyMaterial;
 use zweidraehte_client::configuration::{
     GroupLink, GroupObjectProtection, GroupObjectSecurity, LoweredDeviceConfiguration, MaterializedDevice,
     ParameterValue, SecurityConfig as DownloadSecurityConfig,
 };
-use zweidraehte_client::project::{BatchSelection, ProjectPlanner, ProjectProduct, ProjectProgrammingCatalogs};
+use zweidraehte_client::project::{BatchSelection, ProjectMasterData, ProjectPlanner, ProjectProduct};
 use zweidraehte_client::{
     ConnectorInfo, DeviceConnection, GroupAddress, GroupService, GroupValueEncoding, IndividualAddress,
     InterfaceObjectType, KnxBus, SecurityEntry,
@@ -119,12 +119,26 @@ async fn commission_operation_with_sections(
     automatic_sections: Option<ProgramSections>,
     context: &str,
 ) -> Result<ExecutionReport, String> {
-    let product = device.product();
-    let loaded = ProgrammingCatalog::load(ProgrammingCatalogLoadRequest::Product(product))
-        .map_err(|error| format!("{context}: loading versioned Master Data: {error}"))?;
-    let device = device
-        .bind_master_data(loaded.catalog().document())
-        .map_err(|error| format!("{context}: associating Master Data: {error}"))?;
+    // Planned project devices arrive bound; direct fixtures select the
+    // product's installation document here, before commissioning.
+    let device = if device.product().master_data().is_some() {
+        device
+    } else {
+        let document = zweidraehte_ets_files::master_data::MasterDataLoadRequest::Product(device.product())
+            .load()
+            .map_err(|error| format!("{context}: loading versioned Master Data: {error}"))?;
+        let product = device
+            .product()
+            .clone()
+            .bind_master_data(document)
+            .map_err(|error| format!("{context}: associating Master Data: {error}"))?;
+        MaterializedDevice::new(
+            product,
+            device.configuration().clone(),
+            device.modules().to_vec(),
+            device.key_material().clone(),
+        )
+    };
     let commissioner = Commissioner::new(bus).with_options(CommissionerOptions {
         scan_window: Duration::from_millis(150),
         restart_delay: Duration::from_millis(50),
@@ -1079,10 +1093,10 @@ area {} conformance {{
     let authored = parse_fixture_project(source, "plain fixture")?;
     let id = ProjectDeviceId("dut".into());
     let products = [(id.clone(), ProjectProduct::new(product))].into_iter().collect();
-    let catalogs = ProjectProgrammingCatalogs::load_for(&products, None)
+    let catalogs = ProjectMasterData::load_for(&products, None)
         .map_err(|error| format!("loading plain fixture catalog: {error}"))?;
     let plan = ProjectPlanner::new(&authored, None, &products, Some(&FixtureKeySource::default()), None)
-        .with_catalogs(Some(&catalogs))
+        .with_master_data(&catalogs)
         .plan_commissioning(std::slice::from_ref(&id), BatchSelection::Selected, intent)
         .map_err(|error| format!("planning plain project fixture: {error}"))?;
     let planned = plan.devices().into_iter().next().ok_or_else(|| "plain project plan is empty".to_string())?;
@@ -1248,7 +1262,7 @@ area 1 conformance {{
     let keyring = fixture_keyring(serial_number, tool_key, &group_keys);
     let direct = FixtureKeySource::secure(tool_key, &source_group_keys);
     let empty = FixtureKeySource::default();
-    let catalogs = ProjectProgrammingCatalogs::load_for(&products, None)
+    let catalogs = ProjectMasterData::load_for(&products, None)
         .map_err(|error| format!("loading secure fixture catalog: {error}"))?;
     let selected = [ProjectDeviceId("dut".into())];
     let selection = BatchSelection::Selected;
@@ -1262,7 +1276,7 @@ area 1 conformance {{
             let conflicting =
                 FixtureKeySource::secure(tool_key, &[("test", conflicting_key), ("stale", stale_group_key)]);
             if ProjectPlanner::new(&authored_with_stale, None, &products, Some(&conflicting), Some(&keyring))
-                .with_catalogs(Some(&catalogs))
+                .with_master_data(&catalogs)
                 .plan_commissioning(
                     &selected,
                     selection,
@@ -1278,7 +1292,7 @@ area 1 conformance {{
 
     let plan = |project: &AuthoredProject| {
         let batch = ProjectPlanner::new(project, None, &products, Some(source), imported)
-            .with_catalogs(Some(&catalogs))
+            .with_master_data(&catalogs)
             .plan_commissioning(&selected, selection, CommissioningIntent::AssignAddressAndDownload(DownloadMode::Full))
             .map_err(|error| format!("planning secure project fixture: {error}"))?;
         let planned = batch.devices().first().ok_or_else(|| "secure project plan is empty".to_string())?;

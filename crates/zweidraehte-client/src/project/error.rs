@@ -85,10 +85,10 @@ pub enum Error {
     #[error(transparent)]
     ProjectBatch(Box<crate::project::ProjectBatchFailure>),
 
-    #[error("cannot load programming catalog")]
-    CatalogLoad(#[from] crate::commissioning::ProgrammingCatalogLoadError),
+    #[error("cannot load Master Data")]
+    MasterDataLoad(#[from] zweidraehte_ets_files::MasterDataError),
 
-    #[error("cannot resolve programming catalog")]
+    #[error("cannot use Master Data for programming")]
     Catalog(#[source] crate::commissioning::CompileError),
 
     #[error("product data: {0}")]

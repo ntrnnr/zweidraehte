@@ -1,5 +1,5 @@
 //! The live boundary reads identity, compiles once, then binds execution evidence.
-use crate::commissioning::catalog::ProgrammingCatalog;
+use crate::commissioning::catalog::{bound_master_data, validate_for_live_commissioning};
 use crate::commissioning::compiler::ProgramCompiler;
 use crate::commissioning::input::facts::{ObservedTarget, ProgrammingFacts};
 use crate::commissioning::input::security::DesiredDataSecurity;
@@ -32,12 +32,12 @@ impl Commissioner<'_> {
             let observes_group_security =
                 desired_data_security != DesiredDataSecurity::Preserve && input.intent.updates_group_communication();
 
-            // Raw catalog constructors deliberately support offline inspection of
+            // Raw Master Data documents deliberately support offline inspection of
             // incomplete or newer XML. Live preparation is the mutation boundary:
             // reject unsupported schema provenance before target acquisition.
             // Exact resources and controls are validated when selected below.
-            let catalog = ProgrammingCatalog::for_product(product)?;
-            catalog.validate_for_live_commissioning()?;
+            let master_data = std::sync::Arc::clone(bound_master_data(product)?);
+            validate_for_live_commissioning(&master_data)?;
             validate_differential_inputs(input.intent, differential_policy, deployment.is_some())?;
             validate_options(&self.options, configuration.configured_max_apdu)?;
             validate_credential_inputs(input.device.key_material())?;
@@ -53,7 +53,7 @@ impl Commissioner<'_> {
             event(CommissioningEvent::Stage(CommissioningStage::IdentifyingProfile));
             let ProfileObservation { profile, target_max_apdu, data_security } = self
                 .observe_profile(
-                    &catalog,
+                    &master_data,
                     &input,
                     variant_hint,
                     &mut target,

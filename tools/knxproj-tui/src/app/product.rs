@@ -6,7 +6,8 @@ use ratatui_image::{picker::Picker, protocol::StatefulProtocol};
 use std::collections::BTreeMap;
 #[cfg(feature = "images")]
 use std::collections::HashMap;
-use zweidraehte_client::commissioning::{ImageRequirement, ProgrammingCatalog};
+use std::sync::Arc;
+use zweidraehte_client::commissioning::ImageRequirement;
 use zweidraehte_client::project::product_object_flags;
 use zweidraehte_ets_files::product::SelectedProduct;
 use zweidraehte_ets_files::runtime::configuration::{
@@ -28,7 +29,7 @@ pub use presentation::*;
 pub struct ProductView {
     pub device: Device,
     /// Selected Master Data shared by display views and image compilation.
-    pub programming_catalog: ProgrammingCatalog,
+    pub master_data: Arc<MasterData>,
     pub tree_nodes: Vec<TreeNode>,
     pub content_items: Vec<ContentItem>,
     /// Natural terminal-cell width of the widest label on the current page.
@@ -73,11 +74,11 @@ pub(super) struct ProductEditor {
 
 impl ProductEditor {
     pub(super) fn new(product: PreparedEditorProduct) -> Self {
-        let PreparedEditorProduct { device, programming_catalog, language_context, current_language } = product;
+        let PreparedEditorProduct { device, master_data, language_context, current_language } = product;
         Self {
             view: ProductView {
                 device,
-                programming_catalog,
+                master_data,
                 language_context,
                 current_language,
                 tree_nodes: Vec::new(),
@@ -402,7 +403,7 @@ impl ProductEditor {
 
 impl ProductView {
     pub fn master_data(&self) -> &MasterData {
-        self.programming_catalog.as_ref()
+        &self.master_data
     }
 
     pub fn product_supports_data_secure(&self) -> bool {

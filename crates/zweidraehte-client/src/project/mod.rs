@@ -3,8 +3,8 @@
 use crate::commissioning::{AssociationTableEntrySize, ImageRequirement};
 use crate::commissioning::{
     CommissionerOptions, CommissioningIntent, CompileError, CompileOptions, CompiledProgram, DifferentialPolicy,
-    DownloadMode, ProfileDiscovery, ProfileRequest, ProfileSelection, ProgramSections, ProgrammingCatalog,
-    ProgrammingInput, ProgrammingModePolling, ResolvedProfile, TargetSelection, VariantHint,
+    DownloadMode, ProfileSelection, ProgramSections, ProgrammingInput, ProgrammingModePolling, ResolvedProfile,
+    TargetSelection,
 };
 use crate::configuration::{GroupObjectProtection, MaterializedDevice, ResolvedKeyMaterial};
 use crate::security::Keyring;
@@ -22,12 +22,12 @@ use zweidraehte_proto::address::GroupAddress;
 mod error;
 pub use error::{Error, Result};
 
-mod catalog;
 mod configuration;
 mod inputs;
 mod keyring;
 mod keys;
 mod management;
+mod master_data;
 mod operation;
 mod revision;
 mod status;
@@ -44,7 +44,7 @@ pub use operation::{ProjectFinalizationFailure, ProjectOperation, ProjectOperati
 pub use status::{ProgrammingSnapshot, ProjectStatusCache, ProjectStatusInputs, ProjectStatusRequest, StatusRevision};
 pub use target::SerialAddressingSupport;
 
-pub use catalog::ProjectProgrammingCatalogs;
+pub use master_data::ProjectMasterData;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchSelection {
@@ -280,15 +280,18 @@ impl PlannedProjectDevice {
 
     /// Compile the same IP-Secure-aware, non-secret plan used by prepared
     /// commissioning without exposing the private credential payload.
+    ///
+    /// `profile` must be resolved for this device, for example with
+    /// `self.device().resolve_profile(..)`.
     pub fn compile_preview(
         &self,
-        selection: crate::commissioning::ProfileSelection,
+        profile: &ResolvedProfile,
         intent: CommissioningIntent,
         options: CompileOptions,
         facts: crate::commissioning::ProgrammingFacts,
     ) -> core::result::Result<CompiledProgram, ProjectPlanPreviewError> {
         let input = crate::commissioning::ProgrammingInput::new(self.device.clone(), intent, options).facts(facts);
-        Ok(input.compile(&selection)?)
+        Ok(input.compile(profile)?)
     }
 }
 
@@ -408,7 +411,7 @@ pub struct ProjectPlanner<'a> {
     products: &'a BTreeMap<ProjectDeviceId, ProjectProduct>,
     keys: Option<&'a dyn KeyMaterialSource>,
     keyring: Option<&'a Keyring>,
-    catalogs: Option<&'a ProjectProgrammingCatalogs>,
+    master_data: Option<&'a ProjectMasterData>,
 }
 
 impl<'a> ProjectPlanner<'a> {
@@ -419,11 +422,13 @@ impl<'a> ProjectPlanner<'a> {
         keys: Option<&'a dyn KeyMaterialSource>,
         keyring: Option<&'a Keyring>,
     ) -> Self {
-        Self { project, state, products, keys, keyring, catalogs: None }
+        Self { project, state, products, keys, keyring, master_data: None }
     }
 
-    pub fn with_catalogs(mut self, catalogs: Option<&'a ProjectProgrammingCatalogs>) -> Self {
-        self.catalogs = catalogs;
+    /// Compile unbound products against this selected installation document.
+    /// Without it, only products whose package bound Master Data are usable.
+    pub fn with_master_data(mut self, master_data: &'a ProjectMasterData) -> Self {
+        self.master_data = Some(master_data);
         self
     }
 }
@@ -613,7 +618,7 @@ impl ProjectPlanner<'_> {
         included: &BTreeSet<ProjectDeviceId>,
         intent: CommissioningIntent,
     ) -> Result<BTreeMap<ProjectDeviceId, PlannedProjectDevice>> {
-        let Self { project, state, products, keys, keyring, catalogs } = *self;
+        let Self { project, state, products, keys, keyring, master_data } = *self;
         project.validate_download().map_err(|error| {
             Error::DeviceConfiguration(
                 error.diagnostics().iter().map(|diagnostic| diagnostic.message.as_str()).collect::<Vec<_>>().join("; "),
@@ -630,17 +635,17 @@ impl ProjectPlanner<'_> {
             return Ok(BTreeMap::new());
         }
         let keys = keys.unwrap_or(&empty);
-        // Evaluation is pure with respect to catalog acquisition. Packaged
-        // documents remain usable without an external catalog collection.
-        let bound_catalogs = ProjectProgrammingCatalogs::default();
-        let catalogs = catalogs.unwrap_or(&bound_catalogs);
+        // Evaluation is pure with respect to Master Data acquisition. Packaged
+        // documents remain usable without an installation document.
+        let bound_only = ProjectMasterData::default();
+        let master_data = master_data.unwrap_or(&bound_only);
         let includes_application = intent.download_mode().is_some();
         let senders = includes_application.then(|| derive_senders(project, &resolved, state));
         let mut evaluated = BTreeMap::new();
         for (id, lowered) in resolved {
             let authored = &project.devices[&id];
-            let catalog = catalogs.for_product(lowered.resolved.product())?;
-            let serial_addressing = SerialAddressingSupport::for_product(lowered.resolved.product(), &catalog);
+            let document = master_data.for_product(lowered.resolved.product())?;
+            let serial_addressing = SerialAddressingSupport::for_product(lowered.resolved.product(), &document);
             let supports_data_secure = lowered.resolved.product().supports_data_secure();
             // Management-only operations need credentials, not unrelated group keys.
             let resolved = lowered.resolved;
@@ -682,9 +687,9 @@ impl ProjectPlanner<'_> {
             if includes_application {
                 keys::validate_application_security(resolved.configuration(), keys.application_security())?;
             }
-            let device = resolved.into_materialized(keys)?.bind_master_data(catalog.document())?;
+            let device = resolved.into_materialized(keys)?.bind_master_data(document)?;
             let (mut desired_manifest, image_requirements) = if includes_application {
-                let image = device.project_preview(&id, authored, state, &catalog)?;
+                let image = device.project_preview(&id, authored, state)?;
                 let requirements = image.requirements().to_vec();
                 (image.manifest, requirements)
             } else {
@@ -761,7 +766,6 @@ impl MaterializedDevice {
         id: &ProjectDeviceId,
         authored: &ProjectDevice,
         state: Option<&MutableProjectState>,
-        catalog: &ProgrammingCatalog,
     ) -> Result<crate::commissioning::ProgramImage> {
         let product = self.product();
         let product_mask = product
@@ -769,20 +773,14 @@ impl MaterializedDevice {
             .ok_or_else(|| Error::DeviceConfiguration(format!("product `{}` has no mask version", product.id())))?;
         let previous =
             state.and_then(|state| state.deployment(&id.0)).and_then(|evidence| evidence.commissioning.as_ref());
-        let mut selection = ProfileSelection::new(ProfileDiscovery {
-            dd0: product_mask.as_u16(),
-            management_descriptor_01: previous
-                .filter(|record| record.mask.dd0 == product_mask.as_u16())
-                .and_then(|record| record.mask.management_descriptor_01),
-            management_style: None,
-        });
-        let profile = catalog
-            .resolve(ProfileRequest {
-                discovery: selection.discovery.clone(),
-                product: Some(product),
-                variant_hint: VariantHint::Automatic,
-            })
-            .map_err(Error::Catalog)?;
+        let mut selection = ProfileSelection::discovered(product_mask.as_u16());
+        if let Some(descriptor) = previous
+            .filter(|record| record.mask.dd0 == product_mask.as_u16())
+            .and_then(|record| record.mask.management_descriptor_01)
+        {
+            selection = selection.with_management_descriptor(descriptor);
+        }
+        let mut profile = self.resolve_profile(&selection).map_err(Error::Catalog)?;
         let observed_data_security = previous
             .filter(|record| recorded_profile_matches(&profile, record))
             .and_then(|record| record.data_security_enabled)
@@ -793,23 +791,25 @@ impl MaterializedDevice {
                     crate::commissioning::ObservedDataSecurity::Disabled
                 }
             });
-        selection.association_table_entry_size = previous
-            .filter(|record| recorded_profile_matches(&profile, record))
-            .and_then(|record| record.association_table_entry_size)
-            .map(|size| match size {
-                CommissioningAssociationEntrySize::TwoBytes => AssociationTableEntrySize::TwoBytes,
-                CommissioningAssociationEntrySize::FourBytes => AssociationTableEntrySize::FourBytes,
-            });
-        selection.observed_property_types = previous
-            .filter(|record| recorded_profile_matches(&profile, record))
-            .map(|record| {
-                record
-                    .observed_property_types
-                    .iter()
-                    .map(|observed| ((observed.object.clone(), observed.property_id), observed.pdt))
-                    .collect()
-            })
-            .unwrap_or_default();
+        // Refine the profile with what the matching deployment observed on
+        // this target. A record of another profile describes other hardware.
+        if let Some(record) = previous.filter(|record| recorded_profile_matches(&profile, record)) {
+            let compile_status =
+                |error: CompileError| Error::DeviceConfiguration(format!("could not compile `{id}` status: {error}"));
+            if let Some(size) = record.association_table_entry_size {
+                profile = profile
+                    .with_association_table_entry_size(match size {
+                        CommissioningAssociationEntrySize::TwoBytes => AssociationTableEntrySize::TwoBytes,
+                        CommissioningAssociationEntrySize::FourBytes => AssociationTableEntrySize::FourBytes,
+                    })
+                    .map_err(|error| compile_status(error.into()))?;
+            }
+            for observed in &record.observed_property_types {
+                profile = profile
+                    .with_observed_property_type(observed.object.clone(), observed.property_id, observed.pdt)
+                    .map_err(compile_status)?;
+            }
+        }
         let input = ProgrammingInput::new(
             self.clone(),
             CommissioningIntent::Download(DownloadMode::Automatic),
@@ -822,7 +822,7 @@ impl MaterializedDevice {
         )
         .facts(crate::commissioning::ProgrammingFacts { data_security: observed_data_security, ..Default::default() });
         input
-            .preview(&selection)
+            .preview(&profile)
             .map_err(|error| Error::DeviceConfiguration(format!("could not compile `{id}` status: {error}")))
     }
 }

@@ -1,121 +1,57 @@
+//! Which Master Data documents resolution and live commissioning accept.
+//!
+//! Acquisition (files, cache, installation selection) is tested with the
+//! loader in `zweidraehte_ets_files::master_data`; this layer only applies
+//! commissioning policy to a document it is handed.
+
 use super::*;
-use crate::commissioning::ProgrammingCatalogLoadError;
-use zweidraehte_ets_files::MasterDataError;
+use crate::commissioning::catalog::{bound_master_data, resolve_exact_mask, validate_for_live_commissioning};
 
 #[test]
-fn acquisition_keeps_file_and_xml_causes() {
-    use std::error::Error as _;
-    use std::io::ErrorKind;
+fn resolution_rejects_unsupported_schema_generations() {
+    let unsupported = parse_master_data(&AMBIGUOUS_0300.replace("/project/20", "/project/24"))
+        .expect("newer catalog remains inspectable");
+    let selection = ProfileSelection::discovered(0x0300).with_management_descriptor([0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
 
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let path = directory.path().join("missing-master.xml");
-    for error in [
-        ProgrammingCatalog::from_file(&path).err().expect("missing inspection source"),
-        ProgrammingCatalog::load(ProgrammingCatalogLoadRequest::File(&path)).err().expect("missing loading source"),
-    ] {
-        assert!(matches!(&error, ProgrammingCatalogLoadError::MasterData(MasterDataError::Io {
-            path: retained, source,
-        }) if retained == &path && source.kind() == ErrorKind::NotFound));
-        assert_eq!(
-            error.source().expect("I/O cause").downcast_ref::<std::io::Error>().expect("typed I/O").kind(),
-            ErrorKind::NotFound
-        );
-    }
+    let error = resolve_catalog_profile(&unsupported, None, &selection).expect_err("schema 24 is not compiled");
 
-    for error in [
-        ProgrammingCatalog::from_xml("<KNX><MasterData").err().expect("malformed inspection source"),
-        ProgrammingCatalog::load(ProgrammingCatalogLoadRequest::Xml("<KNX><MasterData"))
-            .err()
-            .expect("malformed loading source"),
-    ] {
-        let ProgrammingCatalogLoadError::MasterData(MasterDataError::Xml(source)) = &error else {
-            panic!("expected a typed XML error: {error:?}");
-        };
-        assert_eq!(error.source().expect("XML cause").to_string(), source.to_string());
-    }
+    assert_eq!(error.kind, CompileErrorKind::Unsupported);
+    assert!(error.message.contains("schema 24"));
 }
 
 #[test]
-fn loads_an_explicit_file_with_exact_versioned_provenance() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let path = directory.path().join("knx_master.xml");
-    std::fs::write(&path, AMBIGUOUS_0300).expect("fixture writes");
+fn resolution_keeps_versionless_documents_inspectable() {
+    let xml = TOPOLOGY_DEPENDENT_PROFILE.replace(r#" xmlns="http://knx.org/xml/project/23""#, "");
+    let catalog = parse_master_data(&xml).expect("versionless catalog remains inspectable");
 
-    let loaded = ProgrammingCatalog::load(ProgrammingCatalogLoadRequest::File(&path)).expect("catalog loads");
-    let direct = ProgrammingCatalog::from_file(&path).expect("direct catalog loads");
-
-    assert_eq!(loaded.catalog().fingerprint(), direct.fingerprint());
-    assert_eq!(loaded.provenance().master_data_schema_version, 20);
-    assert_eq!(loaded.provenance().master_data_id.as_deref(), Some("MD"));
-    assert_eq!(loaded.provenance().master_data_version, "1");
-    assert_eq!(loaded.provenance().fingerprint, direct.fingerprint());
-    assert_eq!(loaded.provenance().source, ProgrammingCatalogSource::ExplicitFile(path));
+    resolve_catalog_profile(&catalog, None, &ProfileSelection::discovered(0x0900))
+        .expect("offline inspection does not require a schema namespace");
 }
 
 #[test]
-fn products_of_every_generation_select_the_newest_installation() {
-    // The product's own generation never chooses its catalog: an installation
-    // compiles every product against its own, newest-generation catalog.
-    let missing = ProductData::default();
-    let products: Vec<_> = [11, 20, 23]
-        .into_iter()
-        .map(|version| product_with_schema(version, "MV-0900", "DefaultProcedure", false))
-        .chain([missing])
-        .collect();
-    for product in &products {
-        let selected = super::super::loading::select_source(ProgrammingCatalogLoadRequest::Product(product))
-            .expect("installation source");
+fn bound_master_data_completes_products_without_schema_provenance() {
+    let catalog = parse_master_data(TOPOLOGY_DEPENDENT_PROFILE).expect("catalog parses");
+    let product = ProductData::default().bind_master_data(std::sync::Arc::clone(&catalog)).expect("document binds");
+    let associated = bound_master_data(&product).expect("association supplies the document");
 
-        assert_eq!(
-            selected,
-            ProgrammingCatalogSource::Installation(Box::new(ProgrammingCatalogSource::VersionedResolver(23)))
-        );
-    }
+    assert!(std::sync::Arc::ptr_eq(associated, &catalog));
+    validate_for_live_commissioning(associated).expect("associated document provides its own provenance");
 }
 
 #[test]
-fn explicit_version_selects_exactly_that_generation() {
-    let selected =
-        super::super::loading::select_source(ProgrammingCatalogLoadRequest::Version(20)).expect("explicit generation");
+fn compilation_requires_bound_master_data() {
+    let error = bound_master_data(&ProductData::default()).expect_err("loose products have no document");
 
-    assert_eq!(selected, ProgrammingCatalogSource::VersionedResolver(20));
-}
-
-#[test]
-fn rejects_versionless_or_unsupported_master_data() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let path = directory.path().join("knx_master.xml");
-    std::fs::write(&path, r#"<KNX><MasterData Id="MD" Version="1" /></KNX>"#).expect("versionless fixture writes");
-
-    let versionless = ProgrammingCatalog::load(ProgrammingCatalogLoadRequest::File(&path));
-    assert!(matches!(
-        versionless,
-        Err(ProgrammingCatalogLoadError::MasterData(MasterDataError::MissingSchema { namespace: None }))
-    ));
-
-    let unsupported_xml = AMBIGUOUS_0300.replace("/project/20", "/project/24");
-    std::fs::write(&path, unsupported_xml).expect("unsupported fixture writes");
-    let unsupported = ProgrammingCatalog::load(ProgrammingCatalogLoadRequest::File(&path));
-    assert!(matches!(unsupported, Err(ProgrammingCatalogLoadError::Policy(error))
-            if error.kind == CompileErrorKind::Unsupported && error.message.contains("schema 24")));
-}
-
-#[test]
-fn explicit_master_data_completes_products_without_schema_provenance() {
-    let catalog = ProgrammingCatalog::from_xml(TOPOLOGY_DEPENDENT_PROFILE).expect("catalog parses");
-    let product = ProductData::default().bind_master_data(catalog.document()).expect("document binds");
-    let associated = ProgrammingCatalog::for_product(&product).expect("association supplies the catalog");
-
-    associated.validate_for_live_commissioning().expect("associated document provides its own provenance");
+    assert_eq!(error.kind, CompileErrorKind::MissingEvidence);
 }
 
 #[test]
 fn live_commissioning_rejects_missing_master_data_schema_namespace() {
     let xml = TOPOLOGY_DEPENDENT_PROFILE.replace(r#" xmlns="http://knx.org/xml/project/23""#, "");
-    let catalog = ProgrammingCatalog::from_xml(&xml).expect("versionless catalog remains inspectable");
+    let catalog = parse_master_data(&xml).expect("versionless catalog remains inspectable");
 
     let error =
-        catalog.validate_for_live_commissioning().expect_err("versionless Master Data cannot reach live commissioning");
+        validate_for_live_commissioning(&catalog).expect_err("versionless Master Data cannot reach live commissioning");
 
     assert_eq!(error.kind, CompileErrorKind::MissingEvidence);
     assert!(error.message.contains("namespace (None)"));
@@ -123,11 +59,10 @@ fn live_commissioning_rejects_missing_master_data_schema_namespace() {
 
 #[test]
 fn explicit_catalog_can_program_products_from_another_generation() {
-    let catalog = ProgrammingCatalog::from_xml(TOPOLOGY_DEPENDENT_PROFILE).expect("project-23 catalog parses");
+    let catalog = parse_master_data(TOPOLOGY_DEPENDENT_PROFILE).expect("project-23 catalog parses");
 
     for version in [11, 20] {
-        catalog
-            .validate_for_live_commissioning()
+        validate_for_live_commissioning(&catalog)
             .unwrap_or_else(|error| panic!("project-{version} product can use an explicit catalog override: {error}"));
     }
 }
@@ -135,34 +70,23 @@ fn explicit_catalog_can_program_products_from_another_generation() {
 #[test]
 fn live_commissioning_rejects_unsupported_master_data_schema() {
     let xml = TOPOLOGY_DEPENDENT_PROFILE.replace("/project/23", "/project/24");
-    let catalog = ProgrammingCatalog::from_xml(&xml).expect("newer catalog remains inspectable");
+    let catalog = parse_master_data(&xml).expect("newer catalog remains inspectable");
     assert!(matches!(
-        catalog.validate_for_live_commissioning(),
+        validate_for_live_commissioning(&catalog),
         Err(error) if error.kind == CompileErrorKind::Unsupported && error.message.contains("schema 24")
     ));
 }
 
 #[test]
 fn raw_catalog_validates_provenance_without_interpreting_unselected_profiles() {
-    let catalog = ProgrammingCatalog::from_xml(TOPOLOGY_DEPENDENT_PROFILE).expect("raw catalog parses");
+    let catalog = parse_master_data(TOPOLOGY_DEPENDENT_PROFILE).expect("raw catalog parses");
 
-    catalog.validate_for_live_commissioning().expect("matching supported raw inputs audit successfully");
+    validate_for_live_commissioning(&catalog).expect("matching supported raw inputs audit successfully");
 
     let invalid = unauditable_catalog();
-    let catalog = ProgrammingCatalog::from_xml(&invalid).expect("invalid catalog remains inspectable");
+    let catalog = parse_master_data(&invalid).expect("invalid catalog remains inspectable");
 
-    catalog.validate_for_live_commissioning().expect("selected profile is validated during compilation");
-}
-
-#[test]
-fn catalog_loader_preserves_supported_documents_for_target_selection() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let path = directory.path().join("knx_master.xml");
-    std::fs::write(&path, unauditable_catalog()).expect("fixture writes");
-
-    let result = ProgrammingCatalog::load(ProgrammingCatalogLoadRequest::File(&path));
-
-    assert!(result.is_ok(), "unselected unsupported operations do not prevent loading");
+    validate_for_live_commissioning(&catalog).expect("selected profile is validated during compilation");
 }
 
 #[test]
@@ -170,18 +94,13 @@ fn catalog_loader_preserves_supported_documents_for_target_selection() {
 fn cached_catalogs_preserve_descriptor_qualified_masks() {
     for version in 20..=23 {
         let path = cached_master_data(version);
-        let catalog = ProgrammingCatalog::from_file(&path)
-            .unwrap_or_else(|error| panic!("{} does not parse: {error}", path.display()));
-        catalog.validate_for_live_commissioning().expect("supported catalog provenance");
-        assert!(catalog.requires_management_descriptor_01(0x0300).expect("known DD0"));
-        let masks = &catalog.master_data.mask_versions().expect("published masks").versions;
+        let catalog =
+            MasterData::from_file(&path).unwrap_or_else(|error| panic!("{} does not parse: {error}", path.display()));
+        validate_for_live_commissioning(&catalog).expect("supported catalog provenance");
+        assert!(requires_management_descriptor_01(&catalog, 0x0300).expect("known DD0"));
+        let masks = &catalog.mask_versions().expect("published masks").versions;
         for mask in masks.iter().filter(|mask| mask.management_descriptor_01.is_some()) {
-            let exact = catalog
-                .resolve_exact_mask(&ProfileDiscovery {
-                    dd0: mask.mask_version_code,
-                    management_descriptor_01: mask.management_descriptor_01,
-                    management_style: None,
-                })
+            let exact = resolve_exact_mask(&catalog, mask.mask_version_code, mask.management_descriptor_01.as_ref())
                 .expect("published exact descriptor resolves");
             assert_eq!(exact.id, mask.id);
         }

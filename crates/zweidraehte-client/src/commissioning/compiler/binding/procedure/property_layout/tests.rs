@@ -1,5 +1,6 @@
 use crate::commissioning::catalog::profile::testing::{append_xml, declare_property, edit_profile, fixture_profile};
 use crate::commissioning::catalog::profile::{ObjectSelector, Occurrence};
+use crate::commissioning::catalog_testing::*;
 use crate::commissioning::compiler::binding::procedure::test_support::{
     ProcedureCompileContext, compile_fixture, compile_fixture_with_profile,
     compile_fixture_with_profile_and_composition, compile_procedure, minimal_profile, root_path,
@@ -521,10 +522,9 @@ fn declared_property_product(
 
 #[test]
 fn untyped_parameter_property_takes_its_width_from_the_observed_pdt() {
-    use crate::commissioning::catalog::profile::ProfileDiscovery;
+    use crate::commissioning::CompileOptions;
     use crate::commissioning::input::{CommissioningIntent, DownloadMode, TargetSelection};
     use crate::commissioning::test_support::architecture::{catalog, programming_input, resolve_profile};
-    use crate::commissioning::{CompileOptions, ProfileSelection};
     use crate::configuration::LoweredDeviceConfiguration;
     use zweidraehte_proto::address::IndividualAddress;
 
@@ -537,7 +537,7 @@ fn untyped_parameter_property_takes_its_width_from_the_observed_pdt() {
     let address = IndividualAddress::new(1, 1, 10);
     let mut configuration = LoweredDeviceConfiguration::new(address, Some(15));
     configuration.parameters.push(crate::configuration::ParameterValue { id: "background".to_owned(), value: vec![9] });
-    let compile = |selection: &ProfileSelection| {
+    let compile = |profile: &crate::commissioning::ResolvedProfile| {
         programming_input(
             &catalog,
             &product,
@@ -550,15 +550,13 @@ fn untyped_parameter_property_takes_its_width_from_the_observed_pdt() {
                 progress_messages_by_id: BTreeMap::new(),
             },
         )
-        .compile(selection)
+        .compile(profile)
     };
-    let selection =
-        ProfileSelection::new(ProfileDiscovery { dd0: 0x0705, management_descriptor_01: None, management_style: None });
 
     // Without an observation, the write reads the target's description by
     // object type when it executes and sends the parameter's one-byte
     // segment.
-    let program = compile(&selection).expect("the target sizes the parameter write");
+    let program = compile(&profile).expect("the target sizes the parameter write");
     let described = program
         .procedure()
         .expect("download has a procedure")
@@ -576,8 +574,9 @@ fn untyped_parameter_property_takes_its_width_from_the_observed_pdt() {
     assert!(matches!(&described.action, DescribedPropertyAction::WriteImage { length: 1, .. }));
 
     // The fixture's PDT 50 is one octet wide: one element carries the parameter.
-    let program = compile(&selection.clone().with_observed_property_type(object.clone(), 201, 50))
-        .expect("the observed PDT sizes the parameter write");
+    let observed =
+        profile.clone().with_observed_property_type(object.clone(), 201, 50).expect("the property is untyped");
+    let program = compile(&observed).expect("the observed PDT sizes the parameter write");
     let write = program
         .procedure()
         .expect("download has a procedure")
@@ -631,10 +630,11 @@ fn untyped_parameter_property_takes_its_width_from_the_observed_pdt() {
 /// Compile a full download of `product` with its parameter set to `value` and
 /// return the extent and data of its write to `property_id`.
 fn declared_property_write(
-    catalog: &crate::commissioning::catalog::ProgrammingCatalog,
+    catalog: &std::sync::Arc<MasterData>,
     product: &zweidraehte_ets_files::product::ProductData,
     value: &[u8],
     selection: &crate::commissioning::ProfileSelection,
+    observed: Option<(ObjectSelector, u16, u8)>,
     property_id: u16,
 ) -> Result<(OperationExtent, OperationData), crate::commissioning::error::CompileError> {
     use crate::commissioning::CompileOptions;
@@ -648,7 +648,7 @@ fn declared_property_write(
     configuration
         .parameters
         .push(crate::configuration::ParameterValue { id: "background".to_owned(), value: value.to_vec() });
-    let program = programming_input(
+    let input = programming_input(
         catalog,
         product,
         &configuration,
@@ -659,8 +659,12 @@ fn declared_property_write(
             progress_messages_by_reference: BTreeMap::new(),
             progress_messages_by_id: BTreeMap::new(),
         },
-    )
-    .compile(selection)?;
+    );
+    let mut profile = input.device().resolve_profile(selection)?;
+    if let Some((object, property_id, pdt)) = observed {
+        profile = profile.with_observed_property_type(object, property_id, pdt)?;
+    }
+    let program = input.compile(&profile)?;
     let write = program
         .procedure()
         .expect("download has a procedure")
@@ -682,13 +686,10 @@ fn declared_property_write(
 }
 
 fn system7_selection() -> crate::commissioning::ProfileSelection {
-    use crate::commissioning::catalog::profile::ProfileDiscovery;
-
-    crate::commissioning::ProfileSelection::new(ProfileDiscovery {
-        dd0: 0x0705,
-        management_descriptor_01: None,
-        management_style: None,
-    })
+    ProfileSelection {
+        discovery: ProfileDiscovery { dd0: 0x0705, management_descriptor_01: None, management_style: None },
+        variant_hint: VariantHint::Automatic,
+    }
 }
 
 #[test]
@@ -714,16 +715,18 @@ fn procedure_declaration_types_a_property_by_object_type_and_pid() {
     let object = ObjectSelector::Type { object_type: 421, occurrence: Occurrence::Zero };
     let four_bytes = OperationExtent { byte_length: 4, property_elements: Some(1), property_element_width: None };
 
-    let extent = declared_property_write(&catalog, &product, &[0, 0, 0, 9], &system7_selection(), 201)
+    let extent = declared_property_write(&catalog, &product, &[0, 0, 0, 9], &system7_selection(), None, 201)
         .expect("the declaration sizes the write")
         .0;
     assert_eq!(extent, four_bytes);
 
     // The procedure re-declares the property before the device uses it, so a
     // description observed before the download cannot override it.
-    let observed = system7_selection().with_observed_property_type(object, 201, 50);
+    let observed = Some((object, 201, 50));
     assert_eq!(
-        declared_property_write(&catalog, &product, &[0, 0, 0, 9], &observed, 201).expect("declaration wins").0,
+        declared_property_write(&catalog, &product, &[0, 0, 0, 9], &system7_selection(), observed, 201)
+            .expect("declaration wins")
+            .0,
         four_bytes
     );
 }
@@ -745,7 +748,7 @@ fn procedure_declaration_types_a_property_by_object_index_and_pid() {
               <LdCtrlDisconnect />"#,
     );
 
-    let extent = declared_property_write(&catalog(23), &product, &[0, 0, 0, 9], &system7_selection(), 208)
+    let extent = declared_property_write(&catalog(23), &product, &[0, 0, 0, 9], &system7_selection(), None, 208)
         .expect("the declaration sizes the write")
         .0;
     assert_eq!(extent, OperationExtent { byte_length: 4, property_elements: Some(1), property_element_width: None });
@@ -790,7 +793,7 @@ fn untyped_indexed_parameter_property_writes_its_image_segment_at_the_described_
                 progress_messages_by_id: BTreeMap::new(),
             },
         )
-        .compile(&system7_selection())
+        .compile_selection(&system7_selection())
         .map(|program| program.procedure().expect("download has a procedure").clone())
     };
 
@@ -870,7 +873,7 @@ fn typed_singleton_metadata_sizes_wire_independently_of_declaration() {
         )
     });
 
-    let (extent, _) = declared_property_write(&catalog, &product, &[9], &system7_selection(), 201)
+    let (extent, _) = declared_property_write(&catalog, &product, &[9], &system7_selection(), None, 201)
         .expect("typed singleton metadata wins wire lookup");
     assert_eq!(extent, OperationExtent::property(1, 1));
 
@@ -883,7 +886,7 @@ fn typed_singleton_metadata_sizes_wire_independently_of_declaration() {
         1,
     )
     });
-    let error = declared_property_write(&ambiguous, &product, &[9], &system7_selection(), 201)
+    let error = declared_property_write(&ambiguous, &product, &[9], &system7_selection(), None, 201)
         .expect_err("ambiguous metadata cannot bypass declaration conflict checks");
     assert!(error.to_string().contains("declares PDT_UNSIGNED_LONG"), "{error}");
 }
@@ -933,7 +936,7 @@ fn declared_buffer_allocation_does_not_expand_to_the_typed_wire_width() {
                 progress_messages_by_id: BTreeMap::new(),
             },
         )
-        .compile(&system7_selection())
+        .compile_selection(&system7_selection())
         .expect("different allocation and wire PDTs compile");
         let location = ImageLocation {
             space: ImageSpace::Property {
@@ -989,7 +992,7 @@ fn inline_property_write_keeps_its_payload_only_where_the_image_owns_no_bits() {
               <LdCtrlDisconnect />"#,
     );
 
-    let (extent, data) = declared_property_write(&catalog(23), &product, &[9], &system7_selection(), 201)
+    let (extent, data) = declared_property_write(&catalog(23), &product, &[9], &system7_selection(), None, 201)
         .expect("the declaration sizes the write");
     assert_eq!(extent, OperationExtent { byte_length: 4, property_elements: Some(1), property_element_width: None });
     assert_eq!(data, OperationData::Inline(vec![0x11, 0x09, 0x33, 0x44]));

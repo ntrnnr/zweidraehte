@@ -138,10 +138,21 @@ pub struct MasterDataElement {
 }
 
 /// Convenience wrapper for working with KNX master data.
+///
+/// A document's identity is its content: two documents are equal exactly when
+/// their source bytes have the same SHA-256 [`fingerprint`](Self::fingerprint).
 pub struct MasterData {
     root: KnxRoot,
     source_xml: std::sync::Arc<str>,
+    fingerprint: [u8; 32],
 }
+
+impl PartialEq for MasterData {
+    fn eq(&self, other: &Self) -> bool {
+        self.fingerprint == other.fingerprint
+    }
+}
+impl Eq for MasterData {}
 
 impl std::fmt::Debug for MasterData {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -149,6 +160,7 @@ impl std::fmt::Debug for MasterData {
             .debug_struct("MasterData")
             .field("schema_version", &self.schema_version())
             .field("document_version", &self.document_version())
+            .field("fingerprint", &format_args!("{:02x?}", &self.fingerprint[..4]))
             .finish_non_exhaustive()
     }
 }
@@ -157,8 +169,14 @@ impl FromStr for MasterData {
     type Err = MasterDataError;
 
     fn from_str(xml: &str) -> Result<Self, Self::Err> {
+        use sha2::{Digest, Sha256};
+
         let root: KnxRoot = quick_xml::de::from_str(xml).map_err(MasterDataError::Xml)?;
-        Ok(Self { root, source_xml: xml.into() })
+        // Hash once at the parsing boundary. Every profile, audit record and
+        // deployment fingerprint reads this value instead of rehashing a
+        // multi-megabyte document.
+        let fingerprint = Sha256::digest(xml.as_bytes()).into();
+        Ok(Self { root, source_xml: xml.into(), fingerprint })
     }
 }
 
@@ -166,6 +184,11 @@ impl MasterData {
     /// Exact document bytes, retained for provenance and immutable association.
     pub fn source_xml(&self) -> &str {
         &self.source_xml
+    }
+
+    /// SHA-256 of [`Self::source_xml`], the document's content identity.
+    pub fn fingerprint(&self) -> [u8; 32] {
+        self.fingerprint
     }
 
     /// Parse master data from an XML file.

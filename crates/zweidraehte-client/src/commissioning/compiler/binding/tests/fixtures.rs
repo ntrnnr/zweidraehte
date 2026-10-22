@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::bus::access::ManagementCredential;
+use crate::commissioning::catalog_testing::*;
 use crate::commissioning::input::facts::{ObservedTarget, ProgrammingFacts};
 use crate::commissioning::input::security::ObservedDataSecurity;
 
@@ -204,20 +205,18 @@ pub(super) fn system_b_product_with_pei_program() -> ProductData {
 }
 
 pub(super) fn resolve_system_b_profile(
-    catalog: &ProgrammingCatalog,
+    catalog: &std::sync::Arc<MasterData>,
     product: &ProductData,
 ) -> crate::commissioning::ResolvedProfile {
-    catalog
-        .resolve(ProfileRequest {
-            discovery: ProfileDiscovery {
-                dd0: 0x07b0,
-                management_descriptor_01: None,
-                management_style: Some(crate::commissioning::ResourceManagementStyle::LoadStateMachine),
-            },
-            product: Some(product),
-            variant_hint: VariantHint::Automatic,
-        })
-        .expect("System B profile resolves")
+    resolve_catalog_profile(catalog, Some(product), &ProfileSelection {
+        discovery: ProfileDiscovery {
+            dd0: 0x07b0,
+            management_descriptor_01: None,
+            management_style: Some(crate::commissioning::ResourceManagementStyle::LoadStateMachine),
+        },
+        variant_hint: VariantHint::Automatic,
+    })
+    .expect("System B profile resolves")
 }
 
 pub(super) fn assert_identity_write(plan: &crate::commissioning::CompiledProgram, object_index: u16) {
@@ -336,16 +335,14 @@ pub(super) fn image_backed_unload_catalog() -> String {
 }
 
 pub(super) fn resolve_profile(
-    catalog: &ProgrammingCatalog,
+    catalog: &std::sync::Arc<MasterData>,
     _product: &ProductData,
 ) -> crate::commissioning::ResolvedProfile {
-    catalog
-        .resolve(ProfileRequest {
-            discovery: ProfileDiscovery { dd0: 0x0012, management_descriptor_01: None, management_style: None },
-            product: None,
-            variant_hint: VariantHint::Automatic,
-        })
-        .expect("profile resolves")
+    resolve_catalog_profile(catalog, None, &ProfileSelection {
+        discovery: ProfileDiscovery { dd0: 0x0012, management_descriptor_01: None, management_style: None },
+        variant_hint: VariantHint::Automatic,
+    })
+    .expect("profile resolves")
 }
 
 pub(super) fn configuration() -> LoweredDeviceConfiguration {
@@ -355,7 +352,7 @@ pub(super) fn configuration() -> LoweredDeviceConfiguration {
 /// Every fixture starts with disabled application security; access is supplied
 /// separately so secure-management tests do not imply a secure application.
 pub(super) fn programming_input(
-    catalog: &ProgrammingCatalog,
+    catalog: &std::sync::Arc<MasterData>,
     product: &ProductData,
     configuration: &LoweredDeviceConfiguration,
     intent: CommissioningIntent,
@@ -369,7 +366,7 @@ pub(super) fn programming_input(
     let keys = ResolvedKeyMaterial::new(None);
     ProgrammingInput::new(
         MaterializedDevice::new(
-            product.clone().bind_master_data(catalog.document()).expect("fixture document binds"),
+            product.clone().bind_master_data(std::sync::Arc::clone(catalog)).expect("fixture document binds"),
             configuration.clone(),
             Vec::new(),
             keys,

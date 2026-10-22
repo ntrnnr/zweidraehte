@@ -65,8 +65,7 @@ fn represent_procedure_property_buffers(
                 && let ImageSpace::Property { object, property_id } = &location.space
             {
                 let width = profile
-                    .catalog
-                    .procedure_property_buffer_width(profile, object, *property_id)
+                    .procedure_property_buffer_width(object, *property_id)
                     .map_err(|error| error.with_path(&step.path))?;
                 let Some(width) = width else { continue };
                 let Some(count) = extent.property_elements else { continue };

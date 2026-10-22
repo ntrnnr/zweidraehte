@@ -183,7 +183,7 @@ fn published_memory_windows_bridge_code_seed_gaps_only_in_the_same_space() {
     let (_, _, product, _) = plain_fixture();
     for (space, length, clears) in [("StandardMemory", 1, false), ("StandardMemory", 2, true), ("UserMemory", 2, false)]
     {
-        let catalog = ProgrammingCatalog::from_xml(&format!(
+        let catalog = parse_master_data(&format!(
             r#"
           <KNX xmlns="http://knx.org/xml/project/20"><MasterData Id="test" Version="1"><MaskVersions>
             <MaskVersion Id="MV-0012" MaskVersion="18" Name="BCU1" ManagementModel="Bcu1">
@@ -195,13 +195,11 @@ fn published_memory_windows_bridge_code_seed_gaps_only_in_the_same_space() {
           </MaskVersions></MasterData></KNX>"#
         ))
         .unwrap();
-        let profile = catalog
-            .resolve(ProfileRequest {
-                discovery: ProfileDiscovery { dd0: 0x0012, management_descriptor_01: None, management_style: None },
-                product: None,
-                variant_hint: VariantHint::Automatic,
-            })
-            .unwrap();
+        let profile = resolve_catalog_profile(&catalog, None, &ProfileSelection {
+            discovery: ProfileDiscovery { dd0: 0x0012, management_descriptor_01: None, management_style: None },
+            variant_hint: VariantHint::Automatic,
+        })
+        .unwrap();
         let mut segments = product.segments()[..1].to_vec();
         segments[0].address = Some(0x116);
         segments[0].size = 2;
@@ -372,7 +370,7 @@ fn only_a_published_slave_memory_window_is_mirrored() {
             None,
         ),
     ] {
-        let catalog = ProgrammingCatalog::from_xml(&format!(
+        let catalog = parse_master_data(&format!(
             r#"
           <KNX xmlns="http://knx.org/xml/project/20"><MasterData Id="test" Version="1"><MaskVersions>
             <MaskVersion Id="MV-0912" MaskVersion="2322" Name="Coupler" ManagementModel="Bcu1">
@@ -381,13 +379,11 @@ fn only_a_published_slave_memory_window_is_mirrored() {
           </MaskVersions></MasterData></KNX>"#
         ))
         .unwrap();
-        let profile = catalog
-            .resolve(ProfileRequest {
-                discovery: ProfileDiscovery { dd0: 0x0912, management_descriptor_01: None, management_style: None },
-                product: None,
-                variant_hint: VariantHint::Automatic,
-            })
-            .unwrap();
+        let profile = resolve_catalog_profile(&catalog, None, &ProfileSelection {
+            discovery: ProfileDiscovery { dd0: 0x0912, management_descriptor_01: None, management_style: None },
+            variant_hint: VariantHint::Automatic,
+        })
+        .unwrap();
         assert_eq!(profile.line_coupler_slave_mirror(), expected);
     }
 }

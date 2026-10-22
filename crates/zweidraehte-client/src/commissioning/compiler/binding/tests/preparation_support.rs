@@ -1,11 +1,9 @@
 //! Shared synthetic target and program fixtures.
 
 use crate::bus::access::ManagementCredential;
-use crate::commissioning::catalog::ProgrammingCatalog;
-use crate::commissioning::catalog::profile::{
-    ObjectSelector, ProfileDiscovery, ProfileRequest, ReadAccess, ResolvedProfile, ResourceManagementStyle, VariantHint,
-};
+use crate::commissioning::catalog::profile::{ObjectSelector, ReadAccess, ResolvedProfile, ResourceManagementStyle};
 use crate::commissioning::catalog::rules::resolved_download_stamp_resources as download_stamp_resources;
+use crate::commissioning::catalog_testing::*;
 use crate::commissioning::compiler::program::{CommissioningApduRequirements, CompiledProgram};
 use crate::commissioning::evidence::{DeploymentRecord, DeviceStamp};
 use crate::commissioning::image::{ImageLocation, ImageSpace, SparseDeviceImage, fingerprint_image};
@@ -224,7 +222,7 @@ pub(in crate::commissioning) fn add_resources(
     profile: &mut ResolvedProfile,
     resources: impl IntoIterator<Item = String>,
 ) {
-    let xml = profile.catalog.master_data.source_xml();
+    let xml = profile.master_data.source_xml();
     let old = xml
         .split_once("<Resources>")
         .expect("fixture resources")
@@ -236,7 +234,7 @@ pub(in crate::commissioning) fn add_resources(
 }
 
 pub(in crate::commissioning) fn set_feature(profile: &mut ResolvedProfile, name: &str, value: u32) {
-    let xml = profile.catalog.master_data.source_xml();
+    let xml = profile.master_data.source_xml();
     let old = xml
         .split_once("<Features>")
         .expect("fixture features")
@@ -248,12 +246,11 @@ pub(in crate::commissioning) fn set_feature(profile: &mut ResolvedProfile, name:
 }
 
 fn replace_profile_element(profile: &mut ResolvedProfile, name: &str, content: &str) {
-    let xml = profile.catalog.master_data.source_xml();
+    let xml = profile.master_data.source_xml();
     let (before, tail) = xml.split_once(&format!("<{name}>")).expect("fixture element");
     let (_, after) = tail.split_once(&format!("</{name}>")).expect("fixture element closes");
-    profile.catalog = ProgrammingCatalog::from_xml(&format!("{before}<{name}>{content}</{name}>{after}"))
-        .expect("edited fixture parses");
-    profile.refresh_test_catalog_fingerprint();
+    profile.master_data =
+        parse_master_data(&format!("{before}<{name}>{content}</{name}>{after}")).expect("edited fixture parses");
 }
 
 pub(in crate::commissioning) fn authorization_profile(
@@ -275,7 +272,7 @@ pub(in crate::commissioning) fn authorization_profile(
     let features = authorize_levels
         .map_or(String::new(), |levels| format!(r#"<Feature Name="AuthorizeLevels" Value="{levels}" />"#));
     let first_object = if model == "SystemB" { r#"<Feature Name="FirstAppObjectIdx" Value="6" />"# } else { "" };
-    let catalog = ProgrammingCatalog::from_xml(&format!(r#"
+    let catalog = parse_master_data(&format!(r#"
         <KNX xmlns="http://knx.org/xml/project/20"><MasterData Id="MD" Version="1"><MaskVersions>
           <MaskVersion Id="MV-{management_model}" MaskVersion="{dd0}" Name="fixture" ManagementModel="{model}" MediumTypeRefId="MT-0">
             <HawkConfigurationData><Features>{features}{first_object}</Features><Resources></Resources>
@@ -283,15 +280,13 @@ pub(in crate::commissioning) fn authorization_profile(
             </HawkConfigurationData>
           </MaskVersion>
         </MaskVersions></MasterData></KNX>"#)).expect("profile fixture parses");
-    catalog
-        .resolve(ProfileRequest {
-            discovery: ProfileDiscovery {
-                dd0,
-                management_descriptor_01: None,
-                management_style: Some(ResourceManagementStyle::LoadStateMachine),
-            },
-            product: None,
-            variant_hint: VariantHint::Automatic,
-        })
-        .expect("profile fixture resolves")
+    resolve_catalog_profile(&catalog, None, &ProfileSelection {
+        discovery: ProfileDiscovery {
+            dd0,
+            management_descriptor_01: None,
+            management_style: Some(ResourceManagementStyle::LoadStateMachine),
+        },
+        variant_hint: VariantHint::Automatic,
+    })
+    .expect("profile fixture resolves")
 }

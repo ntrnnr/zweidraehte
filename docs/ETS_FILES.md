@@ -119,14 +119,13 @@ Product requests (`Product`, or `InstalledProduct` with an explicit
 installation file; `MasterDataLoadRequest::for_product` chooses between them)
 reuse a catalog already bound to the product, and otherwise select it from an
 installation offered that product's package document. The client's
-`ProjectProgrammingCatalogs` offers every product in a project to one
-installation.
-The shared loader checks namespace identity. The client separately limits live
-commissioning to its supported schemas and computes catalog fingerprints.
-Its `ProgrammingCatalogLoadError::MasterData` retains this crate's original
-error and source chain; `Policy` carries the client's schema-policy diagnostic.
-Consumers format those causes when presenting an error instead of replacing
-them with strings during acquisition.
+`ProjectMasterData` offers every product in a project to one installation.
+The shared loader checks namespace identity, and every parsed `MasterData`
+carries the SHA-256 fingerprint of its exact bytes; documents compare equal by
+that fingerprint. The client separately limits profile resolution and live
+commissioning to its supported schemas. Its project errors retain this crate's
+`MasterDataError` and source chain. Consumers format those causes when
+presenting an error instead of replacing them with strings during acquisition.
 
 Package builders retain an owned `master_data::MasterDataSource` and resolve its
 exact XML through the same acquisition module, without parsing or rewriting the

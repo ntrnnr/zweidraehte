@@ -2,8 +2,8 @@
 use crate::commissioning::runtime::TransferContext;
 
 use crate::bus::access::ManagementCredential;
-use crate::commissioning::catalog::ProgrammingCatalog;
-use crate::commissioning::catalog::profile::{ProfileDiscovery, ProfileRequest, ResolvedProfile, VariantHint};
+use crate::commissioning::catalog::profile::{ProfileDiscovery, ProfileSelection, ResolvedProfile, VariantHint};
+use crate::commissioning::catalog::{requires_management_descriptor_01, resolve_profile};
 use crate::commissioning::error::{Diagnostic, DiagnosticResult as Result};
 use crate::commissioning::input::security::ObservedDataSecurity;
 use crate::commissioning::input::{CommissioningIntent, ProgrammingInput, TargetSelection};
@@ -13,6 +13,8 @@ use crate::commissioning::runtime::ExecutionSession;
 use crate::commissioning::runtime::commissioner::{Commissioner, STANDARD_APDU_LENGTH};
 use crate::commissioning::runtime::credentials::ManagementAccessOptions;
 use crate::commissioning::runtime::policy::resolve_profile_authorization;
+use std::sync::Arc;
+use zweidraehte_ets_files::MasterData;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::dpt::InterfaceObjectType;
 use zweidraehte_proto::pid;
@@ -34,7 +36,7 @@ pub(crate) struct ProfileObservation {
 impl Commissioner<'_> {
     pub(in crate::commissioning) async fn observe_profile(
         &self,
-        catalog: &ProgrammingCatalog,
+        master_data: &Arc<MasterData>,
         input: &ProgrammingInput,
         variant_hint: VariantHint,
         target: &mut AcquiredTarget,
@@ -53,7 +55,7 @@ impl Commissioner<'_> {
             };
         let discovery = async {
             let dd0 = read_dd0(session).await?;
-            let descriptor = if catalog.requires_management_descriptor_01(dd0)? {
+            let descriptor = if requires_management_descriptor_01(master_data, dd0)? {
                 Some(read_management_descriptor_01(session).await?)
             } else {
                 None
@@ -67,11 +69,8 @@ impl Commissioner<'_> {
             // replacement image's realization choice.
             // Observing the installed realization is deferred until the
             // compiled operation proves that it will reuse installed state.
-            let profile = catalog.resolve(ProfileRequest {
-                discovery: base_discovery.clone(),
-                product: Some(product),
-                variant_hint,
-            })?;
+            let selection = ProfileSelection { discovery: base_discovery, variant_hint };
+            let profile = resolve_profile(master_data, Some(product), &selection)?;
             let access =
                 resolve_profile_authorization(&profile, self.options.required_authorization_level, access_options)?;
             session.bind_access(access.clone(), self.bus.max_apdu());

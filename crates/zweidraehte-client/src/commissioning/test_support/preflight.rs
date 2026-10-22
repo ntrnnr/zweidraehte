@@ -1,7 +1,5 @@
-use crate::commissioning::catalog::ProgrammingCatalog;
-use crate::commissioning::catalog::profile::{
-    ProcedureId, ProfileDiscovery, ProfileRequest, ResolvedProfile, ResourceManagementStyle, VariantHint,
-};
+use crate::commissioning::catalog::profile::{ProcedureId, ResolvedProfile, ResourceManagementStyle};
+use crate::commissioning::catalog_testing::*;
 use crate::commissioning::procedure::{
     ControlPath, NormalizedProcedure, ProcedureOperation, ProcedureSourceId, ProcedureStep, ToolState,
 };
@@ -51,16 +49,13 @@ pub(in crate::commissioning) fn profile(resources: &str) -> ResolvedProfile {
       </MaskVersion></MaskVersions>
     </MasterData></KNX>"#
     );
-    ProgrammingCatalog::from_xml(&xml)
-        .expect("synthetic catalog")
-        .resolve(ProfileRequest {
-            discovery: ProfileDiscovery {
-                dd0: 0x07b0,
-                management_descriptor_01: None,
-                management_style: Some(ResourceManagementStyle::LoadStateMachine),
-            },
-            product: None,
-            variant_hint: VariantHint::Automatic,
-        })
-        .expect("exact System B profile")
+    resolve_catalog_profile(&parse_master_data(&xml).expect("synthetic catalog"), None, &ProfileSelection {
+        discovery: ProfileDiscovery {
+            dd0: 0x07b0,
+            management_descriptor_01: None,
+            management_style: Some(ResourceManagementStyle::LoadStateMachine),
+        },
+        variant_hint: VariantHint::Automatic,
+    })
+    .expect("exact System B profile")
 }

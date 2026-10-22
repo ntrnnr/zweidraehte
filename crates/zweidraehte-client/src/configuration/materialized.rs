@@ -41,13 +41,26 @@ impl MaterializedDevice {
         &self.product
     }
 
-    /// Complete loose product input before it enters the programming pipeline.
-    pub fn bind_master_data(
+    /// Complete loose project product input before it enters the programming
+    /// pipeline. Callers outside the crate bind the [`ProductData`] before
+    /// assembling the device.
+    #[cfg(feature = "project")]
+    pub(crate) fn bind_master_data(
         mut self,
         document: std::sync::Arc<zweidraehte_ets_files::MasterData>,
     ) -> Result<Self, zweidraehte_ets_files::product::ProductError> {
         self.product = self.product.bind_master_data(document)?;
         Ok(self)
+    }
+
+    /// Resolve this device's exact profile against its product's bound
+    /// Master Data. The result is what [`crate::commissioning::ProgrammingInput::compile`]
+    /// and [`crate::commissioning::ProgrammingInput::preview`] take.
+    pub fn resolve_profile(
+        &self,
+        selection: &crate::commissioning::ProfileSelection,
+    ) -> Result<crate::commissioning::ResolvedProfile, crate::commissioning::CompileError> {
+        crate::commissioning::ResolvedProfile::for_product(&self.product, selection)
     }
 
     pub fn configuration(&self) -> &LoweredDeviceConfiguration {

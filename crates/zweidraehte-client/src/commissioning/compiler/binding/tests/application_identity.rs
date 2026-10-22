@@ -1,8 +1,9 @@
 use super::*;
+use crate::commissioning::catalog_testing::*;
 
 #[test]
 fn full_ap1_only_download_selects_the_published_complete_single_application_path() {
-    let catalog = ProgrammingCatalog::from_xml(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
     let product = system_b_product(false);
     let profile = resolve_system_b_profile(&catalog, &product);
 
@@ -38,7 +39,7 @@ fn full_ap1_only_download_selects_the_published_complete_single_application_path
 
 #[test]
 fn address_assignment_does_not_require_secondary_application_metadata() {
-    let catalog = ProgrammingCatalog::from_xml(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
     for product in [
         system_b_product(true),
         system_b_product(false).with_fixture_application_program_2(ApplicationProgram2Binding::Unbound),
@@ -82,7 +83,7 @@ fn address_assignment_does_not_require_secondary_application_metadata() {
 
 #[test]
 fn system_b_requires_authoritative_hardware_metadata() {
-    let catalog = ProgrammingCatalog::from_xml(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
     let product = system_b_product(false).with_fixture_application_program_2(ApplicationProgram2Binding::Unbound);
     let profile = resolve_system_b_profile(&catalog, &product);
 
@@ -105,7 +106,7 @@ fn system_b_requires_authoritative_hardware_metadata() {
 
 #[test]
 fn declared_secondary_application_fails_closed_until_its_definition_can_be_compiled() {
-    let catalog = ProgrammingCatalog::from_xml(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
     let product = system_b_product(true);
     let profile = resolve_system_b_profile(&catalog, &product);
 
@@ -128,7 +129,7 @@ fn declared_secondary_application_fails_closed_until_its_definition_can_be_compi
 
 #[test]
 fn ap2_requests_fail_closed_without_the_complete_product_contribution() {
-    let catalog = ProgrammingCatalog::from_xml(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
     let product = system_b_product(false);
     let explicit_profile = resolve_system_b_profile(&catalog, &product);
 
@@ -165,7 +166,7 @@ fn ap2_requests_fail_closed_without_the_complete_product_contribution() {
 
 #[test]
 fn automatic_ap2_download_cannot_bypass_missing_secondary_compilation() {
-    let catalog = ProgrammingCatalog::from_xml(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
     let product = system_b_product(true);
     let profile = resolve_system_b_profile(&catalog, &product);
     let mut options = compile_options(RestartKind::Basic);
@@ -189,7 +190,7 @@ fn automatic_ap2_download_cannot_bypass_missing_secondary_compilation() {
 
 #[test]
 fn ap1_only_partial_paths_strip_only_ap2_and_preserve_their_exact_scope() {
-    let catalog = ProgrammingCatalog::from_xml(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
     let product = system_b_product(false);
 
     let parameter_profile = resolve_system_b_profile(&catalog, &product);
@@ -268,7 +269,7 @@ fn ap1_only_partial_paths_strip_only_ap2_and_preserve_their_exact_scope() {
 
 #[test]
 fn omitted_peiprog_controls_preserve_original_xml_and_merge_paths() {
-    let catalog = ProgrammingCatalog::from_xml(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
     let product =
         system_b_product(false).with_fixture_parameters(vec![zweidraehte_ets_files::product::ParameterLocation {
             id: "selected-parameter".to_owned(),
@@ -332,7 +333,7 @@ fn omitted_peiprog_controls_preserve_original_xml_and_merge_paths() {
 
 #[test]
 fn primary_merge_fragments_do_not_establish_application_program_2() {
-    let catalog = ProgrammingCatalog::from_xml(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
     let mut product = system_b_product(false);
     let mut fragments = product.load_procedures().to_vec();
     fragments.push(LoadProcedure {
@@ -352,7 +353,7 @@ fn primary_merge_fragments_do_not_establish_application_program_2() {
 
 #[test]
 fn primary_fragment_and_mask_can_both_write_the_secondary_identity() {
-    let catalog = ProgrammingCatalog::from_xml(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
     let mut product = system_b_product_with_pei_program();
     let mut fragments = product.load_procedures().to_vec();
     fragments
@@ -410,7 +411,7 @@ fn ap1_partial_rejects_an_unfamiliar_fixed_ap2_block() {
         r#"<LdCtrlCompareProp ObjIdx="5" PropId="7" InlineData="01000000" />"#,
         1,
     );
-    let catalog = ProgrammingCatalog::from_xml(&catalog_xml).expect("catalog parses");
+    let catalog = parse_master_data(&catalog_xml).expect("catalog parses");
     let product = system_b_product(false);
     let profile = resolve_system_b_profile(&catalog, &product);
 
@@ -440,7 +441,7 @@ fn peiprog_identity_must_keep_the_exact_five_byte_codec() {
                 <ResourceType Length="4" />"#,
         1,
     );
-    let catalog = ProgrammingCatalog::from_xml(&catalog_xml).expect("catalog parses");
+    let catalog = parse_master_data(&catalog_xml).expect("catalog parses");
     let product = system_b_product(false);
     let profile = resolve_system_b_profile(&catalog, &product);
 
@@ -471,7 +472,7 @@ fn fixed_peiprog_resource_without_merge_anchors_does_not_create_ap2_semantics() 
             </Resources>
             <Procedures>"#;
     let xml = CATALOG_XML.replacen("<Procedures>", resources, 1);
-    let catalog = ProgrammingCatalog::from_xml(&xml).expect("catalog parses");
+    let catalog = parse_master_data(&xml).expect("catalog parses");
     let product = ProductData::default().with_fixture_id("fixed-peiprog-only");
     let profile = resolve_profile(&catalog, &product);
     let mut options = compile_options(RestartKind::Basic);
@@ -503,7 +504,7 @@ fn property_mapped_identity_is_written_inline_without_image_ownership() {
             r#"<LdCtrlWriteProp ObjIdx="4" PropId="13" Verify="true" InlineData="0000000000" />"#,
             &format!(r#"<LdCtrlWriteProp ObjIdx="4" PropId="13" Verify="true" InlineData="{authored}" />"#),
         );
-        let catalog = ProgrammingCatalog::from_xml(&catalog_xml).expect("catalog parses");
+        let catalog = parse_master_data(&catalog_xml).expect("catalog parses");
         let product = system_b_product(false);
         let profile = resolve_system_b_profile(&catalog, &product);
 
@@ -544,7 +545,7 @@ fn property_mapped_identity_is_written_inline_without_image_ownership() {
 
 #[test]
 fn bound_secondary_pei_program_compiles_with_the_primary_application() {
-    let catalog = ProgrammingCatalog::from_xml(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
+    let catalog = parse_master_data(SYSTEM_B_APPLICATION_CATALOG_XML).expect("catalog parses");
     let product = system_b_product_with_pei_program();
     let profile = resolve_system_b_profile(&catalog, &product);
 

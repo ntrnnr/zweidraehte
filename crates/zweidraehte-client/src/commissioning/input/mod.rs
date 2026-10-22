@@ -3,7 +3,7 @@
 use crate::commissioning::compiler::ProgramCompiler;
 use crate::commissioning::input::facts::ProgrammingFacts;
 use crate::commissioning::input::security::DesiredDataSecurity;
-use crate::commissioning::{CompileError, CompiledProgram, ProfileSelection, ProgramImage};
+use crate::commissioning::{CompileError, CompiledProgram, ProgramImage, ResolvedProfile};
 use crate::configuration::MaterializedDevice;
 use std::collections::BTreeMap;
 mod intent;
@@ -22,13 +22,19 @@ pub struct ProgrammingInput {
 
 impl ProgrammingInput {
     /// Build the desired public image without accessing a device.
-    pub fn preview(&self, selection: &ProfileSelection) -> Result<ProgramImage, CompileError> {
-        ProgramCompiler::new(self, selection)?.preview()
+    ///
+    /// `profile` must be resolved for this input's product, for example with
+    /// [`MaterializedDevice::resolve_profile`].
+    pub fn preview(&self, profile: &ResolvedProfile) -> Result<ProgramImage, CompileError> {
+        ProgramCompiler::new(self, profile)?.preview()
     }
 
     /// Compile an inspectable program from supplied facts, without device I/O.
-    pub fn compile(&self, selection: &ProfileSelection) -> Result<CompiledProgram, CompileError> {
-        ProgramCompiler::new(self, selection)?.compile()
+    ///
+    /// `profile` must be resolved for this input's product, for example with
+    /// [`MaterializedDevice::resolve_profile`].
+    pub fn compile(&self, profile: &ResolvedProfile) -> Result<CompiledProgram, CompileError> {
+        ProgramCompiler::new(self, profile)?.compile()
     }
 
     pub fn new(device: MaterializedDevice, intent: CommissioningIntent, options: CompileOptions) -> Self {

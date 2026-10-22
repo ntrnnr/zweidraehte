@@ -1,7 +1,8 @@
 use super::*;
+use crate::commissioning::catalog_testing::*;
 use crate::commissioning::{
     CommissioningIntent, CommissioningSectionOutcome, DifferentialPolicy, DownloadMode, ExecutionReport,
-    MutationStatus, ProgramSections, ProgrammingCatalog, ProgrammingInput, TargetSelection, UnloadMode,
+    MutationStatus, ProgramSections, ProgrammingInput, TargetSelection, UnloadMode,
 };
 use crate::configuration::MaterializedDevice;
 use crate::configuration::ResolvedKeyMaterial;
@@ -343,9 +344,9 @@ pub(in crate::project) const PERSISTENCE_PRODUCT_XML: &str = r#"
         </ApplicationPrograms></Manufacturer></ManufacturerData></KNX>"#;
 
 pub(in crate::project) fn persistence_fixture(intent: CommissioningIntent) -> (PlannedProjectDevice, ExecutionReport) {
-    use crate::commissioning::{DiscoveredDevice, ProfileDiscovery, ProfileSelection};
+    use crate::commissioning::DiscoveredDevice;
     use crate::configuration::LoweredDeviceConfiguration;
-    let catalog = ProgrammingCatalog::from_xml(
+    let catalog = parse_master_data(
         r#"
         <KNX xmlns="http://knx.org/xml/project/23"><MasterData Id="MD" Version="1"><MaskVersions>
         <MaskVersion Id="MV-0012" MaskVersion="18" Name="BCU1" ManagementModel="Bcu1" MediumTypeRefId="MT-0">
@@ -358,7 +359,7 @@ pub(in crate::project) fn persistence_fixture(intent: CommissioningIntent) -> (P
     let product = ProductData::from_mtxml_str(PERSISTENCE_PRODUCT_XML).expect("fixture product");
     let address = zweidraehte_proto::address::IndividualAddress::new(1, 1, 23);
     let device = MaterializedDevice::new(
-        product.bind_master_data(catalog.document()).expect("catalog binds"),
+        product.bind_master_data(std::sync::Arc::clone(&catalog)).expect("catalog binds"),
         LoweredDeviceConfiguration::new(address, Some(15)),
         Vec::new(),
         ResolvedKeyMaterial::new(None),
@@ -375,11 +376,7 @@ pub(in crate::project) fn persistence_fixture(intent: CommissioningIntent) -> (P
         serial_number: None,
         credential: crate::commissioning::ManagementCredential::Plaintext,
     }))
-    .compile(&ProfileSelection::new(ProfileDiscovery {
-        dd0: 0x0012,
-        management_descriptor_01: None,
-        management_style: None,
-    }))
+    .compile_selection(&ProfileSelection::discovered(0x0012))
     .expect("persistence fixture compiles");
     let planned = PlannedProjectDevice {
         serial_addressing: super::super::SerialAddressingSupport::Unknown,

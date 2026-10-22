@@ -1,6 +1,6 @@
 use crate::commissioning::DownloadMode;
-use crate::commissioning::catalog::ProgrammingCatalog;
 use crate::commissioning::catalog::profile::{ManagementModel, ObjectSelector, Occurrence, ResourceManagementStyle};
+use crate::commissioning::catalog_testing::*;
 use crate::commissioning::compiler::program::CompiledProgram;
 use crate::commissioning::error::CompileErrorKind;
 use crate::commissioning::image::ImageSpace;
@@ -35,9 +35,7 @@ struct ProfilePlanGolden {
 #[test]
 fn offline_application_profile_selection_survives_compiler_resolution() {
     use crate::commissioning::test_support::architecture::programming_input;
-    use crate::commissioning::{
-        CommissioningIntent, CompileOptions, ProfileDiscovery, ProfileSelection, TargetSelection,
-    };
+    use crate::commissioning::{CommissioningIntent, CompileOptions, TargetSelection};
     use crate::configuration::LoweredDeviceConfiguration;
 
     let catalog = catalog(23);
@@ -56,14 +54,15 @@ fn offline_application_profile_selection_survives_compiler_resolution() {
             progress_messages_by_id: BTreeMap::new(),
         },
     );
-    let selection =
-        ProfileSelection::new(ProfileDiscovery { dd0: 0x0300, management_descriptor_01: None, management_style: None });
-    let error = input.compile(&selection).expect_err("ordinary discovery still requires PID 72");
-    assert_eq!(error.kind, CompileErrorKind::MissingEvidence);
-    let authoring = selection.with_application_profile();
-    let compiled = input.compile(&authoring).expect("explicit offline application metadata resolves");
+    let selection = ProfileSelection {
+        discovery: ProfileDiscovery { dd0: 0x0300, management_descriptor_01: None, management_style: None },
+        variant_hint: VariantHint::Automatic,
+    };
+    // The application's own profile disambiguates DD0 offline. It is not
+    // recorded as a PID 72 observation.
+    let compiled = input.compile_selection(&selection).expect("offline application metadata resolves");
     assert_eq!(compiled.profile().mask().full_id, "MV-0300-01000001000000000000");
-    assert!(authoring.discovery.management_descriptor_01.is_none());
+    assert!(selection.management_descriptor_01().is_none());
     assert_basic_image_and_procedure(&compiled, false);
 }
 
@@ -417,7 +416,7 @@ impl PlanCase {
     }
 }
 
-fn compile_plan_case(catalog: &ProgrammingCatalog, case: &PlanCase) -> ProfilePlanGolden {
+fn compile_plan_case(catalog: &std::sync::Arc<MasterData>, case: &PlanCase) -> ProfilePlanGolden {
     let product = product(case.mask, case.load_style, case.relative, false);
     let profile = resolve_profile(catalog, case.dd0, case.descriptor, &product);
     let plan = compile(catalog, profile, &product, case.topology.clone().unwrap_or_default())

@@ -10,8 +10,8 @@ fn catalog_loading_does_not_interpret_unselected_controls() {
             Verify="false" InlineData="00" />
         </Procedure>"#,
     );
-    let catalog = ProgrammingCatalog::from_xml(&xml).expect("catalog preserves unknown source operands");
-    let masks = &catalog.master_data.mask_versions().expect("fixture masks").versions;
+    let catalog = parse_master_data(&xml).expect("catalog preserves unknown source operands");
+    let masks = &catalog.mask_versions().expect("fixture masks").versions;
     assert_eq!(masks.len(), 3);
     assert_eq!(masks[1].hawk_configs[0].procedures.as_ref().expect("fixture procedures").procedures.len(), 1);
 }
@@ -19,11 +19,9 @@ fn catalog_loading_does_not_interpret_unselected_controls() {
 #[test]
 fn requested_resource_unknown_access_cannot_disappear_during_selection() {
     let xml = RESOURCE_SELECTION.replace("Access=\"remote\" Optional", "Access=\"future\" Optional");
-    let error = ProgrammingCatalog::from_xml(&xml)
-        .expect("syntax remains parseable")
-        .resolve(ProfileRequest {
+    let error =
+        resolve_catalog_profile(&parse_master_data(&xml).expect("syntax remains parseable"), None, &ProfileSelection {
             discovery: ProfileDiscovery { dd0: 0x0012, management_descriptor_01: None, management_style: None },
-            product: None,
             variant_hint: VariantHint::Automatic,
         })
         .expect("profile selection preserves unused declarations")

@@ -1,4 +1,5 @@
-use crate::commissioning::catalog::profile::{ProfileDiscovery, ProfileDisposition, ProfileRequest, VariantHint};
+use crate::commissioning::catalog::profile::ProfileDisposition;
+use crate::commissioning::catalog_testing::*;
 use crate::commissioning::error::CompileErrorKind;
 use crate::commissioning::test_support::architecture::resolve_profile;
 use crate::commissioning::test_support::architecture::{SYSTEM_300_PLUGIN_DESCRIPTOR, catalog, compile, product};
@@ -47,11 +48,7 @@ fn unavailable_architectures_fail_closed() {
     assert_eq!(pl_profile.disposition(), &ProfileDisposition::ExcludedPowerLine);
     assert!(compile(&catalog, pl_profile, &pl_product, TopologyConfiguration::default()).is_err());
     assert!(matches!(
-        catalog.resolve(ProfileRequest {
-            discovery: ProfileDiscovery { dd0: 0x6800, management_descriptor_01: None, management_style: None },
-            product: None,
-            variant_hint: VariantHint::Automatic,
-        }),
+        resolve_catalog_profile(&catalog, None, &ProfileSelection { discovery: ProfileDiscovery { dd0: 0x6800, management_descriptor_01: None, management_style: None }, variant_hint: VariantHint::Automatic }),
         Err(error) if error.kind == CompileErrorKind::Unsupported && error.message.contains("no programming configuration")
     ));
 }

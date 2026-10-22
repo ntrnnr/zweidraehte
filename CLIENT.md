@@ -132,17 +132,23 @@ The implementation is grouped under `commissioning/compiler/`: selection,
 image construction, procedure binding and immutable compiled output. Fixed feature
 emitters are inherent compiler methods, called explicitly in Data Secure, IP,
 then topology order. The parsed procedure remains available until image-dependent
-operands can be bound. Catalog loading, resource views, resolved profiles and
+operands can be bound. Schema policy, resource views, resolved profiles and
 profile rules live together under `commissioning/catalog/`.
 
-Catalog acquisition (`ProgrammingCatalog::from_xml`, `from_file` and `load`)
-returns `ProgrammingCatalogLoadError`: `MasterData` retains the original ETS
-I/O/XML/network error, while `Policy` retains a `CompileError` for unsupported
-commissioning policy. Profile resolution still returns `CompileError`, including
-its kind and authored control path. Inspection constructors continue to accept
-documents outside the live compiler's supported schema range.
+Master Data is used directly as `zweidraehte_ets_files::MasterData`, which
+carries its SHA-256 fingerprint from parsing. Acquisition goes through the
+ETS-files `MasterDataLoadRequest` and returns its `MasterDataError` unchanged.
+A product compiles against the document bound to it: callers resolve one
+`ResolvedProfile` for the device (`MaterializedDevice::resolve_profile` or
+`ResolvedProfile::for_product`) and pass that same profile to
+`ProgrammingInput::compile` and `preview`. The compiler never resolves again,
+and refuses a profile resolved for another product or document.
+`ResolvedProfile::resolve` resolves from Master Data alone for inspection.
+Profile resolution returns `CompileError`, including its kind and authored
+control path; it rejects documents outside the supported schema range, while
+an unversioned document stays inspectable offline.
 
-Project adapters preserve these as `Error::CatalogLoad` and `Error::Catalog`;
+Project adapters preserve these as `Error::MasterDataLoad` and `Error::Catalog`;
 the former string-only `Error::MasterData` variant is removed. Library callers
 can match the variants and inspect `Error::source()` without parsing a message.
 CLI reports and TUI worker/status messages render the cause chain at their
@@ -356,15 +362,15 @@ them under exclusion again and retains the writer for execution. Changes to
 authored source, credentials, state or explicit external inputs require reloading
 with `Error::OperationInputsChanged`; setup cannot silently adopt new inputs.
 
-`ProjectPlanner` borrows one short-lived project snapshot, its products, catalogs,
+`ProjectPlanner` borrows one short-lived project snapshot, its products, Master Data,
 state and key sources. One evaluation path resolves each requested device and
 required secure peer, credentials, SIAT, catalog, manifest and missing observations.
 Status views and batch planning consume those entries; preview uses the same
 materialized input. Required peers do not become physical programming targets.
 Planning binds each product's catalog once and retains it through preparation.
-Catalog acquisition is explicit: use the owned input bundle or call
-`ProjectProgrammingCatalogs::load_for` before creating a borrowed planner.
-Without supplied catalogs, only product-bound documents are available; missing
+Master Data acquisition is explicit: use the owned input bundle or call
+`ProjectMasterData::load_for` and `ProjectPlanner::with_master_data` before
+planning. Without it, only product-bound documents are available; missing
 inputs return `Error::MissingCatalog`.
 `project/product.rs` owns product loading and evaluation; `project/mod.rs` owns
 planning; `project/session.rs` owns batch execution; `project/operation.rs` owns
