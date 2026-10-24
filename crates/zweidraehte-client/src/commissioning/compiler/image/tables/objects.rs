@@ -46,7 +46,7 @@ impl ObjectTable {
 
     pub(super) fn encode(
         &self,
-        _product: &ProductData,
+        product: &ProductData,
         effective: &[ComObjectDef],
         seed: impl FnOnce() -> Result<TableSeed, CompileError>,
     ) -> Result<EncodedTable, CompileError> {
@@ -86,7 +86,7 @@ impl ObjectTable {
                 Ok(EncodedTable { data, mask, entries })
             }
             Self::Descriptors => {
-                let data = encode_descriptors(effective)?;
+                let data = encode_descriptors(effective, product.com_object_numbers().last().copied())?;
                 let entries = (data.len() - 2) / 2;
                 Ok(EncodedTable::owned(data, entries))
             }
@@ -220,9 +220,19 @@ impl NativeObjectTable {
     }
 }
 
-/// Rows run to the highest active object.
-fn encode_descriptors(effective_objects: &[ComObjectDef]) -> Result<Vec<u8>, CompileError> {
-    let maximum = effective_objects.iter().map(|object| object.number).max();
+/// Rows run to the highest declared or active object.
+///
+/// A product's declared objects fix the table length even when they are
+/// inactive or never referenced. MDT's GTS (M-0083_A-018C-23-81D7) is the
+/// witness: it declares an unreferenced `Dummy` object 1070 above its last
+/// active object 1046, and the reference download writes 1070 rows. That
+/// device rejects a table ending at 1046. Module objects can still extend
+/// the table beyond the static declarations.
+fn encode_descriptors(
+    effective_objects: &[ComObjectDef],
+    highest_declared: Option<u16>,
+) -> Result<Vec<u8>, CompileError> {
+    let maximum = effective_objects.iter().map(|object| object.number).chain(highest_declared).max();
     // A sixteen-bit object number always fits the wide count.
     let mut bytes = count_prefix(usize::from(maximum.unwrap_or(0)), true, "group object table", None)?;
     // RT7 starts at ASAP 1. Unused rows keep disabled UINT1 defaults;

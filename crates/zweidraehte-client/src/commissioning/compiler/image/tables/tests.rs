@@ -323,8 +323,10 @@ fn system_b_object_zero_has_no_descriptor_but_keeps_its_association() {
     assert_eq!(table.entries, 3);
     assert_eq!(table.mask, [0xff; 8]);
 
+    // Declared objects would extend the table; this fixture declares none.
+    let undeclared = product.clone().with_fixture_com_objects(Vec::new(), Vec::new());
     let zero_only = codec
-        .encode(&product, &objects[..1], || panic!("descriptors need no seed"))
+        .encode(&undeclared, &objects[..1], || panic!("descriptors need no seed"))
         .expect("a zero-only roster has no descriptor rows");
     assert_eq!(zero_only.data, [0, 0]);
     assert_eq!(zero_only.entries, 0);
@@ -338,6 +340,25 @@ fn system_b_object_zero_has_no_descriptor_but_keeps_its_association() {
             .expect("association zero remains representable");
         assert_eq!(associations.data, expected);
     }
+}
+
+#[test]
+fn system_b_table_runs_to_the_highest_declared_object_even_when_inactive() {
+    // MDT's GTS declares an unreferenced object far above its last active
+    // object; the table must still reach it as an inactive row.
+    let active = ComObjectDef {
+        number: 2,
+        flags: ComObjectFlags::from_byte(0x4b),
+        object_type: ComObjectType::Uint1,
+        datapoint_type: None,
+    };
+    let product = ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::BCU1_MTXML)
+        .expect("fixture parses")
+        .with_fixture_com_objects(vec![active.clone()], vec![2, 4]);
+    let codec = ObjectTable::from_flavour(ResourceFlavour::GroupObjectTableSystemB).expect("descriptor codec");
+    let table = codec.encode(&product, &[active], || panic!("descriptors need no seed")).expect("table encodes");
+    assert_eq!(table.data, [0, 4, 0, 0, 0x4b, 0, 0, 0, 0, 0]);
+    assert_eq!(table.entries, 4);
 }
 
 #[test]
