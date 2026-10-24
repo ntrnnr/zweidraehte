@@ -319,7 +319,8 @@ fn status_preview_and_batch_share_evaluation_and_secure_peer_scope() {
     assert_eq!(keys.tool_key(), Some(&[0x22; 16]));
     assert_eq!(keys.fdsk(), Some(&[0x11; 16]));
     assert_eq!(keys.application_security().expect("security configured").siat(), &[(sender, 123)]);
-    let preview = planned.device.project_preview(&id, &project.devices[&id], None).expect("same device previews");
+    let preview =
+        planned.device.project_preview(&id, project.devices[&id].address, None).expect("same device previews");
     let mut manifest = preview.manifest.clone();
     manifest.insert(
         ProgrammingSection::Address,

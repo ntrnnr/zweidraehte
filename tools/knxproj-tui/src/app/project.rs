@@ -31,6 +31,8 @@ pub(super) struct ProjectEditor {
     net_policy_overrides: BTreeMap<NetId, NetSecurityPolicy>,
     cache: ProjectStatusCache,
     snapshot: Option<ProgrammingSnapshot>,
+    /// The edited device's download procedure from the latest status inputs.
+    procedure: Option<crate::app::ProcedureView>,
     status: Option<StartupStatusUi>,
     generation: u64,
 }
@@ -83,6 +85,9 @@ impl ProjectEditor {
     }
     pub(super) fn snapshot(&self) -> Option<&ProgrammingSnapshot> {
         self.snapshot.as_ref()
+    }
+    pub(super) fn procedure(&self) -> Option<&crate::app::ProcedureView> {
+        self.procedure.as_ref()
     }
     pub(super) fn status(&self) -> Option<&StartupStatusUi> {
         self.status.as_ref()
@@ -164,6 +169,7 @@ impl ProjectEditor {
             draft: (authored, original),
             generation: self.generation,
             cache: self.cache.clone(),
+            procedure_device: Some(context.device.clone()),
         };
         job.generation = self.begin_status(receiver, total);
         crate::status::spawn(job, tx);
@@ -171,6 +177,7 @@ impl ProjectEditor {
 
     pub(super) fn invalidate(&mut self) {
         self.snapshot = None;
+        self.procedure = None;
         self.generation = self.generation.wrapping_add(1);
         self.status = None;
     }
@@ -487,6 +494,7 @@ impl ProjectEditor {
                 let pending = outcome.snapshot.view().requirements.len();
                 self.cache = outcome.cache;
                 self.snapshot = Some(outcome.snapshot);
+                self.procedure = outcome.procedure.map(crate::app::ProcedureView::from_preview);
                 self.status = None;
                 let message = if pending == 0 {
                     format!("Calculated programming status for {count} devices")

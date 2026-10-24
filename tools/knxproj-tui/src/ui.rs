@@ -14,8 +14,8 @@ use ratatui_image::{FilterType, Resize, StatefulImage, protocol::StatefulProtoco
 #[cfg(test)]
 use crate::app::keep_selection_visible;
 use crate::app::{
-    App, ContentItem, DeviceOperation, EditMode, Focus, MainTab, ParameterTable, ProgrammingTarget, WidgetType,
-    image_requirements_label,
+    App, ContentItem, DetailField, DeviceOperation, EditMode, Focus, MainTab, ParameterTable, ProgrammingTarget,
+    WidgetType, image_requirements_label,
 };
 use crate::catalog_view::{CatalogAddField, CatalogDialogMode, ProjectCatalogDialog};
 use crate::project_view::ProjectNavigationTarget;
@@ -55,6 +55,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         MainTab::Parameters => render_parameters_view(frame, main_chunks[1], app),
         MainTab::CommObjects => render_comm_objects_view(frame, main_chunks[1], app),
         MainTab::Memory => render_memory_view(frame, main_chunks[1], app),
+        MainTab::Procedure => render_procedure_view(frame, main_chunks[1], app),
     }
 
     render_status(frame, outer_chunks[1], app);
@@ -561,6 +562,7 @@ fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
         ("Parameters", MainTab::Parameters),
         ("Communication Objects", MainTab::CommObjects),
         ("Memory", MainTab::Memory),
+        ("Procedure", MainTab::Procedure),
     ];
 
     let mut spans = Vec::new();
@@ -1425,6 +1427,123 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(table, inner);
 }
 
+/// The offline-compiled download procedure: a step list beside the full
+/// compiler representation of the selected step.
+fn render_procedure_view(frame: &mut Frame, area: Rect, app: &mut App) {
+    let focused = app.navigation().focus == Focus::Content && app.navigation().current_tab == MainTab::Procedure;
+    let border = if focused { Style::default().fg(Color::Yellow) } else { Style::default().fg(Color::DarkGray) };
+    let Some(view) = app.procedure_view() else {
+        // The status worker compiles the procedure with the project's keys
+        // and peers; a standalone product has neither.
+        let text = if app.project_navigation().is_some() {
+            "Compiling the download procedure with the programming status…"
+        } else {
+            "The download procedure needs a project device"
+        };
+        let paragraph = Paragraph::new(text)
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::ALL).border_style(border).title(" Download Procedure "));
+        frame.render_widget(paragraph, area);
+        return;
+    };
+
+    if let Some(message) = &view.message {
+        let paragraph = Paragraph::new(message.clone())
+            .style(Style::default().fg(Color::Red))
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).border_style(border).title(" Download Procedure "));
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
+    let header_height = u16::try_from(view.header.len()).unwrap_or(u16::MAX).saturating_add(2);
+    let rows_area = Layout::vertical([Constraint::Length(header_height), Constraint::Min(3)]).split(area);
+    let header = Paragraph::new(view.header.iter().map(|line| Line::from(line.clone())).collect::<Vec<_>>()).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title(" Download Procedure (offline compile; live preparation may narrow it) "),
+    );
+    frame.render_widget(header, rows_area[0]);
+
+    let columns = Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).split(rows_area[1]);
+    let total = view.rows.len();
+    let visible_rows = usize::from(columns[0].height.saturating_sub(3)).max(1);
+    let scroll = app.procedure_scroll_offset_for(visible_rows);
+    let selected = app.navigation().selected_step_idx;
+    let view = app.procedure_view().expect("the procedure view was present above");
+
+    let list_block = Block::default().borders(Borders::ALL).border_style(border).title(format!(" Steps ({total}) "));
+    let detail_block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray));
+    if view.rows.is_empty() {
+        frame.render_widget(
+            Paragraph::new("The download has no procedure steps")
+                .style(Style::default().fg(Color::DarkGray))
+                .block(list_block),
+            columns[0],
+        );
+        frame.render_widget(detail_block.title(" Step "), columns[1]);
+        return;
+    }
+
+    let header = Row::new(vec!["#", "Operation", "Sections", "Summary"])
+        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+    let rows: Vec<Row> = view
+        .rows
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible_rows)
+        .map(|(index, row)| {
+            let style = if index == selected && focused {
+                Style::default().bg(Color::DarkGray).fg(Color::White)
+            } else if index == selected {
+                Style::default().add_modifier(Modifier::BOLD)
+            } else if row.secure_only {
+                Style::default().fg(Color::Magenta)
+            } else {
+                Style::default()
+            };
+            Row::new(vec![
+                format!("{:4}", index + 1),
+                row.operation.to_owned(),
+                row.sections.clone(),
+                row.summary.clone(),
+            ])
+            .style(style)
+        })
+        .collect();
+    let widths = [Constraint::Length(5), Constraint::Length(12), Constraint::Length(12), Constraint::Min(10)];
+    frame.render_widget(Table::new(rows, widths).header(header).block(list_block), columns[0]);
+
+    // TODO: Scroll the detail pane; long steps such as absolute segments
+    // with many transfers are clipped at the pane's bottom edge.
+    let row = &view.rows[selected.min(view.rows.len() - 1)];
+    let title = format!(" Step {}{} ", selected + 1, if row.secure_only { " (secure only)" } else { "" });
+    frame.render_widget(
+        Paragraph::new(procedure_detail_lines(&row.detail)).wrap(Wrap { trim: false }).block(detail_block.title(title)),
+        columns[1],
+    );
+}
+
+/// Align labels in one column; continuation lines of a multi-line value
+/// (long payloads) stay under the value column.
+fn procedure_detail_lines(fields: &[DetailField]) -> Vec<Line<'static>> {
+    let width = fields.iter().map(|field| UnicodeWidthStr::width(field.label.as_str())).max().unwrap_or(0);
+    let mut lines = Vec::new();
+    for field in fields {
+        for (index, value) in field.value.split('\n').enumerate() {
+            let label = if index == 0 { field.label.as_str() } else { "" };
+            let padding = width - UnicodeWidthStr::width(label);
+            lines.push(Line::from(vec![
+                Span::styled(format!("{label}{}  ", " ".repeat(padding)), Style::default().fg(Color::Cyan)),
+                Span::raw(value.to_owned()),
+            ]));
+        }
+    }
+    lines
+}
+
 fn parameter_label_width(label_width: usize, value_width: usize, available_width: usize) -> usize {
     let minimum = (available_width / 2).min(16);
     let reserved_value_width = value_width.min(available_width.saturating_sub(minimum));
@@ -1824,6 +1943,7 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
         (EditMode::None, MainTab::Memory, Focus::Sidebar) => {
             "↑/↓: Select segment | Ctrl+←/→: Width | Enter: View | Tab/Shift+Tab: Focus | q: Quit"
         }
+        (EditMode::None, MainTab::Procedure, _) => "↑/↓/PgUp/PgDn: Select step | Tab/Shift+Tab: Focus | q: Quit",
         (EditMode::None, MainTab::Memory, Focus::Content) => {
             "↑/↓/←/→: Navigate bytes | Ctrl+←/→: Segment width | Tab/Shift+Tab: Focus | q: Quit"
         }

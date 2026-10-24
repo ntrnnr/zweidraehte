@@ -779,7 +779,7 @@ impl ProjectPlanner<'_> {
             }
             let device = resolved.into_keyed(keys).bind_master_data(document)?;
             let (mut desired_manifest, image_requirements) = if includes_application {
-                let image = device.project_preview(&id, authored, state)?;
+                let image = device.project_preview(&id, authored.address, state)?;
                 let requirements = image.requirements().to_vec();
                 (image.manifest, requirements)
             } else {
@@ -851,13 +851,109 @@ impl ProgrammingView {
     }
 }
 
+/// Outcome of [`MaterializedDevice::project_download_preview`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ProjectDownloadPreview {
+    /// The download as the project would start it.
+    Compiled(Box<CompiledProgram>),
+    /// Facts only the target can establish; a download observes them first.
+    NeedsObservations(Vec<ImageRequirement>),
+}
+
 impl MaterializedDevice {
-    fn project_preview(
+    /// Preview the automatic download image of project device `id`, refined
+    /// by what its matching deployment record observed on the target.
+    ///
+    /// Master Data alone cannot tell some image facts, such as a System B
+    /// association-table row width or the target's current Data Secure mode.
+    /// A deployment of the same profile recorded them, so an editor preview
+    /// resolves the same requirements the project status does. Without such
+    /// a record the image reports them in [`ProgramImage::requirements`].
+    ///
+    /// [`ProgramImage::requirements`]: crate::commissioning::ProgramImage::requirements
+    pub fn project_preview(
         &self,
         id: &ProjectDeviceId,
-        authored: &ProjectDevice,
+        address: zweidraehte_proto::address::IndividualAddress,
         state: Option<&MutableProjectState>,
     ) -> Result<crate::commissioning::ProgramImage> {
+        let (profile, observed_data_security) = self.deployment_profile(id, state)?;
+        let input = ProgrammingInput::new(
+            self.clone(),
+            CommissioningIntent::Download(DownloadMode::Automatic),
+            CompileOptions::new(TargetSelection::ExistingAddress(address)),
+        )
+        .with_facts(crate::commissioning::ProgrammingFacts {
+            data_security: observed_data_security,
+            ..Default::default()
+        });
+        input.preview(&profile).map_err(|source| Error::StatusPreview { device: id.clone(), source })
+    }
+
+    /// Compile the automatic download of project device `id` offline, with
+    /// the procedure a download from this project would run.
+    ///
+    /// The section set is what changed since the matching deployment record,
+    /// or every section without one, exactly as the project planner derives
+    /// it. The target is assumed at `address` in its last recorded security
+    /// mode. Live preparation still revalidates stamps and target facts, so
+    /// an executed procedure can differ from this one.
+    ///
+    /// The desired manifest commits to this device's own key material. A
+    /// device materialized without project keys therefore reports changed
+    /// credential sections that a keyed project download would skip.
+    ///
+    /// An image that still needs target observations (see
+    /// [`Self::project_preview`]) has no section set to compile, so it yields
+    /// [`ProjectDownloadPreview::NeedsObservations`] rather than an error.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Error::StatusPreview`] when the download does not compile.
+    pub fn project_download_preview(
+        &self,
+        id: &ProjectDeviceId,
+        address: zweidraehte_proto::address::IndividualAddress,
+        state: Option<&MutableProjectState>,
+    ) -> Result<ProjectDownloadPreview> {
+        let image = self.project_preview(id, address, state)?;
+        if !image.requirements().is_empty() {
+            return Ok(ProjectDownloadPreview::NeedsObservations(image.requirements().to_vec()));
+        }
+
+        // Derive the section set from the same desired manifest the planner
+        // compares with the deployment: image, address and credentials.
+        let mut desired_manifest = image.manifest;
+        desired_manifest.insert(
+            ProgrammingSection::Address,
+            zweidraehte_project::semantic_fingerprint("individual-address", "desired", address.as_bytes()),
+        );
+        add_credential_commitments(&mut desired_manifest, self.key_material())?;
+        let deployment = state.and_then(|state| state.deployment(id.as_str()));
+        let mut options = CompileOptions::new(TargetSelection::ExistingAddress(address));
+        options.automatic_sections = Some(changed_program_sections(deployment, &desired_manifest));
+
+        let (profile, data_security) = self.deployment_profile(id, state)?;
+        let facts = crate::commissioning::ProgrammingFacts {
+            data_security,
+            ..crate::commissioning::ProgrammingFacts::offline_from(self)
+        };
+        ProgrammingInput::new(self.clone(), CommissioningIntent::Download(DownloadMode::Automatic), options)
+            .with_facts(facts)
+            .compile(&profile)
+            .map(|compiled| ProjectDownloadPreview::Compiled(Box::new(compiled)))
+            .map_err(|source| Error::StatusPreview { device: id.clone(), source })
+    }
+
+    /// Resolve this device's profile, refined with what the matching
+    /// deployment of `id` observed on the target, and the security mode that
+    /// deployment established.
+    fn deployment_profile(
+        &self,
+        id: &ProjectDeviceId,
+        state: Option<&MutableProjectState>,
+    ) -> Result<(ResolvedProfile, crate::commissioning::ObservedDataSecurity)> {
         let product = self.product();
         let product_mask = product.mask_version().ok_or_else(|| {
             Error::ProductData(ErrorDetail::new(format!("product `{}` has no mask version", product.id())))
@@ -900,16 +996,7 @@ impl MaterializedDevice {
                     .map_err(|error| compile_status(error.into()))?;
             }
         }
-        let input = ProgrammingInput::new(
-            self.clone(),
-            CommissioningIntent::Download(DownloadMode::Automatic),
-            CompileOptions::new(TargetSelection::ExistingAddress(authored.address)),
-        )
-        .with_facts(crate::commissioning::ProgrammingFacts {
-            data_security: observed_data_security,
-            ..Default::default()
-        });
-        input.preview(&profile).map_err(|source| Error::StatusPreview { device: id.clone(), source })
+        Ok((profile, observed_data_security))
     }
 }
 

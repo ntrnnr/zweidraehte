@@ -21,8 +21,10 @@ use zweidraehte_project::{DataSecureMode, ObjectFlagOverrides};
 use zweidraehte_proto::address::GroupAddress;
 mod memory;
 mod presentation;
+mod procedure;
 pub use memory::{MemoryAnnotation, MemorySegment, image_requirements_label};
 pub use presentation::*;
+pub use procedure::{DetailField, ProcedureView};
 
 /// Runtime product and derived rows borrowed together from the editor.
 /// Only editor commands can mutate the instance held by `App`.
@@ -204,6 +206,12 @@ impl ProductEditor {
             return None;
         }
         self.rebuild_memory_segments(context)
+    }
+
+    /// Durable deployment evidence changed, so the preview may now resolve
+    /// facts it previously had to request from the target.
+    pub(super) fn invalidate_memory(&mut self) {
+        self.memory_dirty = true;
     }
 
     pub(super) fn replace(&mut self, product: PreparedEditorProduct) {

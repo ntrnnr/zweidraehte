@@ -201,6 +201,19 @@ impl ProjectStatusInputs {
         Ok(snapshot)
     }
 
+    /// Compile the automatic download of `device` from these inputs: the
+    /// draft, project keys, secure peers and deployment evidence a download
+    /// from this project starts with. See
+    /// [`MaterializedDevice::project_download_preview`].
+    ///
+    /// [`MaterializedDevice::project_download_preview`]: crate::configuration::MaterializedDevice::project_download_preview
+    pub fn download_preview(&self, device: &ProjectDeviceId) -> Result<super::ProjectDownloadPreview> {
+        let intent = CommissioningIntent::Download(DownloadMode::Automatic);
+        let plan = self.planner().plan_commissioning(std::slice::from_ref(device), BatchSelection::Selected, intent)?;
+        let planned = plan.devices().first().expect("the selected device is planned");
+        planned.device().project_download_preview(device, planned.device().individual_address(), self.store.state())
+    }
+
     /// Check again after another operation using these captured inputs, e.g. a
     /// CLI check compiling full procedures rather than just status manifests.
     pub fn verify_unchanged(&self) -> Result<()> {

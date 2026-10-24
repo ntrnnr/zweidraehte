@@ -34,9 +34,9 @@ mod product;
 pub use editor::{EditorDocument, PreparedEditorProduct};
 use product::ProductEditor;
 pub use product::{
-    ComObjectRow, ContentItem, LanguageContext, MemoryAnnotation, MemorySegment, NodeType, ParameterTable,
-    ParameterTableCell, ParameterTableColumn, ParameterTableRow, ProductView, TreeBuilderVisitor, TreeNode,
-    VisibleNodeType, VisibleTreeNode, WidgetType, image_requirements_label,
+    ComObjectRow, ContentItem, DetailField, LanguageContext, MemoryAnnotation, MemorySegment, NodeType, ParameterTable,
+    ParameterTableCell, ParameterTableColumn, ParameterTableRow, ProcedureView, ProductView, TreeBuilderVisitor,
+    TreeNode, VisibleNodeType, VisibleTreeNode, WidgetType, image_requirements_label,
 };
 
 #[cfg(feature = "images")]
@@ -51,6 +51,8 @@ pub enum MainTab {
     CommObjects,
     /// Memory segments hex view
     Memory,
+    /// Compiled download procedure steps
+    Procedure,
 }
 
 /// Focus state within the app.
@@ -387,6 +389,8 @@ pub struct NavigationState {
     content_scroll_offset: usize,
     pub selected_obj_idx: usize,
     comm_obj_scroll_offset: usize,
+    pub selected_step_idx: usize,
+    procedure_scroll_offset: usize,
     pub selected_segment_idx: usize,
     memory_scroll_offset: usize,
     pub selected_byte_offset: usize,
@@ -433,6 +437,8 @@ impl App {
                 content_scroll_offset: 0,
                 selected_obj_idx: 0,
                 comm_obj_scroll_offset: 0,
+                selected_step_idx: 0,
+                procedure_scroll_offset: 0,
                 selected_segment_idx: 0,
                 memory_scroll_offset: 0,
                 selected_byte_offset: 0,
@@ -623,6 +629,22 @@ impl App {
         self.navigation.comm_obj_scroll_offset
     }
 
+    /// The edited device's download procedure, once the status worker has
+    /// compiled it from the current draft.
+    pub fn procedure_view(&self) -> Option<&ProcedureView> {
+        self.project.procedure()
+    }
+
+    fn procedure_step_count(&self) -> usize {
+        self.procedure_view().map_or(0, |view| view.rows.len())
+    }
+
+    pub fn procedure_scroll_offset_for(&mut self, viewport_rows: usize) -> usize {
+        let selected = self.navigation.selected_step_idx;
+        keep_selection_visible(&mut self.navigation.procedure_scroll_offset, selected, viewport_rows.max(1));
+        self.navigation.procedure_scroll_offset
+    }
+
     pub fn memory_scroll_offset_for(&mut self, viewport_rows: usize) -> usize {
         let selected_line = self.navigation.selected_byte_offset / 16;
         keep_selection_visible(&mut self.navigation.memory_scroll_offset, selected_line, viewport_rows.max(1));
@@ -724,7 +746,8 @@ impl App {
         self.navigation.current_tab = match self.navigation.current_tab {
             MainTab::Parameters => MainTab::CommObjects,
             MainTab::CommObjects => MainTab::Memory,
-            MainTab::Memory => MainTab::Parameters,
+            MainTab::Memory => MainTab::Procedure,
+            MainTab::Procedure => MainTab::Parameters,
         };
         // Reset focus when switching tabs
         self.navigation.focus = Focus::Tabs;
@@ -733,9 +756,10 @@ impl App {
     /// Switch to previous main tab.
     pub fn prev_tab(&mut self) {
         self.navigation.current_tab = match self.navigation.current_tab {
-            MainTab::Parameters => MainTab::Memory,
+            MainTab::Parameters => MainTab::Procedure,
             MainTab::CommObjects => MainTab::Parameters,
             MainTab::Memory => MainTab::CommObjects,
+            MainTab::Procedure => MainTab::Memory,
         };
         self.navigation.focus = Focus::Tabs;
     }
@@ -790,6 +814,11 @@ impl App {
                 self.navigation.selected_byte_offset =
                     self.navigation.selected_byte_offset.min(data_len.saturating_sub(1));
                 self.adjust_memory_scroll();
+            }
+            MainTab::Procedure => {
+                // The status worker compiles the procedure; nothing to rebuild.
+                self.navigation.selected_step_idx =
+                    self.navigation.selected_step_idx.min(self.procedure_step_count().saturating_sub(1));
             }
         }
     }
@@ -1027,6 +1056,15 @@ impl App {
                 }
             }
             (MainTab::CommObjects, Focus::Sidebar) => Focus::Content, // Shouldn't happen
+            // The procedure tab has one pane, like communication objects.
+            (MainTab::Procedure, Focus::Tabs | Focus::Sidebar) => Focus::Content,
+            (MainTab::Procedure, Focus::Content) => {
+                if self.project.navigation().is_some() {
+                    Focus::Project
+                } else {
+                    Focus::Tabs
+                }
+            }
             // Memory tab: Tabs -> Sidebar (segment list) -> Content (hex view) -> Tabs
             (MainTab::Memory, Focus::Tabs) => Focus::Sidebar,
             (MainTab::Memory, Focus::Sidebar) => Focus::Content,
@@ -1054,7 +1092,7 @@ impl App {
             (_, Focus::Tabs, false) => Focus::Content,
             (_, Focus::Sidebar, _) => Focus::Tabs,
             (MainTab::Parameters | MainTab::Memory, Focus::Content, _) => Focus::Sidebar,
-            (MainTab::CommObjects, Focus::Content, _) => Focus::Tabs,
+            (MainTab::CommObjects | MainTab::Procedure, Focus::Content, _) => Focus::Tabs,
         };
 
         // Shift+Tab can enter parameter content from either the tabs or the
@@ -1112,6 +1150,9 @@ impl App {
                 (MainTab::CommObjects, Focus::Content) if self.navigation.selected_obj_idx > 0 => {
                     self.navigation.selected_obj_idx -= 1;
                     self.adjust_comm_obj_scroll();
+                }
+                (MainTab::Procedure, Focus::Content) => {
+                    self.navigation.selected_step_idx = self.navigation.selected_step_idx.saturating_sub(1);
                 }
                 (MainTab::Memory, Focus::Sidebar) => {
                     self.segment_move_up();
@@ -1196,6 +1237,10 @@ impl App {
                     self.navigation.selected_obj_idx += 1;
                     self.adjust_comm_obj_scroll();
                 }
+                (MainTab::Procedure, Focus::Content) => {
+                    let last = self.procedure_step_count().saturating_sub(1);
+                    self.navigation.selected_step_idx = (self.navigation.selected_step_idx + 1).min(last);
+                }
                 (MainTab::Memory, Focus::Sidebar) => {
                     self.segment_move_down();
                 }
@@ -1252,6 +1297,9 @@ impl App {
             (MainTab::CommObjects, Focus::Content) if self.navigation.selected_obj_idx > 0 => {
                 self.navigation.selected_obj_idx = self.navigation.selected_obj_idx.saturating_sub(Self::PAGE_SIZE);
                 self.adjust_comm_obj_scroll();
+            }
+            (MainTab::Procedure, Focus::Content) => {
+                self.navigation.selected_step_idx = self.navigation.selected_step_idx.saturating_sub(Self::PAGE_SIZE);
             }
             (MainTab::Memory, Focus::Sidebar) => {
                 for _ in 0..Self::PAGE_SIZE {
@@ -1318,6 +1366,10 @@ impl App {
                         (self.navigation.selected_obj_idx + Self::PAGE_SIZE).min(max_idx);
                     self.adjust_comm_obj_scroll();
                 }
+            }
+            (MainTab::Procedure, Focus::Content) => {
+                let last = self.procedure_step_count().saturating_sub(1);
+                self.navigation.selected_step_idx = (self.navigation.selected_step_idx + Self::PAGE_SIZE).min(last);
             }
             (MainTab::Memory, Focus::Sidebar) => {
                 for _ in 0..Self::PAGE_SIZE {
@@ -2398,6 +2450,9 @@ impl App {
             Err(error) => (Err(error), BTreeSet::new(), None),
         };
         self.operations.complete(result, execution);
+        if !status_scope.is_empty() {
+            self.product.invalidate_memory();
+        }
         self.start_programming_status_refresh(status_scope);
     }
 
@@ -3329,6 +3384,7 @@ mod project_editor_tests {
             result: Ok(Box::new(crate::status::StatusRefreshOutcome {
                 snapshot,
                 cache: ProjectStatusCache::default(),
+                procedure: None,
             })),
         })
         .expect("snapshot delivered");
@@ -3364,6 +3420,7 @@ mod project_editor_tests {
             result: Ok(Box::new(crate::status::StatusRefreshOutcome {
                 snapshot,
                 cache: ProjectStatusCache::default(),
+                procedure: None,
             })),
         })
         .expect("result is delivered");
@@ -3386,6 +3443,7 @@ mod project_editor_tests {
             result: Ok(Box::new(crate::status::StatusRefreshOutcome {
                 snapshot,
                 cache: ProjectStatusCache::default(),
+                procedure: None,
             })),
         })
         .expect("result is delivered");
@@ -3439,6 +3497,7 @@ mod project_editor_tests {
                 result: Ok(Box::new(crate::status::StatusRefreshOutcome {
                     snapshot: status_snapshot(&app, BTreeSet::from([button.clone()])),
                     cache: ProjectStatusCache::default(),
+                    procedure: None,
                 })),
             })
             .expect("queue result before language changes");
@@ -3464,6 +3523,7 @@ mod project_editor_tests {
                 result: Ok(Box::new(crate::status::StatusRefreshOutcome {
                     snapshot: snapshot.clone(),
                     cache: ProjectStatusCache::default(),
+                    procedure: None,
                 })),
             })
             .expect("queued result");
@@ -3485,6 +3545,7 @@ mod project_editor_tests {
                 result: Ok(Box::new(crate::status::StatusRefreshOutcome {
                     snapshot: snapshot.clone(),
                     cache: ProjectStatusCache::default(),
+                    procedure: None,
                 })),
             })
             .expect("obsolete generation");
@@ -3496,6 +3557,7 @@ mod project_editor_tests {
                 result: Ok(Box::new(crate::status::StatusRefreshOutcome {
                     snapshot,
                     cache: ProjectStatusCache::default(),
+                    procedure: None,
                 })),
             })
             .expect("current generation");
@@ -3520,6 +3582,7 @@ mod project_editor_tests {
             result: Ok(Box::new(crate::status::StatusRefreshOutcome {
                 snapshot,
                 cache: ProjectStatusCache::default(),
+                procedure: None,
             })),
         })
         .expect("queued result");

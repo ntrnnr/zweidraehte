@@ -4,8 +4,7 @@
 use super::ProductEditor;
 use crate::app::ProjectContext;
 use zweidraehte_client::commissioning::{
-    CommissioningIntent, CompileOptions, DownloadMode, ImageLocation, ImageRequirement, ImageSpace, NativeImageRegion,
-    ObjectSelector, Occurrence, ProfileSelection, ProgramImage, ProgrammingInput, TargetSelection,
+    ImageLocation, ImageRequirement, ImageSpace, NativeImageRegion, ObjectSelector, Occurrence, ProgramImage,
 };
 use zweidraehte_client::configuration::{
     InstallationConfiguration, MaterializedDevice, MembershipRole as ClientMembershipRole,
@@ -15,6 +14,15 @@ use zweidraehte_client::project::product_object_flags;
 use zweidraehte_ets_files::product::ParameterLocation;
 use zweidraehte_ets_files::runtime::configuration::ObjectSetting;
 use zweidraehte_ets_files::schema::ModuleDef;
+use zweidraehte_project::{MutableProjectState, ProjectDeviceId};
+
+/// The editor's device and the project facts its previews consult.
+pub(in crate::app) struct PreviewTarget {
+    pub(in crate::app) device: MaterializedDevice,
+    pub(in crate::app) id: ProjectDeviceId,
+    pub(in crate::app) address: zweidraehte_proto::address::IndividualAddress,
+    pub(in crate::app) state: Option<MutableProjectState>,
+}
 
 #[derive(Debug)]
 pub(in crate::app) struct ConfigurationPreview {
@@ -51,32 +59,37 @@ pub struct MemorySegment {
 
 impl MemorySegment {
     pub fn location_label(&self) -> String {
-        let object_label = |object: &ObjectSelector| match object {
-            ObjectSelector::Index { index } => format!("object index {index}"),
-            ObjectSelector::Type { object_type, occurrence } => {
-                let occurrence = match occurrence {
-                    Occurrence::Absent => "unspecified occurrence".to_owned(),
-                    Occurrence::Zero => "occurrence 0".to_owned(),
-                    Occurrence::Positive { value } => format!("occurrence {value}"),
-                };
-                format!("object type {object_type}, {occurrence}")
-            }
-        };
-        let space = match &self.placement {
-            ImageSpace::StandardMemory => "memory".to_owned(),
-            ImageSpace::UserMemory => "user memory".to_owned(),
-            ImageSpace::RelativeMemory { object } => format!("relative to {}", object_label(object)),
-            ImageSpace::Property { object, property_id } => {
-                format!("{}, PID {property_id}", object_label(object))
-            }
-            ImageSpace::PropertyCount { object, property_id } => {
-                format!("{}, PID {property_id} array count", object_label(object))
-            }
-            ImageSpace::Pointer { resource_id } => format!("pointer {resource_id}"),
-            ImageSpace::LineCouplerFilter => "coupler filter".to_owned(),
-            ImageSpace::LineCouplerSlave => "coupler slave".to_owned(),
-        };
+        let space = image_space_label(&self.placement);
         format!("{space} +0x{:04X}", self.address)
+    }
+}
+
+/// Human-readable name of a native compiler address space.
+pub(in crate::app) fn image_space_label(space: &ImageSpace) -> String {
+    let object_label = |object: &ObjectSelector| match object {
+        ObjectSelector::Index { index } => format!("object index {index}"),
+        ObjectSelector::Type { object_type, occurrence } => {
+            let occurrence = match occurrence {
+                Occurrence::Absent => "unspecified occurrence".to_owned(),
+                Occurrence::Zero => "occurrence 0".to_owned(),
+                Occurrence::Positive { value } => format!("occurrence {value}"),
+            };
+            format!("object type {object_type}, {occurrence}")
+        }
+    };
+    match space {
+        ImageSpace::StandardMemory => "memory".to_owned(),
+        ImageSpace::UserMemory => "user memory".to_owned(),
+        ImageSpace::RelativeMemory { object } => format!("relative to {}", object_label(object)),
+        ImageSpace::Property { object, property_id } => {
+            format!("{}, PID {property_id}", object_label(object))
+        }
+        ImageSpace::PropertyCount { object, property_id } => {
+            format!("{}, PID {property_id} array count", object_label(object))
+        }
+        ImageSpace::Pointer { resource_id } => format!("pointer {resource_id}"),
+        ImageSpace::LineCouplerFilter => "coupler filter".to_owned(),
+        ImageSpace::LineCouplerSlave => "coupler slave".to_owned(),
     }
 }
 
@@ -253,10 +266,9 @@ impl ProductEditor {
         message
     }
 
-    pub(in crate::app) fn configuration_preview(
-        &self,
-        context: Option<&ProjectContext>,
-    ) -> Result<ConfigurationPreview, String> {
+    /// Materialize the editor's device as a download from its project would,
+    /// with the project identity and durable state every preview consults.
+    pub(in crate::app) fn preview_target(&self, context: Option<&ProjectContext>) -> Result<PreviewTarget, String> {
         let object_settings: Vec<_> = self
             .view
             .object_flag_overrides
@@ -294,7 +306,38 @@ impl ProductEditor {
         base.security.serial_number = serial_number;
         let evaluated = self.view.device.evaluate(&object_settings).map_err(|error| error.to_string())?;
         let resolved = MaterializedDevice::from_evaluated(evaluated, base).map_err(|error| error.to_string())?;
-        let parameters = resolved
+        // The editor bound its product to the selected Master Data when it
+        // was prepared, so the resolved device already carries that document.
+        let keys = serial_number.map_or_else(ResolvedKeyMaterial::default, |serial| {
+            ResolvedKeyMaterial::default().with_serial_number(serial)
+        });
+        let device = resolved.into_keyed(keys);
+
+        // A project device may have been programmed before. Its deployment
+        // record holds the target facts Master Data cannot tell, so previews
+        // read the durable state at every rebuild: a download by this editor
+        // or any other tool is reflected on the next one. A standalone
+        // product has no project, hence no deployment evidence to consult.
+        let state = match context.filter(|context| context.authored.is_some()) {
+            Some(context) => zweidraehte_project::ProjectStore::open(&context.path)
+                .map_err(|error| format!("opening project state: {error}"))?
+                .state()
+                .cloned(),
+            None => None,
+        };
+        let id = context.map_or_else(
+            || ProjectDeviceId::new("standalone-product").expect("literal is an identifier"),
+            |context| context.device.clone(),
+        );
+        Ok(PreviewTarget { device, id, address, state })
+    }
+
+    pub(in crate::app) fn configuration_preview(
+        &self,
+        context: Option<&ProjectContext>,
+    ) -> Result<ConfigurationPreview, String> {
+        let PreviewTarget { device, id, address, state } = self.preview_target(context)?;
+        let parameters = device
             .product()
             .parameters()
             .iter()
@@ -319,23 +362,8 @@ impl ProductEditor {
                 (location.clone(), name)
             })
             .collect::<Vec<(ParameterLocation, String)>>();
-        // The editor bound its product to the selected Master Data when it
-        // was prepared, so the resolved device already carries that document.
-        let mask = resolved.product().mask_version().ok_or_else(|| "product has no exact mask version".to_owned())?;
-        let keys = serial_number.map_or_else(ResolvedKeyMaterial::default, |serial| {
-            ResolvedKeyMaterial::default().with_serial_number(serial)
-        });
-        let device = resolved.into_keyed(keys);
-        let input = ProgrammingInput::new(
-            device,
-            CommissioningIntent::Download(DownloadMode::Automatic),
-            CompileOptions::new(TargetSelection::ExistingAddress(address)),
-        );
-        let profile = input
-            .device()
-            .resolve_profile(&ProfileSelection::discovered(mask.as_u16()))
-            .map_err(|error| error.to_string())?;
-        let image = input.preview(&profile).map_err(|error| error.to_string())?;
+        let image =
+            device.project_preview(&id, address, state.as_ref()).map_err(|error| crate::error_message(&error))?;
         let annotations = ParameterAnnotations::new(&parameters, image.regions());
         Ok(ConfigurationPreview { image, annotations })
     }
