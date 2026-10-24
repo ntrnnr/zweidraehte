@@ -35,6 +35,12 @@ pub struct ParameterRef {
     /// Optional value override for the parameter
     #[serde(rename = "@Value", skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+    /// The value a new parameter instance starts with, ahead of `Value`.
+    /// The reference resets an untouched instance to it, so it is the
+    /// instance's default. Translations may replace it, as MDT does for
+    /// labels such as "Bus failure" ("Busausfall" in de-DE).
+    #[serde(rename = "@InitialValue", skip_serializing_if = "Option::is_none")]
+    pub initial_value: Option<String>,
     /// Reference to a module argument for relative value calculation.
     /// When set, the final value = argument_value + Value.
     /// Used in modules to add a base value to parameter values on the reference.

@@ -799,6 +799,11 @@ pub struct Parameter {
     /// Access mode: "None" means hidden from user
     #[serde(rename = "@Access", skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The value a new instance starts with, ahead of every `Value`
+    /// default. MDT's GTS seeds its weekday labels this way (`Mo`, `Di`...).
+    /// A parameter without an active instance keeps `Value`.
+    #[serde(rename = "@InitialValue", skip_serializing_if = "Option::is_none")]
+    pub initial_value: Option<String>,
     #[serde(rename = "@Value")]
     pub value: String,
     /// Reference to a module argument for relative value calculation.
@@ -906,6 +911,9 @@ pub struct UnionParameter {
     /// from user, "Read" means visible but not user-writable
     #[serde(rename = "@Access", skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
+    /// The value a new instance starts with; see [`Parameter::initial_value`].
+    #[serde(rename = "@InitialValue", skip_serializing_if = "Option::is_none")]
+    pub initial_value: Option<String>,
     #[serde(rename = "@Value")]
     pub value: String,
     #[serde(rename = "@Offset")]

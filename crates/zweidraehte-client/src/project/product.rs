@@ -206,7 +206,12 @@ impl ProjectProduct {
         }
         let settings = product_configuration(project_device);
 
-        let mut device = Device::from_product(self.selected.clone(), None, None);
+        // Translated `InitialValue`s are the defaults of untouched references,
+        // so the project's language selects stored text such as weekday names.
+        // TODO: record initial values in the project when a device is added,
+        // as the reference tool does; a later language change then would not
+        // alter an existing device's untouched texts.
+        let mut device = Device::from_product(self.selected.clone(), None, project.language.as_deref());
         apply_configuration(&mut device, &settings)?;
         let configuration = InstallationConfiguration {
             individual_address: project_device.address,

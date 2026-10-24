@@ -37,7 +37,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use super::Translations;
 use super::configuration::{
     ConfigurationError, ObjectSetting, ParameterDescription, effective_default, validate_setting,
 };
@@ -285,23 +284,21 @@ fn module_object_number(module: &ExpandedModule, module_def: &ModuleDef, object:
 }
 
 impl Device {
-    /// Open a checked product for editing, optionally translating its presentation.
+    /// Open a checked product, optionally translated into one language.
     /// Every language starts from the retained original document. Raw edits may
     /// be temporarily invalid; [`Self::evaluate`] checks them before publication.
     /// An unavailable language leaves the original product text in place.
-    /// Instances without a translation share the selection's immutable program
-    /// and lookup tables; values, visibility and module expansion remain local.
+    /// The translation is not only presentation: translated `InitialValue`s
+    /// are the defaults of untouched references, so compilation must use the
+    /// project's language too. Instances share the selection's immutable
+    /// program and lookup tables per language; values, visibility and module
+    /// expansion remain local.
     pub fn from_product(selected: Arc<SelectedProduct>, baggage: Option<BaggageIndex>, language: Option<&str>) -> Self {
-        // The ordinary project path reuses one immutable definition. A
-        // translated editor gets its own presentation, always derived from
-        // the original document rather than another editor's translated text.
+        // Each language reuses one immutable definition, always derived
+        // from the original document rather than another translated text.
         let definition = match language {
             None => selected.runtime_definition().clone(),
-            Some(language) => {
-                let mut program = selected.program().clone();
-                Translations::from_knx(selected.document()).apply(&mut program, language);
-                Arc::new(DeviceDefinition::new(program))
-            }
+            Some(language) => selected.translated_definition(language),
         };
         let mut device = Self::from_definition(definition, baggage);
         device.selected_product = Some(selected);
@@ -1151,7 +1148,7 @@ impl Device {
             .and_then(|refs| refs.refs.iter().find(|parameter_ref| parameter_ref.id == parameter_id));
         let base_id = parameter_ref.map_or(parameter_id, |parameter_ref| parameter_ref.ref_id.as_str());
         let info = self.definition.module_parameters.get(&format!("{}::{base_id}", expanded.module_def_id))?;
-        let raw = parameter_ref.and_then(|parameter_ref| parameter_ref.value.as_deref()).unwrap_or(&info.default_value);
+        let raw = info.untouched_default(parameter_ref);
         Some(parse_value_for_type(self.definition.param_types.get(&info.type_id), raw))
     }
 
@@ -2541,6 +2538,7 @@ fn build_parameter_lookup(
                         text: p.text.clone(),
                         type_id: p.parameter_type.clone(),
                         default_value: p.value.clone(),
+                        initial_value: p.initial_value.clone(),
                         suffix: p.suffix_text.clone(),
                         hidden: p.access.as_deref() == Some("None"),
                         read_only: p.access.as_deref() == Some("Read"),
@@ -2557,6 +2555,7 @@ fn build_parameter_lookup(
                             text: p.text.clone(),
                             type_id: p.parameter_type.clone(),
                             default_value: p.value.clone(),
+                            initial_value: p.initial_value.clone(),
                             suffix: p.suffix_text.clone(),
                             hidden: p.access.as_deref() == Some("None"),
                             read_only: p.access.as_deref() == Some("Read"),
@@ -2628,13 +2627,25 @@ fn build_param_ref_value_lookup(
         .iter()
         .filter_map(|(id, parameter_ref)| {
             let base = parameters.get(&parameter_ref.ref_id)?;
-            let value = parameter_ref.value.as_deref().map_or_else(
-                || param_values.get(&parameter_ref.ref_id).cloned(),
-                |raw| Some(parse_value_for_type(param_types.get(&base.type_id), raw)),
-            )?;
+            let value = if overrides_parameter_default(parameter_ref, base) {
+                parse_value_for_type(param_types.get(&base.type_id), base.untouched_default(Some(parameter_ref)))
+            } else {
+                param_values.get(&parameter_ref.ref_id).cloned()?
+            };
             Some((id.clone(), value))
         })
         .collect()
+}
+
+/// Whether an untouched instance of the reference starts from something
+/// other than its parameter's `Value`.
+///
+/// Only instances get an `InitialValue`: the base parameter value, which an
+/// inactive parameter stores, stays the parameter's `Value`. MDT's GTS is
+/// the witness: its active weekday labels store `Mo`...`So`, while the
+/// inactive visualization texts with `InitialValue="Off"` store zeros.
+fn overrides_parameter_default(parameter_ref: &ParameterRef, parameter: &ParameterInfo) -> bool {
+    parameter_ref.initial_value.is_some() || parameter.initial_value.is_some() || parameter_ref.value.is_some()
 }
 
 fn parse_value_for_type(parameter_type: Option<&ParameterType>, raw: &str) -> ParameterValue {
@@ -2692,6 +2703,7 @@ fn build_module_parameter_lookup(module_defs: &HashMap<String, ModuleDef>) -> Ha
                         text: parameter.text.clone(),
                         type_id: parameter.parameter_type.clone(),
                         default_value: parameter.value.clone(),
+                        initial_value: parameter.initial_value.clone(),
                         suffix: parameter.suffix_text.clone(),
                         hidden: parameter.access.as_deref() == Some("None"),
                         read_only: parameter.access.as_deref() == Some("Read"),
@@ -2705,6 +2717,7 @@ fn build_module_parameter_lookup(module_defs: &HashMap<String, ModuleDef>) -> Ha
                             text: parameter.text.clone(),
                             type_id: parameter.parameter_type.clone(),
                             default_value: parameter.value.clone(),
+                            initial_value: parameter.initial_value.clone(),
                             suffix: parameter.suffix_text.clone(),
                             hidden: parameter.access.as_deref() == Some("None"),
                             read_only: parameter.access.as_deref() == Some("Read"),
@@ -2754,13 +2767,15 @@ fn initialize_module_param_values(
                         continue;
                     }
                     let Some(base_value) = values.get(&base_composite_id).cloned() else { continue };
-                    let parameter_type = module_parameters
-                        .get(&format!("{}::{}", expanded.module_def_id, parameter_ref.ref_id))
-                        .and_then(|parameter| param_types.get(&parameter.type_id));
-                    let value = parameter_ref
-                        .value
-                        .as_deref()
-                        .map_or(base_value, |raw| parse_value_for_type(parameter_type, raw));
+                    let parameter =
+                        module_parameters.get(&format!("{}::{}", expanded.module_def_id, parameter_ref.ref_id));
+                    let parameter_type = parameter.and_then(|parameter| param_types.get(&parameter.type_id));
+                    let value = match parameter {
+                        Some(parameter) if overrides_parameter_default(parameter_ref, parameter) => {
+                            parse_value_for_type(parameter_type, parameter.untouched_default(Some(parameter_ref)))
+                        }
+                        _ => base_value,
+                    };
                     values.insert(composite_id, value);
                 }
             }
@@ -3189,6 +3204,66 @@ mod tests {
             );
         }
         assert!(Arc::ptr_eq(&original.definition, &Device::from_product(selected, None, None).definition));
+    }
+
+    #[test]
+    fn initial_values_seed_untouched_references_in_the_selected_language() {
+        // MDT's GTS seeds labels this way: `InitialValue="Bus failure"` with a
+        // de-DE translation "Busausfall". It takes precedence over `Value`.
+        let xml = ALLOCATOR_REPEAT_FIXTURE
+            .replace(
+                r#"RefId="M-00FA_A-5_P-COUNT" Value="2" />"#,
+                r#"RefId="M-00FA_A-5_P-COUNT" Value="2" InitialValue="1" />"#,
+            )
+            .replace(
+                r#"<ParameterRef Id="M-00FA_A-5_MD-1_P-1_R-1" RefId="M-00FA_A-5_MD-1_P-1" />"#,
+                r#"<ParameterRef Id="M-00FA_A-5_MD-1_P-1_R-1" RefId="M-00FA_A-5_MD-1_P-1" InitialValue="9" />"#,
+            )
+            .replace("</Manufacturer>", r#"<Languages>
+          <Language Identifier="en-US"><TranslationUnit RefId="M-00FA_A-5">
+            <TranslationElement RefId="M-00FA_A-5_P-COUNT_R-1"><Translation AttributeName="InitialValue" Text="2"/></TranslationElement>
+            <TranslationElement RefId="M-00FA_A-5_MD-1_P-1_R-1"><Translation AttributeName="InitialValue" Text="8"/></TranslationElement>
+          </TranslationUnit></Language></Languages></Manufacturer>"#);
+        let selected = Arc::new(
+            SelectedProduct::from_document(parse_application_program(&xml).expect("initial-value fixture"), None, None)
+                .expect("selected product"),
+        );
+        let count = "M-00FA_A-5_P-COUNT_R-1";
+        for (language, expected_count, expected_level, modules) in [(None, 1, 9, 1), (Some("en-US"), 2, 8, 2)] {
+            let device = Device::from_product(selected.clone(), None, language);
+            assert_eq!(device.get_parameter_value(count), Some(&ParameterValue::Integer(expected_count)));
+            assert_eq!(effective_default(&device, count), Some(ParameterValue::Integer(expected_count)));
+            assert_eq!(device.all_expanded_modules().count(), modules, "the initial count drives module expansion");
+            let instance = device.visible_module_com_objects()[0].module.instance_id.clone();
+            let level = format!("{instance}::M-00FA_A-5_MD-1_P-1_R-1");
+            assert_eq!(
+                device.get_module_parameter_value_by_composite_id(&level),
+                Some(&ParameterValue::Integer(expected_level))
+            );
+            assert_eq!(device.module_parameter_default(&level), Some(ParameterValue::Integer(expected_level)));
+        }
+        // Each language builds its definition once.
+        assert!(Arc::ptr_eq(
+            &Device::from_product(selected.clone(), None, Some("en-US")).definition,
+            &Device::from_product(selected, None, Some("en-US")).definition
+        ));
+    }
+
+    #[test]
+    fn a_parameter_initial_value_outranks_a_reference_value() {
+        // The GTS weekday labels carry `InitialValue` on the parameter itself.
+        let xml = ALLOCATOR_REPEAT_FIXTURE
+            .replace(r#"Text="Count" Value="1">"#, r#"Text="Count" Value="1" InitialValue="3">"#);
+        let selected = Arc::new(
+            SelectedProduct::from_document(parse_application_program(&xml).expect("initial-value fixture"), None, None)
+                .expect("selected product"),
+        );
+        let device = Device::from_product(selected, None, None);
+        // R-1 still declares `Value="2"`; R-2 has no override at all.
+        for reference in ["M-00FA_A-5_P-COUNT_R-1", "M-00FA_A-5_P-COUNT_R-2"] {
+            assert_eq!(device.get_parameter_value(reference), Some(&ParameterValue::Integer(3)));
+        }
+        assert_eq!(effective_default(&device, "M-00FA_A-5_P-COUNT_R-1"), Some(ParameterValue::Integer(3)));
     }
 
     #[test]

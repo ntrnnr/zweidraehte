@@ -12,9 +12,12 @@
 //! languages at runtime keep a pristine copy of the program and apply
 //! onto a fresh clone.
 //!
-//! Only display attributes are touched (`Text`, `SuffixText`,
-//! `FunctionText`); ids, values and memory locations are language
-//! independent by construction.
+//! Display attributes are touched (`Text`, `SuffixText`,
+//! `FunctionText`), plus the one value a product translates: a
+//! `ParameterRef`'s `InitialValue`, which seeds untouched instances.
+//! Ids, other values and memory locations are language independent by
+//! construction, so a translated program compiles differently only through
+//! those initial values.
 //!
 use std::collections::HashMap;
 
@@ -110,12 +113,14 @@ impl Applier<'_> {
                         let id = p.id.clone();
                         self.set(&id, "Text", &mut p.text);
                         self.set_opt(&id, "SuffixText", &mut p.suffix_text);
+                        self.set_opt(&id, "InitialValue", &mut p.initial_value);
                     }
                     ParameterItem::Union(u) => {
                         for p in &mut u.parameters {
                             let id = p.id.clone();
                             self.set(&id, "Text", &mut p.text);
                             self.set_opt(&id, "SuffixText", &mut p.suffix_text);
+                            self.set_opt(&id, "InitialValue", &mut p.initial_value);
                         }
                     }
                 }
@@ -139,6 +144,7 @@ impl Applier<'_> {
             for parameter_ref in &mut refs.refs {
                 let id = parameter_ref.id.clone();
                 self.set_opt(&id, "Text", &mut parameter_ref.text);
+                self.set_opt(&id, "InitialValue", &mut parameter_ref.initial_value);
             }
         }
 
@@ -274,12 +280,14 @@ impl Applier<'_> {
                         let id = parameter.id.clone();
                         self.set(&id, "Text", &mut parameter.text);
                         self.set_opt(&id, "SuffixText", &mut parameter.suffix_text);
+                        self.set_opt(&id, "InitialValue", &mut parameter.initial_value);
                     }
                     ParameterItem::Union(union) => {
                         for parameter in &mut union.parameters {
                             let id = parameter.id.clone();
                             self.set(&id, "Text", &mut parameter.text);
                             self.set_opt(&id, "SuffixText", &mut parameter.suffix_text);
+                            self.set_opt(&id, "InitialValue", &mut parameter.initial_value);
                         }
                     }
                 }
@@ -289,6 +297,7 @@ impl Applier<'_> {
             for parameter_ref in &mut parameter_refs.refs {
                 let id = parameter_ref.id.clone();
                 self.set_opt(&id, "Text", &mut parameter_ref.text);
+                self.set_opt(&id, "InitialValue", &mut parameter_ref.initial_value);
             }
         }
         if let Some(com_objects) = &mut module_def.static_section.com_objects {

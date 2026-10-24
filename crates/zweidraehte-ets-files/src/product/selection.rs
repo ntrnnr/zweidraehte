@@ -3,7 +3,8 @@
 use super::{ProductData, ProductError};
 use crate::runtime::device::DeviceDefinition;
 use crate::schema::{ApplicationProgram, HardwareApplicationProgram2, HardwareApplicationProgramPairing, Knx};
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Exact package relation selected for one primary application program.
 ///
@@ -36,6 +37,9 @@ pub struct SelectedProduct {
     product: ProductData,
     relation: Option<ApplicationProgramRelation>,
     runtime_definition: OnceLock<Arc<DeviceDefinition>>,
+    /// Definitions of the program translated into one language. Clones
+    /// share them: the document they derive from is immutable.
+    translated_definitions: Arc<Mutex<HashMap<String, Arc<DeviceDefinition>>>>,
 }
 
 impl SelectedProduct {
@@ -49,7 +53,13 @@ impl SelectedProduct {
         master_data_xml: Option<&str>,
     ) -> Result<Self, ProductError> {
         let product = extract_product(&document, relation.clone(), master_data_xml)?;
-        Ok(Self { document, product, relation, runtime_definition: OnceLock::new() })
+        Ok(Self {
+            document,
+            product,
+            relation,
+            runtime_definition: OnceLock::new(),
+            translated_definitions: Arc::default(),
+        })
     }
 
     pub fn document(&self) -> &Knx {
@@ -62,6 +72,23 @@ impl SelectedProduct {
 
     pub(crate) fn runtime_definition(&self) -> &Arc<DeviceDefinition> {
         self.runtime_definition.get_or_init(|| Arc::new(DeviceDefinition::new(self.program().clone())))
+    }
+
+    /// The definition translated into `language`, built once per language.
+    /// A language the document does not translate into keeps the base
+    /// definition, as the product's own default language.
+    pub(crate) fn translated_definition(&self, language: &str) -> Arc<DeviceDefinition> {
+        let mut definitions = self.translated_definitions.lock().expect("translation cache is never poisoned");
+        if let Some(definition) = definitions.get(language) {
+            return definition.clone();
+        }
+        let mut program = self.program().clone();
+        let definition = match crate::runtime::Translations::from_knx(&self.document).apply(&mut program, language) {
+            Some(_) => Arc::new(DeviceDefinition::new(program)),
+            None => self.runtime_definition().clone(),
+        };
+        definitions.insert(language.to_owned(), definition.clone());
+        definition
     }
 
     pub fn relation(&self) -> Option<&ApplicationProgramRelation> {

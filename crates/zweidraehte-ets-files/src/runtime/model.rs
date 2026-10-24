@@ -126,6 +126,8 @@ pub struct ParameterInfo {
     pub type_id: String,
     /// Default value as string
     pub default_value: String,
+    /// The parameter's own `InitialValue`, which outranks every `Value`.
+    pub initial_value: Option<String>,
     /// Suffix text (e.g., "s" for seconds)
     pub suffix: Option<String>,
     /// Whether hidden from user (Access = "None")
@@ -133,6 +135,22 @@ pub struct ParameterInfo {
     /// Whether visible but not user-writable (Access = "Read"). A
     /// `ParameterRef` may override this per placement in either direction.
     pub read_only: bool,
+}
+
+impl ParameterInfo {
+    /// The raw value of an untouched instance, optionally through one reference.
+    ///
+    /// Any `InitialValue` outranks the `Value` defaults, the reference's
+    /// first: the reference tool resets an instance to its initial value and
+    /// falls back to the reference's or parameter's default only without one.
+    /// A parameter without an active instance stores its `Value` instead.
+    pub fn untouched_default<'a>(&'a self, reference: Option<&'a crate::schema::ParameterRef>) -> &'a str {
+        reference
+            .and_then(|reference| reference.initial_value.as_deref())
+            .or(self.initial_value.as_deref())
+            .or_else(|| reference.and_then(|reference| reference.value.as_deref()))
+            .unwrap_or(&self.default_value)
+    }
 }
 
 /// A module argument value (numeric or text).

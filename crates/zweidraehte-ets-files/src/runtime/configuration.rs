@@ -377,14 +377,10 @@ pub fn effective_default(device: &Device, param_id: &str) -> Option<ParameterVal
         return device.module_parameter_default(param_id);
     }
     let base_id = device.root_parameter_id(param_id)?;
-    let ref_override = device
+    let reference = device
         .get_parameter_ref(param_id)
-        .or_else(|| device.visible_param_refs().find(|parameter_ref| parameter_ref.ref_id == base_id))
-        .and_then(|parameter_ref| parameter_ref.value.as_deref())
-        .map(|raw| device.parse_value_typed(param_id, raw));
-    ref_override.or_else(|| {
-        device.get_parameter_info(base_id).map(|info| device.parse_value_typed(base_id, &info.default_value))
-    })
+        .or_else(|| device.visible_param_refs().find(|parameter_ref| parameter_ref.ref_id == base_id));
+    device.get_parameter_info(base_id).map(|info| device.parse_value_typed(param_id, info.untouched_default(reference)))
 }
 
 /// Capture touched parameter values which differ from their effective
