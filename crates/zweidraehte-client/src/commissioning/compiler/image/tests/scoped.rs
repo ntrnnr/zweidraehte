@@ -241,3 +241,79 @@ fn scoped_unload_ignores_unrelated_formats_after_ruling_out_shared_allocation() 
         .expect("BCU2 association format rules out shared allocation without interpreting the address format");
     assert!(image.image.range(&location, 1).is_ok());
 }
+
+/// A BCU1-style profile whose Master Data `Load all` consists of `controls`.
+fn absolute_load_profile(controls: &str) -> ResolvedProfile {
+    let catalog = parse_master_data(&format!(
+        r#"
+        <KNX xmlns="http://knx.org/xml/project/20"><MasterData Id="MD" Version="1"><MaskVersions>
+          <MaskVersion Id="MV-0012" MaskVersion="18" Name="Image fixture" ManagementModel="Bcu1" MediumTypeRefId="MT-0">
+            <HawkConfigurationData>
+              <Procedures><Procedure ProcedureType="Load" ProcedureSubType="all" Access="remote">{controls}</Procedure></Procedures>
+            </HawkConfigurationData>
+          </MaskVersion>
+        </MaskVersions></MasterData></KNX>"#
+    ))
+    .expect("procedure catalogue parses");
+    resolve_catalog_profile(&catalog, None, &ProfileSelection {
+        discovery: ProfileDiscovery {
+            dd0: 0x0012,
+            management_descriptor_01: None,
+            management_style: Some(crate::commissioning::catalog::profile::ResourceManagementStyle::Simple),
+        },
+        variant_hint: VariantHint::Automatic,
+    })
+    .expect("procedure profile resolves")
+}
+
+#[test]
+fn memory_no_load_write_sends_from_the_image_belongs_to_no_section() {
+    // MV-0012 writes RunError only inline and stops its last image write one
+    // byte before the segment ends. Neither byte can confirm AP1.
+    let (_, _, product, _) = plain_fixture();
+    let profile = absolute_load_profile(
+        r#"<LdCtrlConnect />
+           <LdCtrlWriteMem Address="256" Size="1" Verify="true" InlineData="00" />
+           <LdCtrlLoadImageMem Address="257" Size="1" />
+           <LdCtrlWriteMem Address="257" Size="2" Verify="true" />
+           <LdCtrlRestart />"#,
+    );
+    let start = ImageLocation::standard_memory(256);
+    let mut image = SparseDeviceImage::new();
+    image.apply_section(
+        ProgrammingSection::ApplicationProgram1,
+        &ImageSegment::owned(start.clone(), vec![0x00, 0x11, 0x22, 0x33]).expect("product bytes"),
+    );
+    let desired = image.clone();
+
+    super::super::scope::release_untransferred_memory(&profile, &product, &mut image);
+
+    let section = |offset| image.sections_for_range(&ImageLocation::standard_memory(offset), 1);
+    assert!(section(256).is_empty(), "an inline-only byte is not sent from the image");
+    assert_eq!(section(257), [ProgrammingSection::ApplicationProgram1].into());
+    assert_eq!(section(258), [ProgrammingSection::ApplicationProgram1].into());
+    assert!(section(259).is_empty(), "a byte past the last write is never sent");
+    assert_eq!(image.range(&start, 4).expect("bytes stay owned"), desired.range(&start, 4).expect("desired bytes"));
+}
+
+#[test]
+fn memory_ownership_is_unchanged_when_the_source_procedure_cannot_bound_it() {
+    let (_, _, product, _) = plain_fixture();
+    for controls in [
+        // A segment transfer sends image bytes a plain memory scan cannot see.
+        r#"<LdCtrlWriteMem Address="256" Size="1" Verify="true" />
+           <LdCtrlAbsSegment LsmIdx="1" SegType="0" Address="256" Size="4" Access="255" MemType="2" SegFlags="128" />"#,
+        // No image write at all describes no layout.
+        r#"<LdCtrlConnect /><LdCtrlRestart />"#,
+    ] {
+        let profile = absolute_load_profile(controls);
+        let mut image = SparseDeviceImage::new();
+        image.apply_section(
+            ProgrammingSection::ApplicationProgram1,
+            &ImageSegment::owned(ImageLocation::standard_memory(256), vec![1, 2, 3, 4]).expect("product bytes"),
+        );
+        let desired = image.clone();
+        super::super::scope::release_untransferred_memory(&profile, &product, &mut image);
+        assert_eq!(image.manifest(), desired.manifest(), "{controls}");
+    }
+}

@@ -249,6 +249,25 @@ impl SparseDeviceImage {
         self.bytes.get(&location.space)?.get(&location.offset).map(|byte| (byte.data, byte.mask))
     }
 
+    /// Keep the desired bits of `space` for reads and transfers, but
+    /// attribute each byte that `release` selects to no section.
+    ///
+    /// A section digest commits only to bytes a download establishes; a byte
+    /// that no transfer sends could never be confirmed.
+    pub(in crate::commissioning) fn release_sections(
+        &mut self,
+        space: &ImageSpace,
+        mut release: impl FnMut(u32) -> bool,
+    ) {
+        if let Some(bytes) = self.bytes.get_mut(space) {
+            for (offset, byte) in bytes.iter_mut() {
+                if release(*offset) {
+                    byte.owners = [0; 6];
+                }
+            }
+        }
+    }
+
     /// Forget contents before a mutation whose completion may be uncertain.
     pub fn invalidate(&mut self, location: &ImageLocation, length: u32) {
         if let Some(bytes) = self.bytes.get_mut(&location.space) {

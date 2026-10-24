@@ -1,9 +1,89 @@
 //! A selected procedure's applicability bounds its desired image ownership.
 
+use crate::commissioning::catalog::profile::ResolvedProfile;
+use crate::commissioning::compiler::selection::sources::select_master_procedure;
+use crate::commissioning::compiler::selection::syntax::parse_memory_location;
 use crate::commissioning::error::CompileError;
 use crate::commissioning::image::{ImageSegment, ImageSpace, SparseDeviceImage};
 use crate::commissioning::input::ProgramSections;
+use zweidraehte_ets_files::product::{LoadProcedureStyle, ProductData};
+use zweidraehte_ets_files::schema::LoadControl;
 use zweidraehte_project::ProgrammingSection;
+
+/// Attribute no section to memory bytes that the mask's download never sends
+/// from the image.
+///
+/// A product segment can cover bytes that the load procedure leaves alone or
+/// writes only with authored constants. BCU1 (MV-0012) is the witness: its
+/// `Load all` writes 230 bytes from 0119h, so the segment's last byte at
+/// 01FFh is never sent, and it writes `RunError` (010Dh) only as inline 00h
+/// and FFh. Such bytes cannot be confirmed after a download, so a section
+/// owning them would never count as programmed.
+///
+/// The bound is static only when the product loads through the mask's
+/// Master Data `Load all` and that procedure addresses memory with nothing
+/// but absolute `LdCtrlWriteMem` writes. Every other control set (segments,
+/// relative memory, properties, `choose`, merges, product procedures) leaves
+/// ownership unchanged. Partial downloads write a subset of `Load all`, so
+/// its writes bound them too. Desired bytes and masks are unchanged: only
+/// section digests lose the bytes.
+pub(super) fn release_untransferred_memory(
+    profile: &ResolvedProfile,
+    product: &ProductData,
+    image: &mut SparseDeviceImage,
+) {
+    if product.load_procedure_style() != LoadProcedureStyle::Default {
+        return;
+    }
+    // Without one selectable source procedure there is no bound to apply;
+    // compiling the download itself reports that failure.
+    let Ok((_, source)) = select_master_procedure(profile, "Load", "all") else { return };
+    let mut covered: Vec<(ImageSpace, u32, u32)> = Vec::new();
+    for control in &source.controls {
+        match control {
+            LoadControl::LdCtrlWriteMem(write) => {
+                let Some(location) = parse_memory_location(write.address_space.as_deref(), write.address) else {
+                    return;
+                };
+                // Inline data replaces the image bytes on the wire.
+                if write.inline_data.is_none() {
+                    covered.push((location.space, location.offset, location.offset.saturating_add(write.size)));
+                }
+            }
+            // These controls read, compare or sequence; none sends image bytes.
+            LoadControl::LdCtrlConnect(_)
+            | LoadControl::LdCtrlDisconnect(_)
+            | LoadControl::LdCtrlRestart(_)
+            | LoadControl::LdCtrlMasterReset(_)
+            | LoadControl::LdCtrlDelay(_)
+            | LoadControl::LdCtrlSetControlVariable(_)
+            | LoadControl::LdCtrlMapError(_)
+            | LoadControl::LdCtrlProgressText(_)
+            | LoadControl::LdCtrlLoadImageMem(_)
+            | LoadControl::LdCtrlCompareMem(_)
+            | LoadControl::LdCtrlMaxLength(_)
+            | LoadControl::LdCtrlClearCachedObjectTypes(_) => {}
+            _ => return,
+        }
+    }
+    // A source that sends no image bytes at all describes no image layout;
+    // releasing everything would only hide that the product was not loaded.
+    if covered.is_empty() {
+        return;
+    }
+    for space in [
+        ImageSpace::StandardMemory,
+        ImageSpace::UserMemory,
+        ImageSpace::LineCouplerSlave,
+        ImageSpace::LineCouplerFilter,
+    ] {
+        image.release_sections(&space, |offset| {
+            !covered
+                .iter()
+                .any(|(covered_space, start, end)| *covered_space == space && (*start..*end).contains(&offset))
+        });
+    }
+}
 
 pub(super) fn retain_download_sections(
     image: &mut SparseDeviceImage,
