@@ -33,6 +33,8 @@ pub(super) struct ProjectEditor {
     snapshot: Option<ProgrammingSnapshot>,
     /// The edited device's download procedure from the latest status inputs.
     procedure: Option<crate::app::ProcedureView>,
+    /// Devices whose recorded deployment established Data Secure.
+    secured: BTreeSet<ProjectDeviceId>,
     status: Option<StartupStatusUi>,
     generation: u64,
 }
@@ -88,6 +90,9 @@ impl ProjectEditor {
     }
     pub(super) fn procedure(&self) -> Option<&crate::app::ProcedureView> {
         self.procedure.as_ref()
+    }
+    pub(super) fn secured(&self) -> &BTreeSet<ProjectDeviceId> {
+        &self.secured
     }
     pub(super) fn status(&self) -> Option<&StartupStatusUi> {
         self.status.as_ref()
@@ -495,6 +500,7 @@ impl ProjectEditor {
                 self.cache = outcome.cache;
                 self.snapshot = Some(outcome.snapshot);
                 self.procedure = outcome.procedure.map(crate::app::ProcedureView::from_preview);
+                self.secured = outcome.secured;
                 self.status = None;
                 let message = if pending == 0 {
                     format!("Calculated programming status for {count} devices")

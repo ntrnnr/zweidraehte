@@ -1,6 +1,7 @@
 //! Thread/channel adaptation around the shared status acquisition boundary.
 
 use crate::error_message;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use zweidraehte_client::cli::SecurityArgs;
@@ -25,6 +26,8 @@ pub(crate) struct StatusRefreshOutcome {
     pub(crate) snapshot: ProgrammingSnapshot,
     pub(crate) cache: ProjectStatusCache,
     pub(crate) procedure: Option<Result<DownloadPreview, String>>,
+    /// Devices whose last successful programming established Data Secure.
+    pub(crate) secured: BTreeSet<ProjectDeviceId>,
 }
 
 /// A compiled download procedure and whether a deployment record of the
@@ -91,5 +94,21 @@ fn calculate(job: &mut StatusRefreshJob, tx: &Sender<StatusRefreshMsg>) -> Resul
             .map(|preview| DownloadPreview { preview, deployed })
             .map_err(|error| error_message(&error))
     });
-    Ok(StatusRefreshOutcome { snapshot, cache: std::mem::take(&mut job.cache), procedure })
+    // Only a recorded deployment says what the device runs. The project's
+    // `data_secure` line is intent and may not have been programmed yet.
+    let secured = inputs
+        .store()
+        .state()
+        .map(|state| {
+            state
+                .deployments
+                .iter()
+                .filter(|(_, evidence)| {
+                    evidence.commissioning.as_ref().and_then(|record| record.data_security_enabled) == Some(true)
+                })
+                .filter_map(|(id, _)| ProjectDeviceId::new(id.as_str()).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(StatusRefreshOutcome { snapshot, cache: std::mem::take(&mut job.cache), procedure, secured })
 }

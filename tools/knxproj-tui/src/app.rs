@@ -569,6 +569,11 @@ impl App {
         self.project.snapshot()?.view().statuses.get(device).copied()
     }
 
+    /// Whether the device's recorded deployment established Data Secure.
+    pub fn project_device_secured(&self, device: &ProjectDeviceId) -> bool {
+        self.project.secured().contains(device)
+    }
+
     pub fn project_programming_requirements(&self, device: &ProjectDeviceId) -> &[ImageRequirement] {
         self.project.snapshot().and_then(|snapshot| snapshot.view().requirements.get(device)).map_or(&[], Vec::as_slice)
     }
@@ -3385,6 +3390,7 @@ mod project_editor_tests {
                 snapshot,
                 cache: ProjectStatusCache::default(),
                 procedure: None,
+                secured: Default::default(),
             })),
         })
         .expect("snapshot delivered");
@@ -3395,6 +3401,27 @@ mod project_editor_tests {
         let (tx, receiver) = std::sync::mpsc::channel();
         app.project.begin_status(receiver, 3);
         tx
+    }
+
+    #[test]
+    fn each_status_result_replaces_the_secured_devices() {
+        let (_directory, mut app, button) = app_with_project();
+        for secured in [BTreeSet::from([button.clone()]), BTreeSet::new()] {
+            let snapshot = status_snapshot(&app, BTreeSet::from([button.clone()]));
+            let tx = status_worker(&mut app);
+            tx.send(crate::status::StatusRefreshMsg::Done {
+                generation: app.project.generation(),
+                result: Ok(Box::new(crate::status::StatusRefreshOutcome {
+                    snapshot,
+                    cache: ProjectStatusCache::default(),
+                    procedure: None,
+                    secured: secured.clone(),
+                })),
+            })
+            .expect("result is delivered");
+            app.poll_startup_status();
+            assert_eq!(app.project_device_secured(&button), !secured.is_empty());
+        }
     }
 
     #[test]
@@ -3421,6 +3448,7 @@ mod project_editor_tests {
                 snapshot,
                 cache: ProjectStatusCache::default(),
                 procedure: None,
+                secured: Default::default(),
             })),
         })
         .expect("result is delivered");
@@ -3444,6 +3472,7 @@ mod project_editor_tests {
                 snapshot,
                 cache: ProjectStatusCache::default(),
                 procedure: None,
+                secured: Default::default(),
             })),
         })
         .expect("result is delivered");
@@ -3498,6 +3527,7 @@ mod project_editor_tests {
                     snapshot: status_snapshot(&app, BTreeSet::from([button.clone()])),
                     cache: ProjectStatusCache::default(),
                     procedure: None,
+                    secured: Default::default(),
                 })),
             })
             .expect("queue result before language changes");
@@ -3524,6 +3554,7 @@ mod project_editor_tests {
                     snapshot: snapshot.clone(),
                     cache: ProjectStatusCache::default(),
                     procedure: None,
+                    secured: Default::default(),
                 })),
             })
             .expect("queued result");
@@ -3546,6 +3577,7 @@ mod project_editor_tests {
                     snapshot: snapshot.clone(),
                     cache: ProjectStatusCache::default(),
                     procedure: None,
+                    secured: Default::default(),
                 })),
             })
             .expect("obsolete generation");
@@ -3558,6 +3590,7 @@ mod project_editor_tests {
                     snapshot,
                     cache: ProjectStatusCache::default(),
                     procedure: None,
+                    secured: Default::default(),
                 })),
             })
             .expect("current generation");
@@ -3583,6 +3616,7 @@ mod project_editor_tests {
                 snapshot,
                 cache: ProjectStatusCache::default(),
                 procedure: None,
+                secured: Default::default(),
             })),
         })
         .expect("queued result");

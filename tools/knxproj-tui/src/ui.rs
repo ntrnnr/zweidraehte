@@ -142,8 +142,11 @@ fn render_project_navigation(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 ""
             };
-            let device_line =
-                Line::from(Span::styled(format!("{}{}{}", "  ".repeat(row.depth), marker, row.label), style));
+            let secured = row.target.as_ref().is_some_and(|device| app.project_device_secured(device));
+            let device_line = Line::from(Span::styled(
+                format!("{}{}{}{}", "  ".repeat(row.depth), marker, row.label, if secured { " 🔒" } else { "" }),
+                style,
+            ));
             if row.inactive {
                 return ListItem::new(device_line);
             }
