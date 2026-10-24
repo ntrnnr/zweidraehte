@@ -758,6 +758,33 @@ impl Device {
         self.active_param_refs.contains(&format!("{instance_id}::{param_ref_id}"))
     }
 
+    /// Stored parameters that an active reference instantiates, or `None`
+    /// when nothing selects references and every parameter is active.
+    ///
+    /// Root entries are parameter IDs; module entries are
+    /// `instance_id::parameter_id`, matching the stored-parameter IDs.
+    pub(crate) fn active_storage_parameters(&self) -> Option<HashSet<String>> {
+        if self.definition.program.dynamic.is_none() {
+            return None;
+        }
+        let mut parameters = HashSet::new();
+        for id in &self.active_param_refs {
+            match id.split_once("::") {
+                Some((instance, ref_id)) => {
+                    if let Some(reference) = self.scoped_parameter_ref(Some(instance), ref_id) {
+                        parameters.insert(format!("{instance}::{}", reference.ref_id));
+                    }
+                }
+                None => {
+                    if let Some(reference) = self.definition.param_refs.get(id) {
+                        parameters.insert(reference.ref_id.clone());
+                    }
+                }
+            }
+        }
+        Some(parameters)
+    }
+
     /// Check if a parameter ref is currently visible.
     pub fn is_param_ref_visible(&self, ref_id: &str) -> bool {
         self.visible_param_refs.contains(ref_id)
@@ -2641,9 +2668,11 @@ fn build_param_ref_value_lookup(
 /// other than its parameter's `Value`.
 ///
 /// Only instances get an `InitialValue`: the base parameter value, which an
-/// inactive parameter stores, stays the parameter's `Value`. MDT's GTS is
-/// the witness: its active weekday labels store `Mo`...`So`, while the
-/// inactive visualization texts with `InitialValue="Off"` store zeros.
+/// inactive parameter stores under `DownloadInvisibleParameters="DefaultValue"`,
+/// stays the parameter's `Value`. MDT's GTS stores `Mo`...`So` for its active
+/// weekday labels, but it uses `Background`, which stores no inactive value.
+/// TODO: confirm with a `DefaultValue` product whether an inactive parameter
+/// stores its `InitialValue` instead.
 fn overrides_parameter_default(parameter_ref: &ParameterRef, parameter: &ParameterInfo) -> bool {
     parameter_ref.initial_value.is_some() || parameter.initial_value.is_some() || parameter_ref.value.is_some()
 }
@@ -3536,6 +3565,30 @@ mod tests {
     </ApplicationProgram>
   </ApplicationPrograms></Manufacturer></ManufacturerData>
 </KNX>"#;
+
+    #[test]
+    fn invisible_parameter_behaviour_decides_whether_inactive_defaults_are_stored() {
+        // Usage 0 deactivates Subtype and Level. Only `DefaultValue` (and its
+        // absence) stores their declared defaults; MDT's GTS uses `Background`.
+        for (options, stored) in [
+            ("", true),
+            (r#"<Options DownloadInvisibleParameters="DefaultValue" />"#, true),
+            (r#"<Options DownloadInvisibleParameters="Background" />"#, false),
+            (r#"<Options DownloadInvisibleParameters="None" />"#, false),
+        ] {
+            let xml = GATED_CHANNEL_FIXTURE.replacen("<Static>", &format!("<Static>{options}"), 1);
+            let selected =
+                SelectedProduct::from_document(parse_application_program(&xml).expect("fixture"), None, None)
+                    .expect("selected product");
+            let device = Device::from_product(Arc::new(selected), None, None);
+            let evaluated = device.evaluate(&[]).expect("default evaluation");
+            let ids = evaluated.parameter_overlays().map(|overlay| overlay.id.into_owned()).collect::<HashSet<_>>();
+            assert!(ids.contains("M-00FA_A-3_P-10"), "the active usage parameter is always stored");
+            for inactive in ["M-00FA_A-3_P-11", "M-00FA_A-3_P-12"] {
+                assert_eq!(ids.contains(inactive), stored, "{options:?} stores {inactive}");
+            }
+        }
+    }
 
     #[test]
     fn dynamic_level_choose_gates_whole_channels() {

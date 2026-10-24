@@ -9,7 +9,7 @@ use super::configuration::{
     effective_com_objects, effective_default, validate_configuration, validate_stored_setting,
 };
 use super::model::ParameterValue;
-use crate::product::{MaterializedModule, ProductData, SelectedProduct};
+use crate::product::{DownloadBehavior, MaterializedModule, ProductData, SelectedProduct};
 use crate::schema::{ParameterRef, ParameterTypeDef};
 
 /// Why a value participates in the ordered programming overlays.
@@ -198,8 +198,25 @@ impl<'a> EvaluatedProduct<'a> {
     /// Values and root IDs borrow the evaluation where available; this does not
     /// clone editor state.
     pub fn parameter_overlays(&self) -> impl Iterator<Item = ParameterOverlay<'_>> {
-        let defaults =
-            self.product.parameters().iter().filter(|location| location.seeds_default).filter_map(|location| {
+        // `DownloadInvisibleParameters` other than `DefaultValue` gives an
+        // inactive parameter no value: the reference formatter marks it
+        // `InactiveNull` and its bytes keep the segment's seed or fill. MDT's
+        // GTS (M-0083_A-018C-23-81D7, `Background`) is the witness: its
+        // inactive ambient-lighting settings store zeros, and their declared
+        // defaults switch the ambient light on.
+        // TODO: under `Background`, store an inactive parameter's authored
+        // value; the reference keeps a once-edited value in the background.
+        let active = match self.product.programming_options().download_invisible_parameters().value {
+            DownloadBehavior::DefaultValue => None,
+            _ => self.device.active_storage_parameters(),
+        };
+        let defaults = self
+            .product
+            .parameters()
+            .iter()
+            .filter(|location| location.seeds_default)
+            .filter(move |location| active.as_ref().is_none_or(|active| active.contains(&location.id)))
+            .filter_map(|location| {
                 self.overlay(
                     Cow::Borrowed(&location.id),
                     Cow::Borrowed(self.parameter_value(&location.id)?),
