@@ -1916,3 +1916,49 @@ async fn pointer_is_read_again_after_each_allocation() {
     );
     result.expect("fresh pointer used after each allocation");
 }
+
+#[tokio::test]
+async fn filled_allocation_skips_only_long_fill_runs_of_a_sparse_image_window() {
+    let (bus, rx) = bus();
+    let mut session =
+        ExecutionSession::new(&bus, address(), config(false), ManagementAccess::Plaintext).expect("valid session");
+    session.begin_execution();
+    // A 15-octet APDU bounds the skipped run at 15 - 7 = 8 bytes: the
+    // 40-byte gap is left out, the 5-byte gap travels inside the frame.
+    let mut desired = vec![1];
+    desired.extend([0; 40]);
+    desired.push(2);
+    desired.extend([0; 5]);
+    desired.push(3);
+    let length = desired.len() as u32;
+    let mut image = SparseDeviceImage::new();
+    image.apply_section(
+        zweidraehte_project::ProgrammingSection::ApplicationProgram1,
+        &crate::commissioning::image::ImageSegment::owned(location(0x100), desired).expect("sparse application"),
+    );
+    let allocation = LoadRecord {
+        write: ServiceRead { target: memory(0x200), extent: OperationExtent::bytes(1) },
+        bytes: vec![0x0a],
+        poll: None,
+        effect: LoadEffect::Fill { location: location(0x100), length, filled: length, value: 0 },
+    };
+    let controls = procedure(vec![
+        ProcedureOperation::Connect,
+        ProcedureOperation::LoadRecord(allocation),
+        write(memory(0x100), OperationData::ImageWindow { location: location(0x100), maximum: length }, length),
+        ProcedureOperation::Disconnect,
+    ]);
+    let script = vec![
+        Wire::Open(false),
+        mem_write(0x200, &[0x0a]),
+        mem_write(0x100, &[1]),
+        mem_write(0x129, &[2, 0, 0, 0, 0, 0, 3]),
+        Wire::Close(Ok(())),
+    ];
+    let regions = vec![native(location(0x100), length)];
+    let (result, ()) =
+        tokio::join!(ProcedureRunner::new(&mut session).execute(&image, &regions, &controls, ()), peer(rx, script));
+    result.expect("the filled gap is not sent");
+    // The skipped bytes are known from the fill, so they confirm the section.
+    assert_eq!(session.images.known.byte(&location(0x110)), Some((0, 255)));
+}

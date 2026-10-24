@@ -153,15 +153,16 @@ impl ProcedureLowerer<'_> {
                     write,
                     bytes: LoadControlRecord::rel_segment(&segment).to_vec(),
                     poll: Some((status, LoadState::Loading)),
-                    effect: LoadEffect::Invalidate {
-                        location: ImageLocation {
+                    effect: rel_segment_effect(
+                        &segment,
+                        ImageLocation {
                             space: crate::commissioning::image::ImageSpace::RelativeMemory {
                                 object: machine_object(&target),
                             },
                             offset: 0,
                         },
-                        length: size,
-                    },
+                        size,
+                    ),
                 };
                 self.parsed.allocations.push(RelativeAllocation {
                     step: self.parsed.program.steps.len(),
@@ -373,4 +374,14 @@ impl ProcedureLowerer<'_> {
         };
         Ok(LoadRecord { write, bytes, poll: expected.map(|expected| (status, expected)), effect: LoadEffect::None })
     }
+}
+
+/// The device-state effect of one relative allocation: it forgets `length`
+/// bytes, and with fill mode (`mode` bit 0) the allocated segment then holds
+/// its fill value.
+pub(super) fn rel_segment_effect(segment: &RelSegment, location: ImageLocation, length: u32) -> LoadEffect {
+    if segment.mode & 1 == 0 {
+        return LoadEffect::Invalidate { location, length };
+    }
+    LoadEffect::Fill { location, length, filled: segment.requested_memory_size.min(length), value: segment.fill }
 }

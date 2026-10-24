@@ -21,6 +21,8 @@ pub(in crate::commissioning) struct ImageState<'a> {
     device_stamps: BTreeMap<ResourceId, Vec<u8>>,
     stamp_output: Option<&'a crate::commissioning::procedure::DownloadStampOutput>,
     stamp_observations: SparseDeviceImage,
+    /// Allocations the device confirmed it filled, as `(start, length)`.
+    filled: Vec<(ImageLocation, u32)>,
 }
 
 pub(super) struct CachedRead {
@@ -235,6 +237,25 @@ impl<'a> ImageState<'a> {
         self.known.clear();
         self.programmed_image.clear();
         self.pointers.clear();
+        self.filled.clear();
+    }
+
+    /// A confirmed allocation holds `value` in its first `length` bytes.
+    pub(super) fn fill_range(&mut self, location: &ImageLocation, length: u32, value: u8) -> Result<(), ImageError> {
+        let bytes = usize::try_from(length).map_err(|_| ImageError::InvalidState("fill exceeds the host".into()))?;
+        self.known.apply_owned(location.clone(), vec![value; bytes])?;
+        self.filled.push((location.clone(), length));
+        Ok(())
+    }
+
+    /// Whether `length` bytes at `location` lie inside one filled allocation.
+    /// Equality with the device still comes from the known image alone.
+    pub(super) fn is_filled(&self, location: &ImageLocation, length: u32) -> bool {
+        self.filled.iter().any(|(start, filled)| {
+            start.space == location.space
+                && start.offset <= location.offset
+                && u64::from(location.offset) + u64::from(length) <= u64::from(start.offset) + u64::from(*filled)
+        })
     }
 
     pub(super) fn invalidate_range(&mut self, location: &ImageLocation, length: u32) {
@@ -252,6 +273,9 @@ impl<'a> ImageState<'a> {
         self.known.invalidate(location, length);
         self.programmed_image.invalidate(location, length);
         self.pointers.remove(&location.space);
+        self.filled.retain(|(start, filled)| {
+            start.space != location.space || !ranges_overlap(start.offset, *filled, location.offset, length)
+        });
     }
 
     pub(super) fn cached(

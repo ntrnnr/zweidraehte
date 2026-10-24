@@ -262,6 +262,9 @@ fn load_effect(effect: &LoadEffect) -> String {
             format!(", invalidates {length} bytes at {}", location(start))
         }
         LoadEffect::InvalidateAll => ", invalidates the image".to_owned(),
+        LoadEffect::Fill { location: start, length, filled, value } => {
+            format!(", invalidates {length} bytes at {}, fills {filled} with {value:02X}", location(start))
+        }
     }
 }
 

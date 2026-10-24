@@ -326,7 +326,16 @@ impl ExecutionSession<'_> {
             .and_then(|_| super::image_state::ImageState::target_location(target, extent))
         {
             Some(destination) => {
-                changed_ranges(units, self.config.minimum_equal_run.max(1).div_ceil(width), false, |unit| {
+                // A filled allocation already holds most of a sparse image's
+                // bytes. Inside it, only runs of at least min(31, APDU - 7)
+                // equal bytes are left out: a shorter run costs less in the
+                // current frame than the header of another one.
+                let minimum_equal_run = if self.images.is_filled(&destination, extent.byte_length) {
+                    self.payload_budget(7)?.min(31)
+                } else {
+                    self.config.minimum_equal_run
+                };
+                changed_ranges(units, minimum_equal_run.max(1).div_ceil(width), false, |unit| {
                     (unit * width..((unit + 1) * width).min(bytes.len())).all(|index| {
                         let byte = ImageLocation {
                             space: destination.space.clone(),

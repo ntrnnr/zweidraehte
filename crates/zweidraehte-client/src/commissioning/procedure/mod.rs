@@ -352,8 +352,22 @@ impl LoadRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadEffect {
     None,
-    Invalidate { location: ImageLocation, length: u32 },
+    Invalidate {
+        location: ImageLocation,
+        length: u32,
+    },
     InvalidateAll,
+    /// Invalidate `length` bytes like [`Self::Invalidate`]; once the command
+    /// has succeeded, the first `filled` of them hold `value`.
+    ///
+    /// A relative allocation with fill mode asks the device to clear its new
+    /// segment. Later image writes need not send runs of that value.
+    Fill {
+        location: ImageLocation,
+        length: u32,
+        filled: u32,
+        value: u8,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

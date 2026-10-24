@@ -592,10 +592,8 @@ impl ParsedProcedure {
             // short authored request names. An exact table allocation stops
             // at its encoded table.
             let invalidated = if exact { requested_memory_size } else { requested_memory_size.max(end.unwrap_or(0)) };
-            record.effect = crate::commissioning::procedure::LoadEffect::Invalidate {
-                location: ImageLocation { space, offset: 0 },
-                length: invalidated,
-            };
+            record.effect =
+                super::controls::rel_segment_effect(&segment, ImageLocation { space, offset: 0 }, invalidated);
         }
         rewrite_system300_table_writes(profile, table_spans, &self.system300_table_writes, &mut self.program)?;
         let mut loaded_ranges = Vec::new();

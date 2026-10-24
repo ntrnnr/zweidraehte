@@ -51,7 +51,9 @@ pub(super) fn required_image_ranges(
                 }
             }
             ProcedureOperation::AbsoluteSegment { record, .. } | ProcedureOperation::LoadRecord(record) => {
-                if let LoadEffect::Invalidate { location, length } = &record.effect {
+                if let LoadEffect::Invalidate { location, length } | LoadEffect::Fill { location, length, .. } =
+                    &record.effect
+                {
                     probe.push(RequiredImageRange { location: location.clone(), length: *length });
                 }
             }

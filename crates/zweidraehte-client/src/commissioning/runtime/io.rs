@@ -426,7 +426,8 @@ impl ExecutionSession<'_> {
         // Their status read belongs to the same authored error boundary.
         match &record.effect {
             crate::commissioning::procedure::LoadEffect::None => {}
-            crate::commissioning::procedure::LoadEffect::Invalidate { location, length } => {
+            crate::commissioning::procedure::LoadEffect::Invalidate { location, length }
+            | crate::commissioning::procedure::LoadEffect::Fill { location, length, .. } => {
                 self.images.invalidate_range(location, *length)
             }
             crate::commissioning::procedure::LoadEffect::InvalidateAll => self.images.forget_device(),
@@ -451,7 +452,7 @@ impl ExecutionSession<'_> {
                 let state =
                     LoadState::try_from(raw).map_err(|_| Diagnostic::new(format!("unknown load state {raw:#04x}")))?;
                 if state == *expected {
-                    return Ok(());
+                    return self.record_fill(&record.effect);
                 }
                 if state == LoadState::Err {
                     return Err(self.semantic_error(
@@ -467,6 +468,15 @@ impl ExecutionSession<'_> {
                 format!("load machine did not reach {expected}"),
                 LoadControlCause::Symbolic("LoadStateMismatch".into()),
             ));
+        }
+        self.record_fill(&record.effect)
+    }
+
+    /// Only an allocation the device accepted holds its fill value; a failed
+    /// or unconfirmed one stays invalidated.
+    fn record_fill(&mut self, effect: &LoadEffect) -> Result<(), Diagnostic> {
+        if let LoadEffect::Fill { location, filled, value, .. } = effect {
+            self.images.fill_range(location, *filled, *value).map_err(|error| Diagnostic::new(error.to_string()))?;
         }
         Ok(())
     }
@@ -869,7 +879,11 @@ impl ExecutionSession<'_> {
         self.connection_mut()?;
         match effect {
             LoadEffect::None => {}
-            LoadEffect::Invalidate { location, length } => self.images.invalidate_range(location, *length),
+            // No function property allocates a filled segment; a fill here
+            // only forgets the range, which is always safe.
+            LoadEffect::Invalidate { location, length } | LoadEffect::Fill { location, length, .. } => {
+                self.images.invalidate_range(location, *length)
+            }
             LoadEffect::InvalidateAll => self.images.forget_device(),
         }
         let connection = self.connection_mut()?;
