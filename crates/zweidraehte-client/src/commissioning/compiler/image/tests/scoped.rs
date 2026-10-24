@@ -317,3 +317,53 @@ fn memory_ownership_is_unchanged_when_the_source_procedure_cannot_bound_it() {
         assert_eq!(image.manifest(), desired.manifest(), "{controls}");
     }
 }
+
+#[test]
+fn property_parameters_no_procedure_writes_belong_to_no_section() {
+    use crate::commissioning::catalog::profile::ObjectSelector;
+    use zweidraehte_ets_files::product::{PropertyObject, PropertyParameterLocation};
+    // The GTS stores firmware and hardware checks in PIDs 25 and 78 of the
+    // device object. Here only PID 78 has an image-backed write; PID 25 is
+    // written inline, which never sends the parameter's bytes.
+    let parameter = |id: &str, property_id, size_bits| PropertyParameterLocation {
+        id: id.into(),
+        object: PropertyObject::Index(0),
+        property_id,
+        offset: 0,
+        bit_offset: 0,
+        size_bits,
+        legacy_patch_always: false,
+        byte_ordered: true,
+    };
+    let (_, _, product, _) = plain_fixture();
+    let product = product.with_fixture_property_parameters(vec![parameter("P-907", 25, 16), parameter("P-27", 78, 48)]);
+    let profile = absolute_load_profile(
+        r#"<LdCtrlConnect />
+           <LdCtrlWriteProp ObjIdx="0" PropId="25" Verify="false" InlineData="0800" />
+           <LdCtrlWriteProp ObjIdx="0" PropId="78" Verify="false" />
+           <LdCtrlRestart />"#,
+    );
+    let location = |property_id| ImageLocation {
+        space: ImageSpace::Property { object: ObjectSelector::Index { index: 0 }, property_id },
+        offset: 0,
+    };
+    let mut image = SparseDeviceImage::new();
+    image.apply_section(ProgrammingSection::Parameters, &ImageSegment::owned(location(25), vec![8, 0]).unwrap());
+    image.apply_section(
+        ProgrammingSection::Parameters,
+        &ImageSegment::owned(location(78), vec![0, 0x83, 0, 0, 3, 40]).unwrap(),
+    );
+    let desired = image.clone();
+
+    super::super::scope::release_unwritable_property_parameters(&profile, &product, &mut image);
+
+    assert!(image.sections_for_range(&location(25), 2).is_empty(), "no procedure sends PID 25 from the image");
+    assert_eq!(image.sections_for_range(&location(78), 6), [ProgrammingSection::Parameters].into());
+    for property_id in [25, 78] {
+        let length = if property_id == 25 { 2 } else { 6 };
+        assert_eq!(
+            image.range(&location(property_id), length).unwrap(),
+            desired.range(&location(property_id), length).unwrap()
+        );
+    }
+}

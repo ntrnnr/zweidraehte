@@ -213,6 +213,7 @@ impl ProgramCompiler<'_> {
         represent_procedure_property_buffers(&self.profile, &self.recipes, product.load_procedure_style(), image)?;
         validate_capacities(&self.profile, &buffers, image)?;
         scope::release_untransferred_memory(&self.profile, product, image);
+        scope::release_unwritable_property_parameters(&self.profile, product, image);
         let mut manifest = image.manifest();
         if demand.is_complete() {
             manifest.mix(ProgrammingSection::ApplicationProgram1, "product", "primary", &product_fingerprint);

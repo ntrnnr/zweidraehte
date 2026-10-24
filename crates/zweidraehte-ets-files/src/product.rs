@@ -1436,6 +1436,11 @@ impl ProductData {
         self.module_definitions.get(definition_id).map(|definition| definition.load_procedures.as_slice())
     }
 
+    /// Authored fragments of every module definition, in definition-ID order.
+    pub fn all_module_load_procedures(&self) -> impl Iterator<Item = &[LoadProcedure]> {
+        self.module_definitions.values().map(|definition| definition.load_procedures.as_slice())
+    }
+
     /// Resolve a module argument's document ID to its declared instance key.
     /// Instance values are keyed by name, while XML base attributes use IDs.
     pub fn module_argument_name(&self, definition_id: &str, argument_id: &str) -> Option<&str> {

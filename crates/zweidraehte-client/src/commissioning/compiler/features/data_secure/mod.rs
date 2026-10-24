@@ -89,7 +89,15 @@ impl ProgramCompiler<'_> {
         if !enabled && !input.facts.target.is_some_and(|target| target.credential.is_secure()) {
             // Plaintext plans retain the public image while omitting
             // secure-only operations that their management cannot run.
+            // Without a transfer, no section can confirm the flags; MDT's GTS
+            // (M-0083_A-018C-23-81D7) kept Group communication unprogrammed
+            // after every download. The bytes keep their mask for the image
+            // but count toward no section digest.
             self.own_public_table(pid::security::GO_SECURITY_FLAGS, go_flags, 1)?;
+            self.image.image.release_sections(
+                &ImageSpace::Property { object: SECURITY_OBJECT, property_id: pid::security::GO_SECURITY_FLAGS },
+                |_| true,
+            );
             return Ok(());
         }
 

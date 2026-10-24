@@ -85,6 +85,74 @@ pub(super) fn release_untransferred_memory(
     }
 }
 
+/// Attribute no section to stored property parameters that no load
+/// procedure available to the product can write.
+///
+/// A property parameter reaches the device only through an image-backed
+/// `LdCtrlWriteProp` (one without `InlineData`) naming its object and
+/// property. MDT's GTS (M-0083_A-018C-23-81D7) is the witness: its hidden
+/// `FW_Check` and `HWT_Check` parameters store the expected firmware version
+/// (PID 25) and hardware type (PID 78) of the device object, and none of its
+/// procedures writes either. The real device answers its own version, so a
+/// section owning those bytes could never be confirmed.
+///
+/// Every mask procedure, product procedure and module fragment counts,
+/// whatever the section selection, so preview and download agree. A write by
+/// object type, or with a module-supplied base, may reach any object with that
+/// property ID. Desired bytes and masks are unchanged: only section digests
+/// lose the bytes.
+pub(super) fn release_unwritable_property_parameters(
+    profile: &ResolvedProfile,
+    product: &ProductData,
+    image: &mut SparseDeviceImage,
+) {
+    use crate::commissioning::catalog::profile::ObjectSelector;
+    use crate::commissioning::catalog::rules::product_property_object;
+
+    // `(Some(index), pid)` for an exact object index, `(None, pid)` otherwise.
+    let mut writes = std::collections::BTreeSet::new();
+    fn collect(controls: &[LoadControl], writes: &mut std::collections::BTreeSet<(Option<u16>, u16)>) {
+        for control in controls {
+            match control {
+                LoadControl::LdCtrlWriteProp(write) if write.inline_data.is_none() => {
+                    let index = write.obj_idx.filter(|_| write.base_obj_idx.is_none()).map(u16::from);
+                    writes.insert((index, write.prop_id));
+                }
+                LoadControl::Choose(choice) => {
+                    for branch in &choice.when {
+                        collect(&branch.controls, writes);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    for procedure in profile.source().procedures.iter().flat_map(|procedures| &procedures.procedures) {
+        collect(&procedure.controls, &mut writes);
+    }
+    for procedure in product.load_procedures().iter().chain(product.all_module_load_procedures().flatten()) {
+        collect(&procedure.controls, &mut writes);
+    }
+
+    for parameter in product.property_parameters() {
+        let object = product_property_object(parameter.object);
+        let writable = writes.iter().any(|(index, property_id)| {
+            *property_id == parameter.property_id
+                && match (index, &object) {
+                    (Some(index), ObjectSelector::Index { index: object }) => index == object,
+                    _ => true,
+                }
+        });
+        if writable {
+            continue;
+        }
+        let space = ImageSpace::Property { object, property_id: parameter.property_id };
+        let start = parameter.offset;
+        let end = start + (u32::from(parameter.bit_offset) + u32::from(parameter.size_bits)).div_ceil(8).max(1);
+        image.release_sections(&space, |offset| (start..end).contains(&offset));
+    }
+}
+
 pub(super) fn retain_download_sections(
     image: &mut SparseDeviceImage,
     selected: ProgramSections,

@@ -142,6 +142,9 @@ fn disabled_security_owns_flags_but_transfers_only_with_keyed_management() {
         assert!(!flag_segment.data().is_empty());
         assert!(flag_segment.data().iter().all(|byte| *byte == 0));
         assert!(flag_segment.mask().iter().all(|byte| *byte == 255));
+        // Only a transfer lets Group communication confirm the flags.
+        let flag_sections = image.sections_for_range(flag_segment.location(), flag_segment.data().len() as u32);
+        assert_eq!(flag_sections.is_empty(), !credential.is_secure(), "{credential:?}");
         if credential.is_secure() {
             assert_eq!(
                 contributed.iter().filter(|step| matches!(step.operation, ProcedureOperation::LoadRecord(_))).count(),
