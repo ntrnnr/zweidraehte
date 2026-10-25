@@ -57,8 +57,13 @@ impl<'a> TableInput<'a> {
             .collect()
     }
 
-    pub fn active_numbers(&self) -> Vec<u16> {
-        self.device.com_objects().iter().map(|object| object.number).collect()
+    pub fn roster_numbers(&self) -> Vec<u16> {
+        self.product
+            .com_object_numbers()
+            .iter()
+            .copied()
+            .chain(self.device.com_objects().iter().map(|object| object.number))
+            .collect()
     }
 
     pub fn associations(&self) -> Result<Vec<(u16, u16)>, CompileError> {
@@ -154,9 +159,8 @@ impl TableCodec {
     ) -> Result<EncodedTable, CompileError> {
         match self {
             Self::Addresses(codec) => codec.encode(input.device.individual_address(), &input.groups),
-            // Indexed formats reserve one slot per roster object; the roster
-            // contains the active objects (see `ObjectTable`).
-            Self::Associations(codec) => codec.encode(&input.associations()?, &input.active_numbers()),
+            // Indexed formats reserve one slot per static or active object.
+            Self::Associations(codec) => codec.encode(&input.associations()?, &input.roster_numbers()),
             // TODO: confirm the unlinked-object rule for System 300 before
             // changing the configured bit in its DPT rows.
             Self::Objects(codec @ ObjectTable::DptProperties) => {

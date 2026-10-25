@@ -354,11 +354,103 @@ fn system_b_table_runs_to_the_highest_declared_object_even_when_inactive() {
     };
     let product = ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::BCU1_MTXML)
         .expect("fixture parses")
-        .with_fixture_com_objects(vec![active.clone()], vec![2, 4]);
+        .with_fixture_com_objects(
+            vec![active.clone(), ComObjectDef {
+                number: 4,
+                flags: ComObjectFlags::from_byte(0),
+                object_type: ComObjectType::Uint1,
+                datapoint_type: None,
+            }],
+            vec![2, 4],
+        );
     let codec = ObjectTable::from_flavour(ResourceFlavour::GroupObjectTableSystemB).expect("descriptor codec");
     let table = codec.encode(&product, &[active], || panic!("descriptors need no seed")).expect("table encodes");
     assert_eq!(table.data, [0, 4, 0, 0, 0x4b, 0, 0, 0, 0, 0]);
     assert_eq!(table.entries, 4);
+}
+
+#[test]
+fn inactive_declared_objects_have_no_system_b_communication_bit() {
+    let declared = ComObjectDef {
+        number: 3,
+        flags: ComObjectFlags::from_byte(0xd7),
+        object_type: ComObjectType::Byte2,
+        datapoint_type: None,
+    };
+    let product = ProductData::default().with_fixture_com_objects(vec![declared], vec![3]);
+    let table = ObjectTable::Descriptors
+        .encode(&product, &[], || panic!("descriptors need no seed"))
+        .expect("static object fits");
+    assert_eq!(table.data, [0, 3, 0, 0, 0, 0, 0, 0]);
+}
+
+#[test]
+fn native_roster_includes_inactive_static_objects() {
+    let declared = ComObjectDef {
+        number: 2,
+        flags: ComObjectFlags::from_byte(0xd7),
+        object_type: ComObjectType::Byte2,
+        datapoint_type: None,
+    };
+    let product = ProductData::default().with_fixture_com_objects(vec![declared], vec![2]);
+    for (format, seed) in [
+        (NativeObjectFormat::Bcu2, vec![0, 0xce, 0xc6, 0xff, 0xc1, 0xc7, 0xff, 0xc3, 0xc8, 0x43, 0x82]),
+        (NativeObjectFormat::System7, vec![
+            0, 0x12, 0x34, 0xab, 0xcd, 0xff, 0xc1, 0xde, 0xad, 0xff, 0xc3, 0xbe, 0xef, 0x43, 0x82,
+        ]),
+    ] {
+        let table = ObjectTable::Native(NativeObjectTable::new(format))
+            .encode(&product, &[], || {
+                Ok(TableSeed { data: seed.clone(), mask: vec![0; seed.len()], first_byte_owned: false })
+            })
+            .expect("declared roster fits");
+        assert_eq!(table.entries, 3, "{format:?}");
+        assert_eq!(table.data[0], 3, "{format:?}");
+        assert_eq!(table.data.len(), seed.len(), "{format:?}");
+        let final_config = match format {
+            NativeObjectFormat::System7 => 13,
+            _ => 9,
+        };
+        let expected = if matches!(format, NativeObjectFormat::System7) {
+            seed[final_config] & !ComObjectFlags::CE_FLAG_MASK
+        } else {
+            0xd3
+        };
+        assert_eq!(table.data[final_config], expected, "inactive declaration follows {format:?} policy");
+    }
+}
+
+#[test]
+fn indexed_associations_reserve_slots_for_inactive_static_objects() {
+    let declared = ComObjectDef {
+        number: 2,
+        flags: ComObjectFlags::from_byte(0),
+        object_type: ComObjectType::Uint1,
+        datapoint_type: None,
+    };
+    let product = ProductData::default().with_fixture_com_objects(vec![declared], vec![2]);
+    let device = MaterializedDevice::fixture(IndividualAddress::new(1, 0, 1), None);
+    let input = TableInput::new(&product, &device);
+    let table = AssociationTable::Indexed
+        .encode(&input.associations().expect("no links"), &input.roster_numbers())
+        .expect("static slots fit");
+    assert_eq!(table.data, [3, 0xfe, 0, 0xfe, 1, 0xfe, 2]);
+}
+
+#[test]
+fn system_300_formats_inactive_static_flags_through_the_declared_roster() {
+    let declared = ComObjectDef {
+        number: 3,
+        flags: ComObjectFlags::from_byte(0xd7),
+        object_type: ComObjectType::Byte2,
+        datapoint_type: None,
+    };
+    let product = ProductData::default().with_fixture_com_objects(vec![declared], vec![3]);
+    let table = ObjectTable::DptProperties
+        .encode(&product, &[], || Ok(TableSeed { data: vec![0; 18], mask: vec![0; 18], first_byte_owned: false }))
+        .expect("declared property rows fit");
+    assert_eq!(table.entries, 3);
+    assert_eq!([table.data[1], table.data[7], table.data[13]], [3, 3, 0xd3]);
 }
 
 #[test]
@@ -381,8 +473,9 @@ fn small_system_b_associations_keep_primary_order_and_deduplicate() {
 fn wide_object_links_reach_the_selected_table_codec_without_truncation() {
     use crate::configuration::ObjectMembership;
 
-    let product =
-        ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::BCU1_MTXML).expect("fixture parses");
+    let product = ProductData::from_mtxml_str(zweidraehte_ets_files::product::fixtures::BCU1_MTXML)
+        .expect("fixture parses")
+        .with_fixture_com_objects(Vec::new(), Vec::new());
     let mut configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 0, 1), None);
     configuration.encoded_mut().com_objects = vec![ComObjectDef {
         number: 971,

@@ -54,14 +54,17 @@ impl ObjectTable {
             Self::Native(codec) => {
                 let seed = seed()?;
                 let mut data = seed.data;
+                // ETS starts with every static ComObject, including unused
+                // declarations, then extends that roster for module instances.
+                let roster_end = effective
+                    .iter()
+                    .map(|object| object.number)
+                    .chain(product.com_object_numbers().iter().copied())
+                    .max();
                 if !seed.first_byte_owned {
-                    // An owned firmware count keeps its declared roster. With
-                    // an unowned count, publish the effective roster ending at
-                    // its highest active object.
-                    let count = effective
-                        .iter()
-                        .map(|object| object.number)
-                        .max()
+                    // The formatter retains a firmware-owned count even when
+                    // it differs from the project roster.
+                    let count = roster_end
                         .map_or(Some(0), |number| number.checked_add(1))
                         .and_then(|count| u8::try_from(count).ok())
                         .ok_or_else(|| CompileError::invalid("group object table exceeds its one-byte count"))?;
@@ -71,37 +74,36 @@ impl ObjectTable {
                     *header = count;
                 }
                 let effective: Vec<_> = effective.iter().map(|o| (o.number, o.flags, o.object_type)).collect();
-                let mut mask = codec.overlay(&mut data, &effective)?;
+                let mut mask = codec.overlay_with_roster(&mut data, &effective, product.com_objects(), roster_end)?;
                 data.truncate(mask.len());
                 let entries = usize::from(data[0]); // overlay validated the count and all rows
                 // Formatting preserves firmware pointers and reserved bits,
                 // but the transfer owns the header and each formatted row in
-                // full. Declared rows beyond the effective roster stay unowned.
+                // full. Firmware rows beyond the project roster stay unowned.
                 let (header, row) = match codec.format {
                     NativeObjectFormat::System7 => (System7::HEADER_LEN, System7::ENTRY_LEN),
                     _ => (Rt1::HEADER_LEN, Rt1::ENTRY_LEN),
                 };
-                let roster = effective.iter().map(|(number, ..)| usize::from(*number) + 1).max().unwrap_or(0);
+                let roster = roster_end.map_or(0, |number| usize::from(number) + 1);
                 mask[..header + roster * row].fill(u8::MAX);
                 Ok(EncodedTable { data, mask, entries })
             }
             Self::Descriptors => {
-                let data = encode_descriptors(effective, product.com_object_numbers().last().copied())?;
+                let data = encode_descriptors(effective, product.com_objects())?;
                 let entries = (data.len() - 2) / 2;
                 Ok(EncodedTable::owned(data, entries))
             }
-            Self::DptProperties => encode_dpt_objects(effective, seed()?),
+            Self::DptProperties => encode_dpt_objects(effective, product.com_objects(), seed()?),
         }
     }
 }
 
 /// The protocol view owns pointer geometry; this policy owns configurable bits.
 ///
-/// The roster contains the device's active object instances by number,
-/// with every gap inside that range
-/// as a blank inactive entry, ending at the highest active object. Declared
-/// but inactive product objects therefore format exactly like gaps, and rows
-/// after the highest active object stay as the product seeded them.
+/// The roster contains static declarations and active object instances by
+/// number. Inactive declarations use their authored flags where the native
+/// formatter writes them; true numbering gaps use the blank-object policy.
+/// Rows beyond the project roster retain their product seed.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct NativeObjectTable {
     format: NativeObjectFormat,
@@ -136,17 +138,33 @@ impl NativeObjectTable {
         Self { format, config_mask, fixed_config_bits, inactive_mask, inactive_flags }
     }
 
+    #[cfg(test)]
     pub(crate) fn overlay(
         &self,
         defaults: &mut [u8],
         effective: &[(u16, ComObjectFlags, ComObjectType)],
     ) -> Result<Vec<u8>, CompileError> {
+        let roster_end = effective.iter().map(|(number, ..)| *number).max();
+        self.overlay_with_roster(defaults, effective, &[], roster_end)
+    }
+
+    fn overlay_with_roster(
+        &self,
+        defaults: &mut [u8],
+        effective: &[(u16, ComObjectFlags, ComObjectType)],
+        declared: &[ComObjectDef],
+        roster_end: Option<u16>,
+    ) -> Result<Vec<u8>, CompileError> {
         match self.format {
-            NativeObjectFormat::Bcu10 | NativeObjectFormat::Bcu11 => self.overlay_as::<Rt1>(defaults, effective),
+            NativeObjectFormat::Bcu10 | NativeObjectFormat::Bcu11 => {
+                self.overlay_as::<Rt1>(defaults, effective, declared, roster_end)
+            }
             // PL110 shares narrow pointer geometry but does not force RT1's
             // update bit; its native policy above preserves the authored bit.
-            NativeObjectFormat::Bcu1Pl | NativeObjectFormat::Bcu2 => self.overlay_as::<Rt2>(defaults, effective),
-            NativeObjectFormat::System7 => self.overlay_as::<System7>(defaults, effective),
+            NativeObjectFormat::Bcu1Pl | NativeObjectFormat::Bcu2 => {
+                self.overlay_as::<Rt2>(defaults, effective, declared, roster_end)
+            }
+            NativeObjectFormat::System7 => self.overlay_as::<System7>(defaults, effective, declared, roster_end),
         }
     }
 
@@ -154,13 +172,18 @@ impl NativeObjectTable {
         &self,
         defaults: &mut [u8],
         effective: &[(u16, ComObjectFlags, ComObjectType)],
+        declared: &[ComObjectDef],
+        roster_end: Option<u16>,
     ) -> Result<Vec<u8>, CompileError> {
         if defaults.len() < F::HEADER_LEN {
             return Err(CompileError::invalid("the product's group object table is shorter than its header"));
         }
         let effective: BTreeMap<_, _> =
             effective.iter().map(|(number, flags, kind)| (*number, (*flags, *kind))).collect();
-        let reset_count = effective.keys().next_back().map_or(0, |number| number + 1);
+        let declared: BTreeMap<_, _> = declared.iter().map(|object| (object.number, object.flags)).collect();
+        let reset_count = roster_end
+            .map_or(Some(0), |number| number.checked_add(1))
+            .ok_or_else(|| CompileError::invalid("group object table exceeds its one-byte count"))?;
 
         // The reference keeps an owned count that disagrees with the roster
         // (it only logs the difference) and still formats a row for every
@@ -185,19 +208,27 @@ impl NativeObjectTable {
 
         for number in 0..rows {
             let active = effective.get(&number);
-            let (flags, mask) = if let Some((flags, _)) = active {
-                (flags.to_byte(), self.config_mask)
+            let (flags, mask, fixed) = if let Some((flags, _)) = active {
+                (flags.to_byte(), self.config_mask, self.fixed_config_bits)
+            } else if let Some(flags) = declared.get(&number) {
+                // Narrow formatters pack declared flags while retaining the
+                // firmware selector bit. System 7 only clears CE here.
+                if matches!(self.format, NativeObjectFormat::System7) {
+                    (0, ComObjectFlags::CE_FLAG_MASK, 0)
+                } else {
+                    (flags.to_byte() & !ComObjectFlags::CE_FLAG_MASK, self.config_mask, self.fixed_config_bits)
+                }
             } else if number < reset_count {
                 // System 7 clears only CE. Narrow formats use blank-object
                 // traffic flags and priority while retaining their firmware bits.
-                (self.inactive_flags, self.inactive_mask)
+                (self.inactive_flags, self.inactive_mask, self.fixed_config_bits)
             } else {
                 // The active roster ends here; preserve the product seed.
                 continue;
             };
             let existing = table.as_view().entry(number).expect("the physical table is complete");
             let offset = table.as_view().config_offset(number).expect("the row is in the physical table");
-            let config = (existing.config & !mask) | (flags & mask) | self.fixed_config_bits;
+            let config = (existing.config & !mask) | (flags & mask) | fixed;
             ownership[offset] = mask;
             let written = if let Some((_, kind)) = active {
                 // The top two type bits belong to firmware in every compact
@@ -230,9 +261,9 @@ impl NativeObjectTable {
 /// the table beyond the static declarations.
 fn encode_descriptors(
     effective_objects: &[ComObjectDef],
-    highest_declared: Option<u16>,
+    declared_objects: &[ComObjectDef],
 ) -> Result<Vec<u8>, CompileError> {
-    let maximum = effective_objects.iter().map(|object| object.number).chain(highest_declared).max();
+    let maximum = effective_objects.iter().chain(declared_objects).map(|object| object.number).max();
     // A sixteen-bit object number always fits the wide count.
     let mut bytes = count_prefix(usize::from(maximum.unwrap_or(0)), true, "group object table", None)?;
     // RT7 starts at ASAP 1. Unused rows keep disabled UINT1 defaults;
@@ -240,6 +271,8 @@ fn encode_descriptors(
     for _ in 0..maximum.unwrap_or(0) {
         bytes.extend_from_slice(&[0, ComObjectType::Uint1.into()]);
     }
+    // Hawk clears communication on inactive entries when no association is
+    // present. Its descriptor formatter leaves their size at one bit.
     // The descriptor roster starts at one. A product may still expose object
     // zero (and associate it); the reference formatter omits its descriptor
     // rather than letting it overwrite the count or rejecting the product.
@@ -252,21 +285,30 @@ fn encode_descriptors(
 
 /// System 300 formats flags over the parameter image; DPT bytes belong to
 /// that image even when the configured object's DPT disagrees or is absent.
-fn encode_dpt_objects(effective_objects: &[ComObjectDef], seed: TableSeed) -> Result<EncodedTable, CompileError> {
+fn encode_dpt_objects(
+    effective_objects: &[ComObjectDef],
+    declared_objects: &[ComObjectDef],
+    seed: TableSeed,
+) -> Result<EncodedTable, CompileError> {
     if seed.data.len() != seed.mask.len() {
         return Err(CompileError::invalid("the group object table seed has inconsistent ownership"));
     }
-    let entries = effective_objects.iter().map(|object| usize::from(object.number)).max().unwrap_or(0);
+    let entries =
+        effective_objects.iter().chain(declared_objects).map(|object| usize::from(object.number)).max().unwrap_or(0);
     let length = entries * 6;
     let mut data = seed.data;
     let mut mask = seed.mask;
-    // Emit only the active prefix. The image merger keeps any longer seed
-    // tail untouched, while missing prefix bytes remain zero and unowned.
+    // Emit the declared and active prefix. The image merger keeps any longer
+    // seed tail untouched, while missing prefix bytes remain zero and unowned.
     data.resize(length, 0);
     mask.resize(length, 0);
     for row in 0..entries {
         data[row * 6 + 1] = 3;
         mask[row * 6 + 1] = u8::MAX;
+    }
+    for object in declared_objects.iter().filter(|object| object.number != 0) {
+        data[(usize::from(object.number) - 1) * 6 + 1] =
+            object.flags.to_byte() & !(0x20 | ComObjectFlags::CE_FLAG_MASK);
     }
     for object in effective_objects.iter().filter(|object| object.number != 0) {
         data[(usize::from(object.number) - 1) * 6 + 1] = object.flags.to_byte() & !0x20;

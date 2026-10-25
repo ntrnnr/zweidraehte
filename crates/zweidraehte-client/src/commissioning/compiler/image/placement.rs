@@ -442,7 +442,7 @@ impl SharedTableAllocation {
             .ok_or_else(capacity_error)?;
         let association_size = u32::try_from(
             AssociationTable::from_flavour(association_flavour)?
-                .encode(&input.associations()?, &input.active_numbers())?
+                .encode(&input.associations()?, &input.roster_numbers())?
                 .data
                 .len(),
         )

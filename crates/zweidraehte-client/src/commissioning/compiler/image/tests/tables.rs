@@ -755,8 +755,8 @@ fn absent_bcu2_object_table_does_not_create_an_empty_header() {
                 ImageDemand::Complete,
             )
             .expect("fixed table placement");
-            let error = tables.write(&mut image).expect_err("a declared roster still needs storage");
-            assert!(error.message.contains("requires product-owned table data"), "{error}");
+            let error = tables.write(&mut image).expect_err("a declared roster still needs table capacity");
+            assert!(error.message.contains("GroupAssociationTable exceeds its declared table capacity"), "{error}");
         } else {
             assert_eq!(objects.len(), 1, "a declared empty table still owns its physical header");
         }

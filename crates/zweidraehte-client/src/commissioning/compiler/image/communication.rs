@@ -207,15 +207,9 @@ impl<'a> CommunicationTables<'a> {
             let codec = TableCodec::new(table.kind, flavour)?;
             let mut encoded = codec.encode(&self.input, || {
                 if property_array && flavour == ResourceFlavour::GroupObjectTableSystem300 {
-                    let length = self
-                        .input
-                        .device
-                        .com_objects()
-                        .iter()
-                        .map(|object| usize::from(object.number))
-                        .max()
-                        .unwrap_or(0)
-                        * 6;
+                    // Property parameters may seed DPT bytes for inactive
+                    // static objects beyond the highest active instance.
+                    let length = self.input.roster_numbers().into_iter().map(usize::from).max().unwrap_or(0) * 6;
                     location.offset.checked_add(length as u32).ok_or_else(|| {
                         CompileError::invalid("System 300 object table exceeds the image address space")
                     })?;

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn native_object_count_preserves_owned_seed_and_uses_effective_roster_for_selective_groups() {
+fn native_object_count_preserves_owned_seed_and_static_roster_for_selective_groups() {
     let (catalog, profile, product, mut configuration) = plain_fixture();
     configuration.encoded_mut().com_objects.retain(|object| object.number == 0);
     for active in [true, false] {
@@ -14,7 +14,7 @@ fn native_object_count_preserves_owned_seed_and_uses_effective_roster_for_select
             compile_partial_image(&profile, &product, &configuration, ProgramSections::GROUP_COMMUNICATION).unwrap();
         let count = ImageLocation::standard_memory(0x150);
         assert_eq!(full.image.byte(&count), Some((2, 0xff)));
-        assert_eq!(partial.image.byte(&count), Some((u8::from(active), 0xff)));
+        assert_eq!(partial.image.byte(&count), Some((2, 0xff)));
         assert!(full.regions().iter().any(|region| region.location == ImageLocation::standard_memory(0x100)));
         assert_eq!(full.regions(), partial.regions());
     }
