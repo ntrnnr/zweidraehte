@@ -48,6 +48,8 @@ mod interface {
     pub const PID_COMM_MODE: u8 = 0x34;
     /// Data-link-layer communication mode value.
     pub const COMM_MODE_DATA_LINK_LAYER: u8 = 0x00;
+    /// Raw bus-monitor mode; received cEMI messages are L_Busmon.ind.
+    pub const COMM_MODE_BUS_MONITOR: u8 = 0x01;
     /// Max APDU length on the Device Object (PID 56).
     pub const PID_MAX_APDU_LENGTH: u8 = 0x38;
     /// Subnetwork address octet of the interface IA (PID 57).
@@ -73,6 +75,7 @@ pub struct UsbConnector {
     reader: DeviceReader,
     writer: DeviceWriter,
     reassembly: ReassemblyBuffer,
+    bus_monitor: bool,
 }
 
 impl UsbConnector {
@@ -112,12 +115,38 @@ impl UsbConnector {
             let (reader, writer): DeviceReaderWriter =
                 device.open().await.map_err(|e| Error::Usb(format!("open failed: {e:?}")))?;
 
-            let mut connector = Self { reader, writer, reassembly: ReassemblyBuffer::new() };
+            let mut connector = Self { reader, writer, reassembly: ReassemblyBuffer::new(), bus_monitor: false };
             let info = connector.bring_up().await?;
             return Ok((connector, info));
         }
 
         Err(Error::Usb("no matching KNX USB interface found".into()))
+    }
+
+    /// Open a USB interface as a passive cEMI bus monitor.
+    ///
+    /// `recv_cemi` then yields raw L_Busmon.ind messages (code 0x2B),
+    /// including link-layer ACKs where the interface supports them.
+    pub async fn connect_bus_monitor(selector: &UsbSelector) -> Result<Self> {
+        let (mut connector, _) = Self::connect(selector).await?;
+        connector
+            .prop_write(interface::CEMI_SERVER_OBJECT, interface::PID_COMM_MODE, &[interface::COMM_MODE_BUS_MONITOR])
+            .await?;
+
+        connector.bus_monitor = true;
+        let mode = match connector.prop_read(interface::CEMI_SERVER_OBJECT, interface::PID_COMM_MODE).await {
+            Ok(mode) => mode,
+            Err(error) => {
+                let _ = connector.close().await;
+                return Err(error);
+            }
+        };
+        if mode.first() != Some(&interface::COMM_MODE_BUS_MONITOR) {
+            let _ = connector.close().await;
+            return Err(Error::Usb(format!("USB interface refused bus-monitor mode: {mode:02X?}")));
+        }
+
+        Ok(connector)
     }
 
     // ========================================================================
@@ -327,6 +356,10 @@ enum FrameKind {
 
 impl KnxConnector for UsbConnector {
     async fn send_cemi(&mut self, cemi: &[u8]) -> Result<()> {
+        if self.bus_monitor {
+            return Err(Error::Usb("cannot send cEMI while USB bus monitoring is active".into()));
+        }
+
         let mut buf = [0u8; TRANSFER_BUF_SIZE];
         let len = encode_cemi_frame(cemi, &mut buf).map_err(|e| Error::Usb(format!("frame encode failed: {e:?}")))?;
         self.write_transfer(&buf[..len]).await
@@ -344,8 +377,15 @@ impl KnxConnector for UsbConnector {
     }
 
     async fn close(&mut self) -> Result<()> {
-        // Nothing to negotiate on the way out; dropping the handles closes
-        // the HID device.
+        // Restore ordinary data-link mode so the USB interface is usable by
+        // other applications immediately after a bus-monitor session.
+        if self.bus_monitor {
+            self.prop_write(interface::CEMI_SERVER_OBJECT, interface::PID_COMM_MODE, &[
+                interface::COMM_MODE_DATA_LINK_LAYER,
+            ])
+            .await?;
+            self.bus_monitor = false;
+        }
         Ok(())
     }
 }

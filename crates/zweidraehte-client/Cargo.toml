@@ -84,6 +84,10 @@ name = "group_monitor"
 required-features = ["cli"]
 
 [[example]]
+name = "usb_bus_monitor"
+required-features = ["cli"]
+
+[[example]]
 name = "line_scan"
 required-features = ["cli"]
 
