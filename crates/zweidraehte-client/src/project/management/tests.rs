@@ -358,3 +358,26 @@ async fn synchronization_does_not_load_unrelated_plain_products() {
     assert!(result.expect("plain products do not gate secure synchronization").devices.is_empty());
     assert!(ProjectStore::open(&path).expect("reader").into_writer().is_ok());
 }
+
+#[test]
+fn memory_reads_locate_relative_segments_through_their_load_machine() {
+    use zweidraehte_ets_files::product::Segment;
+    let segment = |address: Option<u32>, size, load_state_machine| Segment {
+        id: "M-0083_A-018C-23-81D7_RS-04-00000".into(),
+        address,
+        size,
+        memory_type: None,
+        user_memory: None,
+        load_state_machine,
+        data: Vec::new(),
+        mask: None,
+    };
+    // The GTS allocates its parameter segment (LSM 4) at 3484h.
+    let segments = [segment(Some(0x4000), 16, None), segment(None, 39828, Some(4)), segment(None, 8, None)];
+    assert_eq!(relative_segments(&segments), [(4, 39828)], "absolute and machine-less segments are read elsewhere");
+    assert_eq!(relative_segment_start(&[0, 0, 0x34, 0x84], 39828).expect("reported base"), 0x3484);
+    assert_eq!(relative_segment_start(&[0, 0, 0xff, 0xf8], 8).expect("segment ends at the last byte"), 0xfff8);
+    for (pointer, length) in [(&[0x34, 0x84][..], 1), (&[0, 1, 0, 0][..], 1), (&[0, 0, 0xff, 0xf8][..], 9)] {
+        assert!(relative_segment_start(pointer, length).is_err(), "{pointer:02x?} with {length} bytes");
+    }
+}

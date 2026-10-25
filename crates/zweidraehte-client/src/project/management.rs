@@ -247,8 +247,10 @@ impl ProjectOperation {
         Ok(())
     }
 
-    /// Inspect a product's absolute memory segments without compiling its
-    /// desired configuration. The caller owns blob naming and file output.
+    /// Inspect a product's memory segments without compiling its desired
+    /// configuration: absolute ones at their address, relative ones wherever
+    /// their load machine allocated them. The caller owns blob naming and file
+    /// output.
     pub async fn read_device_memory(
         self,
         device: &ProjectDeviceId,
@@ -265,9 +267,9 @@ impl ProjectOperation {
         let result = async {
             let (_, resources, targets) = management_inputs(self.session(), Some(device), sources)?;
             let target = targets.first().expect("selected target resolved");
-            let ranges = resources.products[device]
-                .product()
-                .segments()
+            let segments = resources.products[device].product().segments();
+            let relative = relative_segments(segments);
+            let ranges = segments
                 .iter()
                 .filter_map(|segment| segment.address.map(|address| (address, segment.size)))
                 .map(|(address, size)| {
@@ -280,8 +282,8 @@ impl ProjectOperation {
                     Ok((start, size as usize))
                 })
                 .collect::<Result<Vec<_>>>()?;
-            if ranges.is_empty() {
-                return Err(Error::ProductData(ErrorDetail::new("product has no absolute memory segments to read")));
+            if ranges.is_empty() && relative.is_empty() {
+                return Err(Error::ProductData(ErrorDetail::new("product has no memory segments to read")));
             }
             let address = target.locate(self.bus()).await?;
             report.address = Some(address);
@@ -292,6 +294,18 @@ impl ProjectOperation {
             report.target_max_apdu = Some(target_max);
             let result = async {
                 for (address, length) in ranges {
+                    let bytes =
+                        connection.read_memory_range(address, length, self.bus().max_apdu(), target_max).await?;
+                    report.segments.push(ProjectMemoryReadout { address, bytes });
+                }
+                // System B numbers each load machine's interface object by
+                // its machine index, as the load procedures address them.
+                // TODO: resolve the object from the mask's load-machine
+                // resources for profiles that number them differently.
+                for (machine, length) in relative {
+                    let reference = PropertyAddress::indexed(machine, pid::TABLE_REFERENCE)?;
+                    let pointer = connection.property_read(reference, 1, 1).await?;
+                    let address = relative_segment_start(&pointer, length)?;
                     let bytes =
                         connection.read_memory_range(address, length, self.bus().max_apdu(), target_max).await?;
                     report.segments.push(ProjectMemoryReadout { address, bytes });
@@ -464,6 +478,32 @@ fn management_failure_message(source: &Option<Error>, finalization: &[ProjectFin
         .chain(finalization.iter().map(ToString::to_string))
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+/// The relative (System B) segments to read, as `(load machine, length)`.
+///
+/// Such a segment lives wherever its load machine allocated it; the device
+/// reports that base in the machine's table reference once connected, and
+/// the product supplies the length. A segment naming no machine has no base
+/// to read and is left out.
+fn relative_segments(segments: &[zweidraehte_ets_files::product::Segment]) -> Vec<(u8, usize)> {
+    segments
+        .iter()
+        .filter(|segment| segment.address.is_none())
+        .filter_map(|segment| segment.load_state_machine.map(|machine| (machine, segment.size as usize)))
+        .collect()
+}
+
+/// Decode a load machine's table reference (PID 7) into the classic memory
+/// address of its `length`-byte segment.
+fn relative_segment_start(pointer: &[u8], length: usize) -> Result<u16> {
+    let base = <[u8; 4]>::try_from(pointer)
+        .map(u32::from_be_bytes)
+        .map_err(|_| Error::Bus(BusError::Parse("table reference is not four octets")))?;
+    u16::try_from(base)
+        .ok()
+        .filter(|start| usize::from(*start) + length <= 0x1_0000)
+        .ok_or(Error::Bus(BusError::Parse("relative segment exceeds classic memory")))
 }
 
 #[cfg(test)]
