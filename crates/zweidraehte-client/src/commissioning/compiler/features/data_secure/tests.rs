@@ -212,17 +212,19 @@ fn go_flags_follow_the_exact_table_realization_asap_origin() {
     let configured =
         vec![GroupObjectSecurity { com_object: 2, protection: GroupObjectProtection::AuthenticationConfidentiality }];
 
-    let zero_based = encode_group_object_security(&configured, &effective, 0).expect("zero-based convention encodes");
-    let one_based = encode_group_object_security(&configured, &effective, 1).expect("one-based convention encodes");
+    let zero_based =
+        encode_group_object_security(&configured, &effective, &[], 0).expect("zero-based convention encodes");
+    let one_based =
+        encode_group_object_security(&configured, &effective, &[], 1).expect("one-based convention encodes");
 
     assert_eq!(zero_based, [0, 0, 3]);
     assert_eq!(one_based, [0, 3]);
 }
 
 #[test]
-fn go_flags_end_at_the_effective_roster() {
-    // The native sparse F002 witness owns five flags for active objects 3/4,
-    // even though the application declares later inactive objects through 85.
+fn go_flags_include_inactive_static_objects() {
+    // The reference writes a zero protection flag through the final static
+    // declaration, even when only earlier objects are active.
     let effective = [3, 4].map(|number| ComObjectDef {
         number,
         object_type: ComObjectType::Uint1,
@@ -231,22 +233,25 @@ fn go_flags_end_at_the_effective_roster() {
     });
     let configured =
         [GroupObjectSecurity { com_object: 4, protection: GroupObjectProtection::AuthenticationConfidentiality }];
-    assert_eq!(encode_group_object_security(&configured, &effective, 0).expect("sparse protection encodes"), [
-        0, 0, 0, 0, 3
-    ]);
+    assert_eq!(
+        encode_group_object_security(&configured, &effective, &[3, 4, 8], 0).expect("sparse protection encodes"),
+        [0, 0, 0, 0, 3, 0, 0, 0, 0]
+    );
 }
 
 #[test]
-fn disabled_security_empty_effective_roster_has_no_flags() {
-    // Native B002/F002 captures with an empty roster have no PID 61 image,
-    // despite declaring communication objects in the application definition.
+fn disabled_security_empty_effective_roster_owns_static_flags() {
     let product = ProductData::from_mtxml_str(SYSTEM7_MTXML).expect("fixture parses").with_fixture_data_secure(true);
     assert!(!product.com_object_numbers().is_empty());
     let configuration = MaterializedDevice::fixture(IndividualAddress::new(1, 1, 10), Some(15));
     let input = super::super::fixture_input(&product, &configuration, None, None);
     let mut compiler = super::super::fixture_compiler(&input, &profile());
-    compiler.contribute_data_secure().expect("empty roster has no security flags");
-    assert!(compiler.image.image.is_empty());
+    compiler.contribute_data_secure().expect("static roster has security flags");
+    let segments = compiler.image.image.segments();
+    assert_eq!(segments.len(), 1);
+    let flags = segments[0].data();
+    assert_eq!(flags.len(), usize::from(*product.com_object_numbers().iter().max().expect("static roster")) + 1);
+    assert!(flags.iter().all(|flag| *flag == 0));
 }
 
 #[test]

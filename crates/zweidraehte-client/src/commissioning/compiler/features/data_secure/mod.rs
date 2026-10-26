@@ -54,7 +54,7 @@ impl ProgramCompiler<'_> {
         }
 
         // Disabling protection still owns the complete public group-flags
-        // image: empty tables, and flags for every effective object. Enabling
+        // image: empty tables, and flags for every declared or effective object. Enabling
         // fills the same tables from the explicit configuration. Management
         // credentials select the transfers, not the desired bytes.
         let (siat, group_keys, addresses, go_flags) = if enabled {
@@ -63,8 +63,12 @@ impl ProgramCompiler<'_> {
             })?;
             validate_product_capabilities(product, security.group_keys().len(), security.siat().len())?;
             let first_group_object = first_group_object_number(profile)?;
-            let go_flags =
-                encode_group_object_security(security.group_objects(), device.com_objects(), first_group_object)?;
+            let go_flags = encode_group_object_security(
+                security.group_objects(),
+                device.com_objects(),
+                product.com_object_numbers(),
+                first_group_object,
+            )?;
             let siat = encode_siat(security.siat())?;
             let group_keys = encode_group_keys(device, security.group_keys())?;
             // Encoding orders rows by address-table position. Name the same
@@ -76,12 +80,17 @@ impl ProgramCompiler<'_> {
             }
             (siat, group_keys, addresses, go_flags)
         } else {
-            // Products without group objects have no flags range and need
-            // no Group Object Table realization merely to disable security.
-            let go_flags = if device.com_objects().is_empty() {
+            // Products without declared or configured group objects have no
+            // flags range and need no Group Object Table realization.
+            let go_flags = if device.com_objects().is_empty() && product.com_object_numbers().is_empty() {
                 Vec::new()
             } else {
-                encode_group_object_security(&[], device.com_objects(), first_group_object_number(profile)?)?
+                encode_group_object_security(
+                    &[],
+                    device.com_objects(),
+                    product.com_object_numbers(),
+                    first_group_object_number(profile)?,
+                )?
             };
             (Vec::new(), SecretBytes::from(Vec::new()), Vec::new(), go_flags)
         };
@@ -260,11 +269,15 @@ pub(super) fn encode_siat(
 pub(super) fn encode_group_object_security(
     configured: &[GroupObjectSecurity],
     effective_objects: &[ComObjectDef],
+    declared_numbers: &[u16],
     first_group_object: u16,
 ) -> Result<Vec<u8>, CompileError> {
-    // PID 61 follows the effective Group Object Table, including its internal
-    // gaps. Later inactive declarations do not extend the security property.
-    let Some(maximum) = effective_objects.iter().map(|object| object.number).max() else {
+    // PID 61 follows the same roster as the Group Object Table: static
+    // declarations remain present when inactive, and module instances can
+    // extend the end. Interior gaps keep zero protection flags.
+    let Some(maximum) =
+        effective_objects.iter().map(|object| object.number).chain(declared_numbers.iter().copied()).max()
+    else {
         return if configured.is_empty() {
             Ok(Vec::new())
         } else {

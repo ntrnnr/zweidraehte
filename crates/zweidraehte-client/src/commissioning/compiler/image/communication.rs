@@ -11,6 +11,7 @@ use crate::configuration::MaterializedDevice;
 use std::collections::BTreeMap;
 use zweidraehte_ets_files::product::ProductData;
 use zweidraehte_project::ProgrammingSection;
+use zweidraehte_proto::tables::com_object::{BcuComObjectTableFormat, System7};
 
 /// A scoped read of the end of a physical header also needs the segment that
 /// contains its beginning. Keep lazy capability checks for unrelated reads:
@@ -183,7 +184,7 @@ impl<'a> CommunicationTables<'a> {
             // touching XML segments. Borrow only its missing header bytes from
             // compatible declared storage; keep original region metadata and
             // placement-defined allocation boundaries intact.
-            let extension = if table.kind == CompiledTableKind::GroupObject
+            let mut extension = if table.kind == CompiledTableKind::GroupObject
                 && matches!(&self.placement, TablePlacement::Fixed)
                 && let Some(region) = region
                 && let Ok(Some(flavour)) = &flavour
@@ -193,6 +194,37 @@ impl<'a> CommunicationTables<'a> {
             } else {
                 Vec::new()
             };
+            if table.kind == CompiledTableKind::GroupObject
+                && matches!(&flavour, Ok(Some(ResourceFlavour::GroupObjectTableM112)))
+                && table.offset == 0
+                && extension.is_empty()
+                && let Some(region) = region
+                && let Some(maximum) = self.input.roster_numbers().into_iter().max()
+            {
+                // A few System 7 products declare the last static object a
+                // few bytes beyond their table segment. Hawk formats that
+                // final row into the unallocated gap before the next segment.
+                // Borrow only a proved free gap; never overwrite another
+                // product allocation to satisfy an inconsistent roster.
+                let needed = System7::HEADER_LEN as u32 + (u32::from(maximum) + 1) * System7::ENTRY_LEN as u32;
+                if needed > region.length
+                    && let Some(gap_start) = region.location.offset.checked_add(region.length)
+                    && let Some(gap_end) = region.location.offset.checked_add(needed)
+                    && self
+                        .buffers
+                        .values()
+                        .any(|next| next.location.space == region.location.space && next.location.offset == gap_end)
+                    && self.buffers.values().all(|other| {
+                        if other.location.space != region.location.space {
+                            return true;
+                        }
+                        let other_end = other.location.offset.saturating_add(other.length);
+                        other_end <= gap_start || other.location.offset >= gap_end
+                    })
+                {
+                    extension.resize((gap_end - gap_start) as usize, 0);
+                }
+            }
             // A resource may describe only the count header; the native
             // allocation bounds rows that follow it.
             let capacity = region
