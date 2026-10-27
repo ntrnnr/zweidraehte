@@ -115,10 +115,12 @@ impl FromStr for IndividualAddress {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let mut parts = value.split('.');
+
         let (Some(area), Some(line), Some(device), None) = (parts.next(), parts.next(), parts.next(), parts.next())
         else {
             return Err(AddressParseError::InvalidNotation);
         };
+
         Ok(Self::new(
             address_component(area, 15)? as u8,
             address_component(line, 15)? as u8,
@@ -231,16 +233,20 @@ impl FromStr for GroupAddress {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let mut parts = value.split('/');
+
         match (parts.next(), parts.next(), parts.next(), parts.next()) {
             (Some(main), Some(middle), Some(sub), None) => Ok(Self::from_three_level(
                 address_component(main, 31)? as u8,
                 address_component(middle, 7)? as u8,
                 address_component(sub, 255)? as u8,
             )),
+
             (Some(main), Some(sub), None, None) => {
                 Ok(Self::from_two_level(address_component(main, 31)? as u8, address_component(sub, 2047)?))
             }
+
             (Some(raw), None, None, None) => Ok(Self(address_component(raw, u16::MAX)?.to_be_bytes())),
+
             _ => Err(AddressParseError::InvalidNotation),
         }
     }
