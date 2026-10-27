@@ -30,14 +30,12 @@ use crate::{
     },
     restart::EraseCode,
 };
-use zweidraehte_proto::MAX_ACCESS_LEVELS;
-use zweidraehte_proto::NUM_AUTH_KEYS;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::{AccessContext, HasConnectionAuth};
 
 use crate::{HasDiagnosticsContext, HasExtensionState, HasSecurityMode};
 
-use super::{ExtensionState, OperationModeState, SystemBStateInit};
+use super::{ExtensionState, OperationModeState, SYSTEMB_MAX_ACCESS_LEVELS, SYSTEMB_NUM_AUTH_KEYS, SystemBStateInit};
 
 mod sections;
 use sections::DeviceRecord;
@@ -111,7 +109,7 @@ pub struct SystemBDeviceState<
     identity: D::Identity,
 
     /// Authorization keys for levels 0-2.
-    auth_keys: RefCell<[[u8; 4]; NUM_AUTH_KEYS]>,
+    auth_keys: RefCell<[[u8; 4]; SYSTEMB_NUM_AUTH_KEYS]>,
 
     /// Routing count (hop count) for outgoing messages.
     routing_count: Cell<u8>,
@@ -318,7 +316,7 @@ impl<
     }
 
     /// Get a copy of the auth keys.
-    pub fn get_auth_keys(&self) -> [[u8; 4]; NUM_AUTH_KEYS] {
+    pub fn get_auth_keys(&self) -> [[u8; 4]; SYSTEMB_NUM_AUTH_KEYS] {
         *self.auth_keys.borrow()
     }
 
@@ -600,7 +598,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
 impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: StackDefinition, ES: ExtensionState>
     HasAuthorization for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
 {
-    const MAX_ACCESS_LEVELS: u8 = crate::__macro_support::access::MAX_ACCESS_LEVELS as u8;
+    const MAX_ACCESS_LEVELS: u8 = SYSTEMB_MAX_ACCESS_LEVELS as u8;
 
     fn default_access_level(&self) -> u8 {
         self.authorize(&[0xFF, 0xFF, 0xFF, 0xFF])
@@ -609,11 +607,11 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
     fn authorize(&self, key: &[u8; 4]) -> u8 {
         let keys = self.auth_keys.borrow();
 
-        crate::state::constant_time_authorize(&keys[..], key, (MAX_ACCESS_LEVELS - 1) as u8)
+        crate::state::constant_time_authorize(&keys[..], key, (SYSTEMB_MAX_ACCESS_LEVELS - 1) as u8)
     }
 
     fn key_write(&self, level: u8, key: &[u8; 4], ctx: AccessContext) -> u8 {
-        if level as usize >= NUM_AUTH_KEYS {
+        if level as usize >= SYSTEMB_NUM_AUTH_KEYS {
             return 0xFF;
         }
         if ctx.access_level > level {

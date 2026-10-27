@@ -22,9 +22,7 @@ extern crate zweidraehte_util;
 mod macros;
 
 pub mod access;
-pub use access::{
-    AccessContext, AccessSource, ConnectionAuthLevels, HasConnectionAuth, MAX_ACCESS_LEVELS, NUM_AUTH_KEYS,
-};
+pub use access::{AccessContext, AccessSource, ConnectionAuthLevels, HasConnectionAuth};
 
 pub mod address;
 pub mod com_object;

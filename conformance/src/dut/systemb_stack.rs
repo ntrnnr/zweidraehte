@@ -26,17 +26,17 @@ use zweidraehte_device::prelude::*;
 use zweidraehte_device::sections::{Section, SectionError, SectionId, SectionKind, read_image};
 use zweidraehte_device::{
     bcus::system_b::{
-        ExtensionAugmentFor, MemoryLayout, SystemBDeviceModel, SystemBInterfaceObjectsFor, SystemBMemoryMap,
-        Tp1ExtensionState, Tp1SystemBDeviceState, create_system_b_objects,
+        ExtensionAugmentFor, MemoryLayout, SYSTEMB_MAX_ACCESS_LEVELS, SystemBDeviceModel, SystemBInterfaceObjectsFor,
+        SystemBMemoryMap, Tp1ExtensionState, Tp1SystemBDeviceState, create_system_b_objects,
     },
     context::layer::LayerContext,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::tables::Application,
     storage::StaticIdentity,
 };
+use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::access::AccessLevel;
 use zweidraehte_proto::memory::{MemoryOperation, MemoryPermission, MemoryRegion, check_memory_access};
-use zweidraehte_proto::{AccessContext, MAX_ACCESS_LEVELS};
 
 // ============================================================================
 // Communication Objects (BCU1-style with shadow objects)
@@ -1089,7 +1089,7 @@ impl ConformanceMemoryMap {
             usize::from(end_address.saturating_sub(address)),
             operation,
             AccessContext::MAX_ACCESS,
-            MAX_ACCESS_LEVELS as u8,
+            SYSTEMB_MAX_ACCESS_LEVELS as u8,
         ) {
             Some(Err(error)) => Some(error),
             _ => None,
@@ -1115,7 +1115,7 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
             data.len(),
             MemoryOperation::Read,
             ctx,
-            MAX_ACCESS_LEVELS as u8,
+            SYSTEMB_MAX_ACCESS_LEVELS as u8,
         ) {
             access?;
         }
@@ -1206,7 +1206,7 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
             data.len(),
             MemoryOperation::Write,
             ctx,
-            MAX_ACCESS_LEVELS as u8,
+            SYSTEMB_MAX_ACCESS_LEVELS as u8,
         ) {
             access?;
         }

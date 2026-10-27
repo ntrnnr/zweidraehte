@@ -238,8 +238,7 @@ macro_rules! common_fields {
 
 mod system_b {
     use super::*;
-    use zweidraehte_device::bcus::system_b::{SystemBDeviceState, Tp1, Tp1ExtensionState};
-    use zweidraehte_proto::NUM_AUTH_KEYS;
+    use zweidraehte_device::bcus::system_b::{SYSTEMB_NUM_AUTH_KEYS, SystemBDeviceState, Tp1, Tp1ExtensionState};
 
     const DEVICE: DeviceDescriptor =
         DeviceDescriptor::new(MaskVersion::SystemBTp1, 0x00FA, [0; 6], 0xF001, 0x01, 3, 5, 7, 0);
@@ -271,7 +270,7 @@ mod system_b {
 
     #[test]
     fn auth_keys() {
-        for level in 0..NUM_AUTH_KEYS as u8 {
+        for level in 0..SYSTEMB_NUM_AUTH_KEYS as u8 {
             assert_field_persists(
                 fresh,
                 |s| assert_eq!(s.key_write(level, &key(level), AccessContext::MAX_ACCESS), level),

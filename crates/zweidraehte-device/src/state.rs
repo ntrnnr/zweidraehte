@@ -237,10 +237,11 @@ pub trait HasAuthorization {
     /// For a device with `keys[0]`=0x00, `keys[1]`=0x12345678, `keys[2]`=0xFF..FF, `keys[3]`=0xFF..FF,
     /// this would return 2 (the first match for 0xFFFFFFFF when walking from level 0 upward).
     ///
-    /// Default implementation: returns level 3 (minimum access, "access for everyone").
+    /// Default implementation: returns the profile's minimum access
+    /// (level 3 or 15, "access for everyone").
     /// Implementations with a key table should override this to call `authorize(&[0xFF, 0xFF, 0xFF, 0xFF])`.
     fn default_access_level(&self) -> u8 {
-        self.max_access_levels() - 1 // Level 3 = minimum access = "access for everyone"
+        self.max_access_levels() - 1
     }
 
     /// Authorize with a 4-byte key and return the associated access level.

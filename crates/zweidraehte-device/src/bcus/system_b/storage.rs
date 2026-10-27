@@ -1,7 +1,8 @@
 //! Persistence infrastructure for System B devices.
 //!
 //! This module provides [`SystemBStateInit`], the constructor-args envelope
-//! for a System B device state. The BCU-agnostic extension vocabulary —
+//! for a System B device state, and the family's authorization sizing constants.
+//! The BCU-agnostic extension vocabulary —
 //! [`ExtensionState`] and the [`Extension`] trait unifying persistence with
 //! interface object augmentation — lives in [`crate::extension`] and is
 //! re-exported here.
@@ -38,6 +39,14 @@
 //! Examples: `OperationModeState` (diagnostic mode), `CertificationObjectAugment`.
 
 pub use crate::extension::{Extension, ExtensionState};
+
+/// Number of authorization access levels on System B (0-3).
+pub const SYSTEMB_MAX_ACCESS_LEVELS: usize = 4;
+
+/// Number of settable authorization keys (levels 0-2). Level 3 is
+/// "access for everyone" and has no key — it's what you get when auth
+/// fails.
+pub const SYSTEMB_NUM_AUTH_KEYS: usize = 3;
 
 // ============================================================================
 // SystemBStateInit — boilerplate-free `StateInit` envelope for System B

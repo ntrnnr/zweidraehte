@@ -21,7 +21,6 @@
 //! ([`TableSections`](crate::objects::tables::sections)). Applying a section
 //! restores state; it does not mark the device dirty.
 
-use zweidraehte_proto::NUM_AUTH_KEYS;
 use zweidraehte_proto::address::IndividualAddress;
 
 use crate::StackDefinition;
@@ -37,6 +36,7 @@ pub use crate::objects::tables::sections::{
     SECTION_AST_CONTROL, SECTION_AST_DATA, SECTION_COT_CONTROL, SECTION_COT_DATA,
 };
 
+use super::super::SYSTEMB_NUM_AUTH_KEYS;
 use super::SystemBDeviceState;
 
 /// IA (2), routing count (1), auth keys (3 × 4).
@@ -52,7 +52,7 @@ const VERSIONS_LEN: usize = ProgramVersions::LEN;
 pub(super) struct DeviceRecord {
     pub individual_address: IndividualAddress,
     pub routing_count: u8,
-    pub auth_keys: [[u8; 4]; NUM_AUTH_KEYS],
+    pub auth_keys: [[u8; 4]; SYSTEMB_NUM_AUTH_KEYS],
 }
 
 impl DeviceRecord {
@@ -61,13 +61,13 @@ impl DeviceRecord {
     pub(super) const FACTORY: Self = Self {
         individual_address: IndividualAddress::new(15, 15, 255),
         routing_count: 6,
-        auth_keys: [[0xFF; 4]; NUM_AUTH_KEYS],
+        auth_keys: [[0xFF; 4]; SYSTEMB_NUM_AUTH_KEYS],
     };
 }
 
 /// `[IA × 2][routing count][auth key × 4, per level]`.
 impl SectionBytes for DeviceRecord {
-    const LEN: usize = IndividualAddress::LEN + u8::LEN + NUM_AUTH_KEYS * <[u8; 4]>::LEN;
+    const LEN: usize = IndividualAddress::LEN + u8::LEN + SYSTEMB_NUM_AUTH_KEYS * <[u8; 4]>::LEN;
 
     fn write(&self, out: &mut [u8]) {
         let mut record = RecordWriter::new(out);

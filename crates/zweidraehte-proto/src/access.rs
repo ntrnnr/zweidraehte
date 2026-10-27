@@ -3,11 +3,15 @@
 //! This module provides two coexisting access control mechanisms:
 //!
 //! ## Legacy Authorization (A_Authorize)
-//! The 4-level model (levels 0-3) with 4-byte keys:
+//! Profile-specific access levels with 4-byte keys. In the 4-level model:
 //! - Level 0: Maximum access (system manufacturer)
 //! - Level 1: Product manufacturer
 //! - Level 2: ETS configuration
 //! - Level 3: Minimum access (runtime, everyone)
+//!
+//! System 7 uses 16 levels (0-15): levels 0-2 retain the purposes above,
+//! level 3 is for end-user adjustments, and minimum access is level 15.
+//! Use [`AccessLevel`] to resolve an audience against the hosting profile.
 //!
 //! ## KNX Data Secure Access Policies
 //! Per-property permission matrices encoding access rights across:
@@ -20,18 +24,6 @@
 //! while [`AccessSource`] tags messages with where to look up the effective level.
 
 use core::cell::Cell;
-
-/// Number of authorization access levels in the 4-level model (0-3).
-///
-/// This is the System B count. The profile decides the count — System 7
-/// uses 16 levels (0-15; 06 Profiles v02.02.01 §4.2 row 12) — so device
-/// states report theirs via `HasAuthorization::max_access_levels()`
-/// rather than through this constant.
-pub const MAX_ACCESS_LEVELS: usize = 4;
-
-/// Number of settable authorization keys in the 4-level model (levels 0-2).
-/// Level 3 is "access for everyone" and has no key - it's what you get when auth fails.
-pub const NUM_AUTH_KEYS: usize = 3;
 
 /// An access level named by the audience it is for, per 03/04/01
 /// §4.3.2.2 Table 1 "Use of access levels for different purposes and

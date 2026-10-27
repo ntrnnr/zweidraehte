@@ -633,7 +633,7 @@ fn test_3_7_2_10() -> TestCase {
         // ============================================================
         // DUT ACKs the transport frame but does not send a KeyResponse.
         // We immediately disconnect — no need to wait for idle timeout.
-        // Level 2 is the highest settable level (NUM_AUTH_KEYS = 3,
+        // Level 2 is the highest settable level (SYSTEMB_NUM_AUTH_KEYS = 3,
         // levels 0-2 are settable; level 3 is "everyone" with no key).
         comment("Plain Key_Write -> silently dropped"),
         inject("B0 #EDI #BDUT_ADDR 60 80"),
