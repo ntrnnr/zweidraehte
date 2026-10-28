@@ -35,7 +35,7 @@
 //! | 6 | Group Object Table (OT 9) — host for PID_GO_DIAGNOSTICS |
 //! | 7 | Certification Object (OT C351h) — AN163 roles + extended addressing |
 
-use zweidraehte_proto::messages::buffers::BufferManager;
+use zweidraehte_device::buffers::BufferManager;
 
 use core::cell::RefCell;
 

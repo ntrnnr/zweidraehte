@@ -22,8 +22,8 @@
 use core::cell::Cell;
 
 use embassy_time::Instant;
+use zweidraehte_device::buffers::Buffer;
 use zweidraehte_proto::dpt::InterfaceObjectType;
-use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
 
 #[cfg(feature = "knxip")]

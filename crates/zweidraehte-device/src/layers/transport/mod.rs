@@ -58,6 +58,7 @@ pub use state_machine::{
 
 use embassy_time::{Duration, Instant};
 
+use crate::buffers::Buffer;
 #[cfg(feature = "conformance")]
 use crate::timing::time_divisor;
 use crate::{
@@ -71,7 +72,6 @@ use zweidraehte_proto::AccessSource;
 use zweidraehte_proto::HasConnectionAuth;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::{
-    buffers::Buffer,
     builder::ConfirmationExt,
     knx::{DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci},
 };

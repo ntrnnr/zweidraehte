@@ -23,6 +23,7 @@
 //! wrapper uses, so it carries the definition's secure erase-code policy.
 
 use super::*;
+use crate::buffers::BufferManager;
 use crate::{
     DeviceDefinition, NoParams, Rng,
     bcus::{
@@ -40,7 +41,6 @@ use zweidraehte_proto::{
     device::{DeviceDescriptor, MaskVersion},
     messages::{
         apdu::restart::{RestartParsed, RestartResponse},
-        buffers::BufferManager,
         builder::MessageBuilder,
     },
 };

@@ -8,8 +8,8 @@
 //! forwarded explicitly, so no member's override can fall through to
 //! a tuple-level default.
 
+use crate::buffers::Buffer;
 use embassy_time::Instant;
-use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::knx::{ApciCode, KnxMessageBuffer};
 
 use crate::definition::StackDefinition;

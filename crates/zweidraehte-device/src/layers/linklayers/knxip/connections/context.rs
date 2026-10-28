@@ -4,7 +4,7 @@ use core::net::SocketAddrV4;
 
 use embassy_time::Instant;
 
-use zweidraehte_proto::messages::buffers::Buffer;
+use crate::buffers::Buffer;
 use zweidraehte_proto::messages::knxip::substructs::ConnectionType;
 
 use super::super::types::ResponseTarget;

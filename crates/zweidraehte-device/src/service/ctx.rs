@@ -24,9 +24,9 @@
 //! continue to receive the rich ctx so they can dispatch property
 //! and memory ops without extra plumbing.
 
+use crate::buffers::{Buffer, DynBufferManager};
 use zweidraehte_proto::access::{AccessContext, SecurityMode};
-use zweidraehte_proto::config::max_outgoing_msg_len;
-use zweidraehte_proto::messages::buffers::{Buffer, DynBufferManager};
+use zweidraehte_proto::messages::knx::max_outgoing_msg_len;
 use zweidraehte_proto::messages::knx::{ApciCode, KnxMessageBuffer};
 
 use crate::StackState;

@@ -20,7 +20,7 @@ use async_hid::{AsyncHidRead, AsyncHidWrite, DeviceReader, DeviceReaderWriter, D
 use futures_lite::StreamExt;
 
 use zweidraehte_proto::address::IndividualAddress;
-use zweidraehte_proto::config::MAX_APDU_LENGTH_EXTENDED;
+use zweidraehte_proto::messages::apdu::limits::MAX_APDU_LENGTH_EXTENDED;
 use zweidraehte_proto::usb_hid::bus_access::{BusAccessFrameBuilder, BusAccessResponse, SupportedEmiTypes};
 use zweidraehte_proto::usb_hid::hid::{HidReport, MAX_REPORT_SIZE, ReassemblyBuffer, fragment_frame};
 use zweidraehte_proto::usb_hid::is_known_knx_device;

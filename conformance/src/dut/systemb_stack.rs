@@ -15,7 +15,7 @@
 
 // FIXME: We should replace DPT_Colour_RGB with PDT_Generic03
 
-use zweidraehte_proto::messages::buffers::BufferManager;
+use zweidraehte_device::buffers::BufferManager;
 
 use core::cell::RefCell;
 

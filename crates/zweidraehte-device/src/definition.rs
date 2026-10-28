@@ -9,11 +9,9 @@
 use const_default::ConstDefault;
 use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
 
+use crate::buffers::{BufferManager, BufferPool};
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
-use zweidraehte_proto::{
-    device::DeviceDescriptor,
-    messages::buffers::{BufferManager, BufferPool},
-};
+use zweidraehte_proto::device::DeviceDescriptor;
 
 use crate::{
     config,

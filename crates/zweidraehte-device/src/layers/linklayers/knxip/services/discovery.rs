@@ -5,12 +5,11 @@ use super::super::{KnxNetIpContext, features::RemoteConfigFeature};
 use core::{marker::PhantomData, net::SocketAddrV4};
 use heapless::Vec;
 
+use crate::buffers::Buffer;
 use zweidraehte_proto::messages::{
-    buffers::{Buffer, MessageBuffer},
+    buffers::MessageBuffer,
     knx::KnxMessageBuffer,
-    knxip::KNXnetIPServiceFamily,
-    knxip::KNXnetIPServiceType,
-    knxip::substructs::*,
+    knxip::{KNXnetIPServiceFamily, KNXnetIPServiceType, substructs::*},
 };
 use zweidraehte_proto::util::packets::ParseBuffer;
 

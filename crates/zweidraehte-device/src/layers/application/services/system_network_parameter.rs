@@ -18,6 +18,7 @@ use core::cell::Cell;
 
 use embassy_time::{Duration, Instant};
 
+use crate::buffers::Buffer;
 use crate::{
     StackState,
     definition::StackDefinition,
@@ -32,7 +33,6 @@ use zweidraehte_proto::messages::{
         OPERAND_SERIAL_NUMBER_BY_PROGRAMMING_MODE, SystemNetworkParameterRead, SystemNetworkParameterResponse,
         programming_mode_scan_wait_ms,
     },
-    buffers::Buffer,
     builder::MessageBuilder,
     knx::{ApciCode, DestinationAddress, KnxMessageBuffer, Priority, RequiredSecurity, ServiceType},
 };

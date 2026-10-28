@@ -8,8 +8,8 @@
 
 use embassy_time::Instant;
 
+use crate::buffers::Buffer;
 use zweidraehte_proto::dpt::InterfaceObjectType;
-use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::knx::{ApciCode, KnxMessageBuffer, ServiceType};
 
 use crate::definition::StackDefinition;

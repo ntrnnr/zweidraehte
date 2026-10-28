@@ -5,7 +5,7 @@
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::channel::{DynamicSender, Receiver};
 
-use zweidraehte_proto::messages::buffers::Buffer;
+use crate::buffers::Buffer;
 use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage};
 
 /// Async message inbox that yields one message per call.

@@ -5,6 +5,7 @@ use embassy_sync::{
     channel::{Channel, DynamicReceiver, DynamicSender},
 };
 
+use crate::buffers::Buffer;
 use crate::{
     context::{
         AddressTableContext, ApduLengthContext, BufferManagerContext, IndividualAddressContext, PropertyServiceContext,
@@ -14,7 +15,7 @@ use crate::{
         IpSecureConfigContext, RemoteRestartContext, RoutingMulticastRebindContext,
     },
 };
-use zweidraehte_proto::messages::{buffers::Buffer, builder::IndicationMessage};
+use zweidraehte_proto::messages::builder::IndicationMessage;
 
 pub(crate) mod connections; // Connection-oriented state machines
 pub mod context; // IP-specific context traits
@@ -239,8 +240,9 @@ impl<'a> SubnetConnection<'a> for SubnetLink<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::buffers::BufferManager;
     use embassy_futures::{block_on, poll_once};
-    use zweidraehte_proto::messages::{buffers::BufferManager, knx::KnxMessageBuffer};
+    use zweidraehte_proto::messages::knx::KnxMessageBuffer;
 
     #[test]
     fn subnet_selection_routes_injections_and_receives_only_bridge_indications() {

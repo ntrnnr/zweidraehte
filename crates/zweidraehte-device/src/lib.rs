@@ -100,6 +100,7 @@ pub mod __macro_support {
 // Device-specific modules
 pub mod access_policy;
 pub mod bcus;
+pub mod buffers;
 pub mod config;
 pub mod context;
 pub mod device_model;

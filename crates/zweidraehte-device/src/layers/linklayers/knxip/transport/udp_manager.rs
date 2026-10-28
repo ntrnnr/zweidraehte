@@ -19,7 +19,8 @@ use heapless::Vec;
 
 use zweidraehte_platform::{AsyncUdpSocket, IpTransport, UdpSocketOptions};
 
-use zweidraehte_proto::messages::buffers::{Buffer, DynBufferManager, MessageBuffer};
+use crate::buffers::{Buffer, DynBufferManager};
+use zweidraehte_proto::messages::buffers::MessageBuffer;
 
 use crate::{KNX_PORT, SYSTEM_SETUP_MULTICAST_ADDRESS};
 

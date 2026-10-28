@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-pub(in crate::commissioning) use zweidraehte_proto::config::MAX_APDU_LENGTH_TP1_STANDARD as STANDARD_APDU_LENGTH;
+pub(in crate::commissioning) use zweidraehte_proto::messages::apdu::limits::MAX_APDU_LENGTH_TP1_STANDARD as STANDARD_APDU_LENGTH;
 pub(in crate::commissioning) const FREE_ACCESS_KEY: [u8; 4] = [u8::MAX; 4];
 pub(in crate::commissioning) const OPEN_MEDIUM_COLLECTION_WINDOW: Duration = Duration::from_secs(1);
 pub(in crate::commissioning) const SERIAL_DOMAIN_READ_ATTEMPT_WINDOW: Duration = Duration::from_millis(250);

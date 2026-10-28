@@ -15,6 +15,7 @@
 //! type AlExtensions = (MemoryService, FunctionPropertyService);
 //! ```
 
+use crate::buffers::Buffer;
 use crate::{
     definition::StackDefinition,
     objects::interface::{FunctionPropertyRequest, PropertyServiceHandler},
@@ -23,7 +24,6 @@ use crate::{
 use zweidraehte_proto::dpt::{PDT_Function, PropertyDataDefinition};
 use zweidraehte_proto::messages::{
     apdu::function_property::{FunctionPropertyHeader, FunctionPropertyResponse as FpResponseWriter},
-    buffers::Buffer,
     knx::{ApciCode, KnxMessageBuffer, ServiceType},
 };
 

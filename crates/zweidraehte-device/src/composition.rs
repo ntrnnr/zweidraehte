@@ -42,7 +42,7 @@ use crate::{
     storage::{HasSeqStore, SeqStorageFor, SequenceNumberStorage, SiatAccess},
 };
 
-use zweidraehte_proto::messages::buffers::Buffer;
+use crate::buffers::Buffer;
 use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
 
 // ============================================================================

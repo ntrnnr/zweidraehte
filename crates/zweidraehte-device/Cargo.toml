@@ -14,7 +14,7 @@ features = ["knxip", "ip-secure", "tp1", "rf", "ip-interface", "std"]
 
 [dependencies]
 zweidraehte-util = { path = "../zweidraehte-util", default-features = false }
-zweidraehte-proto = { path = "../zweidraehte-proto", default-features = false, features = ["buffer-pool"] }
+zweidraehte-proto = { path = "../zweidraehte-proto", default-features = false }
 zweidraehte-platform = { path = "../zweidraehte-platform", default-features = false }
 zweidraehte-ets = { path = "../zweidraehte-ets" }
 zweidraehte-ets-model = { path = "../zweidraehte-ets-model" }
@@ -60,7 +60,7 @@ test-case = "3.3"
 # real storage task in restart-ordering tests. A generic queue is required
 # because those tests use an ordinary task waker, not an Embassy executor waker.
 embassy-time = { workspace = true, features = ["std", "generic-queue-8"] }
-zweidraehte-proto = { path = "../zweidraehte-proto", default-features = false, features = ["buffer-pool"] }
+zweidraehte-proto = { path = "../zweidraehte-proto", default-features = false }
 # The persist-gate round-trip (mc_timer watermark, 03/08/09 §2.2.4.2)
 # uses CriticalSectionRawMutex reply channels; lib tests need the std
 # critical-section implementation to link.
@@ -98,7 +98,7 @@ ip-interface = ["knxip", "tp1"]
 usb = ["std", "dep:async-hid", "dep:futures-lite", "zweidraehte-proto/usb-hid"]
 # Buffer-pool high-water mark (`Stack::buffer_pool_peak`, plus an info log
 # on every new peak). Sizing diagnostics; conformance runs always have it.
-pool-stats = ["zweidraehte-proto/pool-stats"]
+pool-stats = []
 conformance = ["std", "pool-stats"]
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]

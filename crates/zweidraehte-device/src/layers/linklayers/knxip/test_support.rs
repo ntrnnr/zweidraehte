@@ -6,6 +6,7 @@ use super::context::{
 };
 use crate::HasRoutingMulticastRebind;
 use crate::bcus::system_b::{ExtensionState, IpExtensionState};
+use crate::buffers::{BufferManager, DynBufferManager};
 use crate::context::{
     AddressTableContext, ApduLengthContext, BufferManagerContext, IndividualAddressContext, PropertyServiceContext,
 };
@@ -18,7 +19,6 @@ use core::net::Ipv4Addr;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use zweidraehte_platform::address::EthernetAddress;
 use zweidraehte_proto::address::IndividualAddress;
-use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 use zweidraehte_proto::messages::knxip::substructs::{
     DeviceInformation, DeviceStatus, ExtendedDeviceInformation, IpConfig, KNXMedium,
 };

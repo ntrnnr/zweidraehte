@@ -12,7 +12,7 @@
 //! The link layer remains a separate async task, connected to the
 //! router via the 3-channel interface (req/ind/conf).
 
-use zweidraehte_proto::messages::buffers::Buffer;
+use crate::buffers::Buffer;
 use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
 
 // ============================================================================

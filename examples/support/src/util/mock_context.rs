@@ -2,6 +2,7 @@
 
 use core::cell::{Cell, RefCell};
 
+use zweidraehte_device::buffers::DynBufferManager;
 use zweidraehte_device::context::{
     AddressTableContext, BufferManagerContext, IndividualAddressContext, PropertyServiceContext,
 };
@@ -10,7 +11,6 @@ use zweidraehte_device::layers::linklayers::knxip::context::{
 };
 use zweidraehte_device::objects::tables::Table;
 use zweidraehte_device::objects::tables::addr7::AddrTab7Impl;
-use zweidraehte_proto::messages::buffers::DynBufferManager;
 use zweidraehte_proto::messages::knxip::substructs::DeviceInformation;
 
 /// Mock context for testing link layers.

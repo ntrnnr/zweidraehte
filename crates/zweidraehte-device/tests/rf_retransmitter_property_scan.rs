@@ -55,9 +55,9 @@ use zweidraehte_device::objects::interface::{
 use zweidraehte_device::storage::StaticIdentity;
 
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
+use zweidraehte_device::buffers::{BufferManager, DynBufferManager};
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
-use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 use zweidraehte_proto::properties::PropertyError;
 
 // ============================================================================

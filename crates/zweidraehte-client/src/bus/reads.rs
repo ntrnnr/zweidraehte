@@ -1,7 +1,10 @@
 //! Bounded diagnostic reads over the existing single-request services.
 
 use super::{BusError, BusResult, DeviceConnection, MemorySpace, PropertyAddress};
-use zweidraehte_proto::{config::MAX_APDU_LENGTH_TP1_STANDARD as STANDARD_APDU_LENGTH, messages::apdu::secure, pid};
+use zweidraehte_proto::{
+    messages::apdu::{limits::MAX_APDU_LENGTH_TP1_STANDARD as STANDARD_APDU_LENGTH, secure},
+    pid,
+};
 
 /// Commissioning and diagnostics must reserve the same space for the service
 /// header and authenticated envelope, using the smaller negotiated APDU.

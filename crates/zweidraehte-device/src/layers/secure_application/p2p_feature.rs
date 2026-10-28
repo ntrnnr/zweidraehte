@@ -36,11 +36,9 @@
 
 use core::cell::Cell;
 
+use crate::buffers::Buffer;
 use zweidraehte_proto::crypto::scf::SecurityControlField;
-use zweidraehte_proto::messages::{
-    buffers::Buffer,
-    knx::{KnxMessageBuffer, ServiceType},
-};
+use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
 
 use crate::HasExtensionState;
 use crate::StackState;

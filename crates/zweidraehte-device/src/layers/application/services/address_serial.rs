@@ -10,6 +10,7 @@
 //! type AlExtensions = IndividualAddressSerialNumberService;
 //! ```
 
+use crate::buffers::Buffer;
 use crate::context::layer::ResponseTarget;
 use crate::{
     HasSecurityMode, StackState,
@@ -21,7 +22,6 @@ use zweidraehte_proto::messages::{
     apdu::device::{
         IndividualAddressSerialNumberRead, IndividualAddressSerialNumberResponse, IndividualAddressSerialNumberWrite,
     },
-    buffers::Buffer,
     knx::{ApciCode, KnxMessageBuffer, ServiceType},
 };
 

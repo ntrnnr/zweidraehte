@@ -37,6 +37,7 @@ pub mod device;
 pub mod function_property;
 pub mod go_diagnostics;
 pub mod group_value;
+pub mod limits;
 pub mod load_control;
 pub mod memory;
 pub mod network_parameter;

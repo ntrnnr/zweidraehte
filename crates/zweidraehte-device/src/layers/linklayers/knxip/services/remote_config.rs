@@ -18,8 +18,8 @@ use crate::ip::IpStateView;
 use core::net::SocketAddrV4;
 use heapless::Vec;
 
+use crate::buffers::Buffer;
 use zweidraehte_proto::messages::{
-    buffers::Buffer,
     knx::KnxMessageBuffer,
     knxip::{
         KNXnetIPServiceType, ResetCommand,

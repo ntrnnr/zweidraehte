@@ -19,7 +19,7 @@ use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use zweidraehte_proto::address::IndividualAddress;
-use zweidraehte_proto::config::MAX_APDU_LENGTH_EXTENDED;
+use zweidraehte_proto::messages::apdu::limits::MAX_APDU_LENGTH_EXTENDED;
 use zweidraehte_proto::messages::knxip::substructs::*;
 use zweidraehte_proto::messages::knxip::tunneling_feature_id;
 use zweidraehte_proto::messages::knxip::*;

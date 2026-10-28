@@ -45,7 +45,7 @@ use embassy_sync::channel::DynamicSender;
 use embassy_time::{Duration, Instant};
 use heapless::Vec;
 
-use zweidraehte_proto::messages::buffers::{Buffer, DynBufferManager};
+use crate::buffers::{Buffer, DynBufferManager};
 use zweidraehte_proto::messages::builder::IndicationMessage;
 use zweidraehte_proto::messages::knx::{CemiFormat, KnxMessageBuffer};
 use zweidraehte_proto::messages::knxip::substructs::{CRD, ConnectionType, HPAI};

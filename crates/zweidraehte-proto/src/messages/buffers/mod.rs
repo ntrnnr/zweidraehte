@@ -1,38 +1,11 @@
-//! Message buffer management for the KNX stack.
+//! Storage-independent buffer operations for KNX codecs.
 //!
-//! This module provides:
-//! - [`MessageBuffer`] trait for buffers with headroom support
-//! - [`Buffer`] - a managed buffer from the pool (feature `buffer-pool`)
-//! - [`BufferManager`] - pre-allocated buffer pool (feature `buffer-pool`)
-//! - [`DynBufferManager`] - dynamic interface to the buffer pool
-//!   (feature `buffer-pool`)
-//!
-//! # Buffer Sizing
-//!
-//! Use [`crate::config::buffer_size_for_apdu`] to calculate the required buffer size
-//! based on the maximum APDU length your device supports:
-//!
-//! ```
-//! use zweidraehte_proto::config::{buffer_size_for_apdu, MAX_APDU_LENGTH_EXTENDED};
-//!
-//! // For a KNX/IP device with full APDU support
-//! const BUFFER_SIZE: usize = buffer_size_for_apdu(MAX_APDU_LENGTH_EXTENDED);
-//! assert_eq!(BUFFER_SIZE, 279);
-//! ```
-//!
-//! The device stack's `StackResources<Definition>` uses `Definition::BUFFER_SIZE`,
-//! which defaults to this calculation for `Definition::MAX_APDU_LENGTH`.
+//! [`MessageBuffer`] gives codecs headroom and spare-capacity operations without
+//! choosing how storage is allocated. The full device stack supplies its pool
+//! implementation in `zweidraehte_device::buffers`; synchronous consumers may
+//! supply their own storage.
 
 use core::ops::{Deref, DerefMut};
-
-// The pool hands freed buffers back through an embassy channel; that
-// is the crate's only embassy dependency, so the whole submodule sits
-// behind the `buffer-pool` feature while the `MessageBuffer` trait
-// stays unconditional.
-#[cfg(feature = "buffer-pool")]
-mod pool;
-#[cfg(feature = "buffer-pool")]
-pub use pool::{Buffer, BufferManager, BufferPool, DynBufferManager};
 
 /// Error type for buffer operations
 #[derive(Debug, Clone, Copy, PartialEq)]

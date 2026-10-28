@@ -10,14 +10,12 @@
 //! type AlExtensions = UserManufacturerInfoService;
 //! ```
 
+use crate::buffers::Buffer;
 use crate::{
     definition::StackDefinition,
     service::{AlCtx, ApciHandler},
 };
-use zweidraehte_proto::messages::{
-    buffers::Buffer,
-    knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
-};
+use zweidraehte_proto::messages::knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets};
 
 use crate::logging::{debug, warn};
 

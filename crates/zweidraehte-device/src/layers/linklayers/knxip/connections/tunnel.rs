@@ -39,8 +39,8 @@
 
 use embassy_time::Instant;
 
+use crate::buffers::DynBufferManager;
 use zweidraehte_proto::address::IndividualAddress;
-use zweidraehte_proto::messages::buffers::DynBufferManager;
 use zweidraehte_proto::messages::knxip::substructs::{CRD, CRI, TunnelingCRD, TunnelingLayer, TunnelingSlotInfo};
 use zweidraehte_proto::messages::knxip::{
     ConnectionStatus, KNXnetIPServiceType, TunnelingAck, TunnelingAckBuilder, TunnelingFeatureGet,

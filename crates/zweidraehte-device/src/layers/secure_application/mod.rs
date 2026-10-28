@@ -12,6 +12,7 @@
 
 use core::cell::{Cell, RefCell};
 
+use crate::buffers::Buffer;
 use crate::{
     HasExtensionState, StackState,
     actor::Request,
@@ -33,7 +34,7 @@ use zweidraehte_proto::messages::{
         network_parameter::NetworkParameterInfoReport,
         secure::{SecureApduMut, SecureApduRef},
     },
-    buffers::{Buffer, MessageBuffer},
+    buffers::MessageBuffer,
     builder::{ConfirmationExt, MessageBuilder},
     knx::{ApciCode, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, offsets},
 };

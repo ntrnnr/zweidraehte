@@ -10,6 +10,7 @@
 //! type AlExtensions = (MemoryService, AuthorizationService);
 //! ```
 
+use crate::buffers::Buffer;
 use crate::{
     HasAuthorization, HasSecurityMode,
     definition::StackDefinition,
@@ -20,7 +21,6 @@ use zweidraehte_proto::AccessSource;
 use zweidraehte_proto::HasConnectionAuth;
 use zweidraehte_proto::messages::{
     apdu::auth::{AuthorizeRequest, AuthorizeResponse, KeyResponse, KeyWrite},
-    buffers::Buffer,
     knx::{ApciCode, KnxMessageBuffer, ServiceType},
 };
 

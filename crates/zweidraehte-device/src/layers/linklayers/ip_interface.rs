@@ -44,6 +44,7 @@ use embassy_sync::{
     channel::{Channel, DynamicSender},
 };
 
+use crate::buffers::{Buffer, DynBufferManager};
 use crate::{
     context::CemiTransportLayerEndpoints,
     context::{AddressTableContext, IndividualAddressContext, IpAdditionalIndividualAddressContext},
@@ -51,7 +52,7 @@ use crate::{
 };
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::{
-    buffers::*,
+    buffers::MessageBuffer,
     builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
 };
 
@@ -533,6 +534,7 @@ use embassy_futures::select::select;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::buffers::BufferManager;
     use zweidraehte_proto::encoding::cemi::CemiLData;
     use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
     use zweidraehte_proto::util::packets::ParseBuffer;

@@ -10,6 +10,7 @@ use embassy_sync::{
 };
 use embassy_time::Timer;
 
+use crate::buffers::{Buffer, BufferPool};
 use crate::{
     HasPersistence, StackState,
     composition::LayerStackBuilder,
@@ -22,7 +23,6 @@ use crate::{
     stack_handle::Stack,
     storage::{DeviceStorage, Loaded},
 };
-use zweidraehte_proto::messages::buffers::{Buffer, BufferPool};
 use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
 use zweidraehte_proto::messages::knx::ServiceType;
 
@@ -387,12 +387,12 @@ mod write_through_tests {
 
     use core::cell::Cell;
 
+    use crate::buffers::BufferManager;
     use embassy_futures::select::{Either, select};
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
     use embassy_sync::channel::Channel;
     use std::boxed::Box;
     use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
-    use zweidraehte_proto::messages::buffers::BufferManager;
     use zweidraehte_proto::messages::knx::ServiceType;
 
     use crate::bcus::system_b::{SystemBStateInit, Tp1};

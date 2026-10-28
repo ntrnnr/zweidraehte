@@ -23,6 +23,7 @@
 
 use crate::HasExtensionState;
 use crate::StackState;
+use crate::buffers::Buffer;
 use crate::definition::StackDefinition;
 use crate::layers::transport::CEMI_PSEUDO_ADDR;
 use crate::objects::tables::{HasAssociationTable, LoadState};
@@ -36,7 +37,7 @@ use zweidraehte_proto::crypto::{
 };
 use zweidraehte_proto::messages::{
     apdu::secure::{self, SyncReqRef, SyncResRef},
-    buffers::{Buffer, MessageBuffer},
+    buffers::MessageBuffer,
     knx::{Ctrl2Field, KnxMessageBuffer, ServiceType, Tpci, offsets},
 };
 

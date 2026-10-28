@@ -279,8 +279,8 @@ fn security_mode_is_off_out_of_the_factory() {
 #[test]
 fn the_secure_object_roster_puts_security_at_index_five() {
     use static_cell::StaticCell;
+    use zweidraehte_device::buffers::{BufferManager, DynBufferManager};
     use zweidraehte_device::objects::interface::{PropertyServiceHandler, pid};
-    use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 
     static BUFFERS: StaticCell<[[u8; 64]; 4]> = StaticCell::new();
     static BUF_MGR: StaticCell<BufferManager<4>> = StaticCell::new();
@@ -336,11 +336,11 @@ fn the_secure_object_roster_puts_security_at_index_five() {
 fn value_services_reach_only_what_they_may_address() {
     use static_cell::StaticCell;
     use zweidraehte_device::HasSecurityMode;
+    use zweidraehte_device::buffers::{BufferManager, DynBufferManager};
     use zweidraehte_device::objects::interface::{
         FullPropertyReadRequest, FullPropertyWriteRequest, PropertyError, PropertyServiceHandler, pid,
     };
     use zweidraehte_proto::access::{AccessContext, ClientRole, SecurityMode};
-    use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 
     const SECURITY_OBJECT: u16 = 5;
 

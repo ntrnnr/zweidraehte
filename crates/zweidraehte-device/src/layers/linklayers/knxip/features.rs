@@ -27,7 +27,7 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 use embassy_sync::channel::DynamicSender;
 use heapless::Vec;
 
-use zweidraehte_proto::messages::buffers::{Buffer, DynBufferManager};
+use crate::buffers::{Buffer, DynBufferManager};
 use zweidraehte_proto::messages::builder::IndicationMessage;
 use zweidraehte_proto::messages::knx::KnxMessageBuffer;
 use zweidraehte_proto::messages::knxip::KNXnetIPServiceType;
@@ -668,7 +668,7 @@ pub trait TcpFeature: 'static {
     /// Poll for the next TCP event. Pends forever for `NoTcp`.
     fn next_event<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
         manager: &mut Self::Manager<T, MS, MC, TBS>,
-        buffer_manager: &zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
+        buffer_manager: &DynBufferManager<'static>,
     ) -> impl core::future::Future<Output = TcpEvent<MC>>;
 
     /// Add a KNX/IP channel id to the TCP-stream-vs-channel tracking.
@@ -743,7 +743,7 @@ impl TcpFeature for WithTcp {
 
     async fn next_event<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
         manager: &mut Self::Manager<T, MS, MC, TBS>,
-        buffer_manager: &zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
+        buffer_manager: &DynBufferManager<'static>,
     ) -> TcpEvent<MC> {
         manager.next_event(buffer_manager).await
     }
@@ -835,7 +835,7 @@ impl TcpFeature for NoTcp {
     #[inline]
     async fn next_event<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
         _manager: &mut Self::Manager<T, MS, MC, TBS>,
-        _buffer_manager: &zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
+        _buffer_manager: &DynBufferManager<'static>,
     ) -> TcpEvent<MC> {
         core::future::pending::<TcpEvent<MC>>().await
     }

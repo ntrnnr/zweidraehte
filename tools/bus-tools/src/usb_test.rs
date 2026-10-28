@@ -13,6 +13,7 @@ use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
 use embassy_time::{Duration, Timer};
 use env_logger::Env;
 
+use zweidraehte_device::buffers::{Buffer, BufferManager, DynBufferManager};
 use zweidraehte_device::{
     context::BufferManagerContext,
     layers::{
@@ -21,7 +22,7 @@ use zweidraehte_device::{
     },
 };
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
-use zweidraehte_proto::messages::buffers::{Buffer, BufferManager, MessageBuffer};
+use zweidraehte_proto::messages::buffers::MessageBuffer;
 use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
 use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
 
@@ -107,11 +108,11 @@ async fn run_fake_network(mut fake_network: FakeNetworkLayer) {
 
 // Simple context that just provides a buffer manager
 struct SimpleContext {
-    buffer_manager: &'static zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
+    buffer_manager: &'static DynBufferManager<'static>,
 }
 
 impl BufferManagerContext for SimpleContext {
-    fn buffer_manager(&self) -> &zweidraehte_proto::messages::buffers::DynBufferManager<'static> {
+    fn buffer_manager(&self) -> &DynBufferManager<'static> {
         self.buffer_manager
     }
 }

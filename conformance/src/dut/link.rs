@@ -40,11 +40,12 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::DynamicSender;
 use embassy_sync::signal::Signal;
 
+use zweidraehte_device::buffers::{Buffer, DynBufferManager};
 use zweidraehte_device::context::{AddressTableContext, IndividualAddressContext};
 use zweidraehte_device::layers::linklayers::address_check::{AddressChecker, DeviceAddressChecker};
 use zweidraehte_device::layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase};
 use zweidraehte_proto::encoding::tp1;
-use zweidraehte_proto::messages::buffers::{Buffer, MessageBuffer};
+use zweidraehte_proto::messages::buffers::MessageBuffer;
 use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
 use zweidraehte_proto::messages::knx::*;
 
@@ -254,7 +255,7 @@ pub struct IpcLinkLayer<'a, A> {
     ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
     conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
     socket: Async<UnixStream>,
-    buffer_manager: zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
+    buffer_manager: DynBufferManager<'static>,
     command_tx: DynamicSender<'a, IpcCommand>,
     address_checker: A,
     /// Monotonic counter for `DutMessage::UnsolicitedFrame::frame_seq`.
@@ -266,7 +267,7 @@ impl<'a, A: AddressChecker> IpcLinkLayer<'a, A> {
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         socket: Async<UnixStream>,
-        buffer_manager: zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
+        buffer_manager: DynBufferManager<'static>,
         command_tx: DynamicSender<'a, IpcCommand>,
         address_checker: A,
     ) -> Self {
@@ -674,14 +675,14 @@ impl IpcLinkLayerResources {
 /// and a command channel sender for non-inject commands.
 pub struct IpcLinkLayerBuilder {
     socket: Async<UnixStream>,
-    buffer_manager: zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
+    buffer_manager: DynBufferManager<'static>,
     command_tx: DynamicSender<'static, IpcCommand>,
 }
 
 impl IpcLinkLayerBuilder {
     pub fn new(
         socket_fd: RawFd,
-        buffer_manager: zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
+        buffer_manager: DynBufferManager<'static>,
         command_tx: DynamicSender<'static, IpcCommand>,
     ) -> io::Result<Self> {
         let stream = unsafe { UnixStream::from_raw_fd(socket_fd) };

@@ -14,7 +14,7 @@
 
 use embassy_time::Instant;
 
-use zweidraehte_proto::messages::buffers::Buffer;
+use crate::buffers::Buffer;
 use zweidraehte_proto::messages::knx::KnxMessageBuffer;
 
 use crate::definition::StackDefinition;

@@ -30,7 +30,7 @@
 //!
 //! [`IpcConformanceTestStack`]: super::systemb_stack::IpcConformanceTestStack
 
-use zweidraehte_proto::messages::buffers::BufferManager;
+use zweidraehte_device::buffers::BufferManager;
 
 use core::cell::RefCell;
 

@@ -20,6 +20,7 @@
 //! type AlExtensions = (MemoryService, UserMemoryService);
 //! ```
 
+use crate::buffers::Buffer;
 use crate::{
     definition::StackDefinition,
     memory::MemoryMap,
@@ -28,7 +29,6 @@ use crate::{
 };
 use zweidraehte_proto::messages::{
     apdu::memory::{UserMemoryAccess, UserMemoryResponse},
-    buffers::Buffer,
     knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
 };
 

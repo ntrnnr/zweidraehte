@@ -7,6 +7,7 @@
 use core::cell::RefCell;
 
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
+use zweidraehte_device::buffers::BufferManager;
 use zweidraehte_device::{
     DeviceDefinition, NoParams, Stack, StackResources,
     bcus::system_b::{SystemBStateInit, Tp1},
@@ -21,7 +22,6 @@ use zweidraehte_device::{
     storage::StaticIdentity,
 };
 use zweidraehte_ets_model::ets_com_objects;
-use zweidraehte_proto::messages::buffers::BufferManager;
 use zweidraehte_proto::{
     device::{DeviceDescriptor, MaskVersion},
     dpt::{DPT_Scaling, DPT_Switch},

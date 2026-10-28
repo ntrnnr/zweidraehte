@@ -16,7 +16,8 @@ use heapless::Vec;
 
 use zweidraehte_platform::{AsyncTcpListener, IpTransport, TcpListenerOptions};
 
-use zweidraehte_proto::messages::buffers::{Buffer, DynBufferManager, MessageBuffer};
+use crate::buffers::{Buffer, DynBufferManager};
+use zweidraehte_proto::messages::buffers::MessageBuffer;
 
 use super::tcp_framing::{FrameEvent, KnxIpFrameReader};
 

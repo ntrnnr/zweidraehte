@@ -92,7 +92,7 @@ pub const TELEGRAM_HEADER_OVERHEAD: usize = BLOCK2_PAYLOAD_IDX + 1;
 /// layer's frame buffers to this so legal frames never hit
 /// [`RfError::BufferTooSmall`].
 ///
-/// This mirrors [`crate::config::max_outgoing_msg_len`]: the internal `msg_len`
+/// This mirrors [`crate::messages::knx::max_outgoing_msg_len`]: the internal `msg_len`
 /// for that APDU is `INT_PAYLOAD + 1 + apdu`; the telegram swaps the 6-octet
 /// internal header (`INT_PAYLOAD`) for the 16-octet RF link header
 /// ([`BLOCK2_PAYLOAD_IDX`]), which is exactly [`TELEGRAM_HEADER_OVERHEAD`] above

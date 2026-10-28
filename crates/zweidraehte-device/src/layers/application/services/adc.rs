@@ -9,6 +9,7 @@
 //! type AlExtensions = (MemoryService, AdcService);
 //! ```
 
+use crate::buffers::Buffer;
 use crate::{
     HasSecurityMode,
     definition::StackDefinition,
@@ -17,7 +18,6 @@ use crate::{
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::messages::{
     apdu::device::{AdcRead, AdcResponse},
-    buffers::Buffer,
     knx::{ApciCode, KnxMessageBuffer, ServiceType},
 };
 

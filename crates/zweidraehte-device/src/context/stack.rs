@@ -22,6 +22,7 @@
 
 use core::cell::RefCell;
 
+use crate::buffers::DynBufferManager;
 use crate::objects::interface::{HasMaxRetryCount, HasRfDomainAddress, HasRfRetransmitter};
 #[cfg(feature = "knxip")]
 use crate::{
@@ -43,7 +44,6 @@ use crate::{
     objects::tables::HasAddressTable,
     stack_core::StackCore,
 };
-use zweidraehte_proto::messages::buffers::DynBufferManager;
 
 // ============================================================================
 // APDU length clamping helper

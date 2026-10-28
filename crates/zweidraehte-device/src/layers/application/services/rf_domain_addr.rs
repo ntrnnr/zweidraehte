@@ -20,6 +20,7 @@
 //! type AlExtensions = (StandardAlServices, DomainAddressService, RfDomainAddressService);
 //! ```
 
+use crate::buffers::Buffer;
 use crate::context::layer::ResponseTarget;
 use crate::{
     HasSecurityMode, StackState,
@@ -30,7 +31,6 @@ use crate::{
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::messages::{
     apdu::device::{DomainAddressResponse, DomainAddressWrite},
-    buffers::Buffer,
     knx::{ApciCode, KnxMessageBuffer, ServiceType},
 };
 

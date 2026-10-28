@@ -578,7 +578,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     &mut self,
                     idx: u8,
                     msg: ::zweidraehte_device::__macro_support::messages::knx::KnxMessageBuffer<
-                        ::zweidraehte_device::__macro_support::messages::buffers::Buffer<'static>,
+                        ::zweidraehte_device::buffers::Buffer<'static>,
                     >,
                 ) {
                     match idx {

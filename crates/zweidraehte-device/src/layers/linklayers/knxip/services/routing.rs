@@ -26,9 +26,10 @@ use embassy_sync::channel::DynamicSender;
 use embassy_time::{Duration, Instant};
 use heapless::{Deque, Vec};
 
+use crate::buffers::{Buffer, DynBufferManager};
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::{
-    buffers::{Buffer, DynBufferManager, MessageBuffer},
+    buffers::MessageBuffer,
     builder::IndicationMessage,
     knx::{AddressType, CemiFormat, InternalFormat, KnxMessageBuffer, ServiceType},
     knxip::{

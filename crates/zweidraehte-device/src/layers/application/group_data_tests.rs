@@ -1,7 +1,7 @@
 //! Exercise the real group-data handlers against retained, invalid tables.
 
+use crate::buffers::BufferManager;
 use core::cell::RefCell;
-use zweidraehte_proto::messages::buffers::BufferManager;
 
 use crate::{
     DeviceDefinition, NoParams, Stack, StackResources,

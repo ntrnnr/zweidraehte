@@ -26,7 +26,6 @@ pub use access::{AccessContext, AccessSource, ConnectionAuthLevels, HasConnectio
 
 pub mod address;
 pub mod com_object;
-pub mod config;
 pub mod crypto;
 pub mod device;
 pub mod dpt;

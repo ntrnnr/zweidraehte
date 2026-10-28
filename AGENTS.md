@@ -580,7 +580,7 @@ Contains:
 - `address.rs` - KNX addressing types (individual and group addresses)
 - `dpt.rs` - Data Point Types (DPT) - KNX data encoding/decoding
 - `access.rs` - Access control types (authorization levels)
-- `config.rs` - Buffer sizing and APDU constants
+- `messages/apdu/limits.rs` - Shared wire-format APDU limits
 - `device.rs` - Device identification (MaskVersion, MaskFamily, DeviceDescriptor)
 - `com_object.rs` - Group object descriptor coding (Table 87): `ComObjectType` (value field type) and `ComObjectFlags` (config flags + priority). Shared by the device stack (serves the tables) and the client (writes them); the device crate re-exports both.
 - `pid.rs` - Standard interface-object Property IDs (the device crate re-exports this as `objects::interface::pid`)
@@ -606,7 +606,7 @@ Contains:
 - `messages/` - Message formatting and building
   - `knx.rs` - KNX message structures and ServiceType
   - `builder.rs` - Message construction utilities
-  - `buffers.rs` - Buffer management for messages
+  - `buffers/` - Storage-independent `MessageBuffer` trait and buffer errors
   - `apdu/` - Application layer PDU types (property, memory, device, auth,
     restart, load control, GO diagnostics, network parameters, secure).
     `load_control.rs` also carries the shared *pure* Realisation Type 1
@@ -641,7 +641,9 @@ Key modules:
 - `storage/` - `DeviceIdentity`, `SecureDeviceIdentity`, `SequenceNumberStorage`, `HasSeqStore`; `DeviceStorage` (the one capability the router and storage task drive) and `Storage<C, S, W>` with its aliases `ConfigStorage`, `SecureStorage`, and `SecureRoutingStorage` (adds an independent IP Secure mc_timer watermark slot; the secure-routing builder rejects a storage without one at compile time) in `definition.rs`; where a device puts each store in `placement.rs` (`Medium`, `Placement`, `Area`, the `storage_layout!` declaration with its overlap checks, and the compile-time-checked `open_*` functions); `NvConfig`, the write-through config backend over any `NvStore`, and its flash shape `ConfigLog`, a two-bank `FlashLog`, in `nv_config.rs`; the `zweidraehte-nv` seams and stores (`SectorIo`, `ByteIo`, `WearLeveledKv`, `SiatStore`, `PackedSeqStore`, `McTimerStore`, `ByteMcTimer`) re-exported once from `storage`; the storage task in `task.rs` (restart: erase, one flush, reset; compacts a config log under the `SaveGuard` when a flush wakes it — no periodic tick, a failed flush is retried only by the next flush)
 - `prelude.rs` - One-stop re-exports for device authors (derive macros, core traits, common types)
 - `memory.rs` - `MemoryMap` trait for `A_Memory_Read/Write` dispatch
-- `config.rs` - Device-specific configuration macros (`knx_stack_config!`)
+- `buffers.rs` - Message buffer pool, allocation handles, sizing and headroom policy
+- `config.rs` - Device-specific configuration macros (`knx_stack_config!`),
+  RF APDU recommendation and re-exported APDU limits/buffer sizing
 - `ets.rs` - ETS integration, parameter export, derive macro re-exports
 - `ip.rs` - IP extension view traits (`IpStateView`, `HasIpExtensionState`, `HasRoutingMulticastRebind`, `HasAdditionalIas`, `IpSecureStateView`, `HasIpSecureView`), platform re-exports
 - `actor.rs` - Lightweight request/response primitives (`Request<M, R>`, `ActorRequest`)

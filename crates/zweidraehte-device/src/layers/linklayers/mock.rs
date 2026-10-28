@@ -4,11 +4,11 @@ use embassy_sync::{
     channel::{Channel, DynamicSender, Receiver, Sender, TrySendError},
 };
 
+use crate::buffers::{Buffer, DynBufferManager};
 use crate::context::BufferManagerContext;
 use crate::layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase, LinkLayerCapabilities};
 use zweidraehte_proto::encoding::tp1;
 use zweidraehte_proto::messages::{
-    buffers::{Buffer, DynBufferManager},
     builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
     knx::*,
 };

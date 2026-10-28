@@ -28,16 +28,17 @@
 //!   → if inactive: delegate to inner TransportLayer (normal bus path)
 //! ```
 
-use embassy_sync::channel::DynamicSender;
+use embassy_sync::{
+    blocking_mutex::raw::NoopRawMutex,
+    channel::{Channel, DynamicReceiver, DynamicSender},
+};
 
 use crate::StackDefinition;
+use crate::buffers::Buffer;
 use crate::context::layer::LayerContext;
 use crate::service::Layer;
 use zweidraehte_proto::AccessSource;
-use zweidraehte_proto::messages::{
-    buffers::Buffer,
-    knx::{KnxMessageBuffer, ServiceType},
-};
+use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
 
 use super::TransportLayer;
 
@@ -364,14 +365,10 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 pub struct CemiTransportLayerChannelPair {
     /// DevMgmt handler → CemiTransportLayer (capacity 2: one Frame + one
     /// Activate/Deactivate can be pending simultaneously).
-    pub event: embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::NoopRawMutex, CemiEvent, 2>,
+    pub event: Channel<NoopRawMutex, CemiEvent, 2>,
     /// CemiTransportLayer → KNX/IP runtime (capacity 1: at most one
     /// response pending).
-    pub response: embassy_sync::channel::Channel<
-        embassy_sync::blocking_mutex::raw::NoopRawMutex,
-        zweidraehte_proto::messages::buffers::Buffer<'static>,
-        1,
-    >,
+    pub response: Channel<NoopRawMutex, Buffer<'static>, 1>,
 }
 
 impl Default for CemiTransportLayerChannelPair {
@@ -383,7 +380,7 @@ impl Default for CemiTransportLayerChannelPair {
 impl CemiTransportLayerChannelPair {
     /// Create a new channel pair.
     pub fn new() -> Self {
-        Self { event: embassy_sync::channel::Channel::new(), response: embassy_sync::channel::Channel::new() }
+        Self { event: Channel::new(), response: Channel::new() }
     }
 
     /// Extract layer-side endpoints (for the router/layer stack).
@@ -408,16 +405,14 @@ impl CemiTransportLayerChannelPair {
 /// Used by [`IpDeviceLayers`](crate::IpDeviceLayers) to
 /// receive cEMI events and send responses.
 pub struct CemiTransportLayerClientEndpoints<'a> {
-    pub event_receiver: embassy_sync::channel::DynamicReceiver<'a, CemiEvent>,
-    pub response_sender:
-        embassy_sync::channel::DynamicSender<'a, zweidraehte_proto::messages::buffers::Buffer<'static>>,
+    pub event_receiver: DynamicReceiver<'a, CemiEvent>,
+    pub response_sender: DynamicSender<'a, Buffer<'static>>,
 }
 
 /// Link-layer-side endpoints borrowed from [`CemiTransportLayerChannelPair`].
 ///
 /// Used by the KNX/IP runtime to send cEMI events and receive responses.
 pub struct CemiTransportLayerEndpoints<'a> {
-    pub event_sender: embassy_sync::channel::DynamicSender<'a, CemiEvent>,
-    pub response_receiver:
-        embassy_sync::channel::DynamicReceiver<'a, zweidraehte_proto::messages::buffers::Buffer<'static>>,
+    pub event_sender: DynamicSender<'a, CemiEvent>,
+    pub response_receiver: DynamicReceiver<'a, Buffer<'static>>,
 }

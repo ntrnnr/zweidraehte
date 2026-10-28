@@ -2,11 +2,11 @@
 
 use core::mem::MaybeUninit;
 
+use crate::buffers::BufferPool;
 use crate::{
     config::buffer_size_for_apdu, context::layer::LayerContext, definition::StackDefinition,
     layers::LinkLayerBuilderBase, stack_core::StackCore,
 };
-use zweidraehte_proto::messages::buffers::BufferPool;
 
 /// Pre-allocated resources for the KNX stack.
 ///

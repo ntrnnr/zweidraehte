@@ -12,13 +12,14 @@
 
 use core::cell::RefCell;
 
+use crate::buffers::Buffer;
 use zweidraehte_proto::crypto::{
     ccm,
     scf::{InvalidScf, SecurityControlField},
 };
 use zweidraehte_proto::messages::{
     apdu::secure::{self, SecureApduRef},
-    buffers::{Buffer, MessageBuffer},
+    buffers::MessageBuffer,
     knx::{Ctrl2Field, DataControl, KnxMessageBuffer, Numbered, ServiceType},
 };
 

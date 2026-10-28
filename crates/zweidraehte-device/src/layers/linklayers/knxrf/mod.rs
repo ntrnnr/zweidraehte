@@ -45,6 +45,8 @@ use core::marker::PhantomData;
 use embassy_futures::select::{Either, select};
 use embassy_sync::channel::DynamicSender;
 
+use crate::buffers::Buffer;
+use crate::config::MAX_APDU_LENGTH_RF;
 use crate::context::{
     AddressTableContext, IndividualAddressContext, LinkLayerBufferContext, RfDomainAddressContext,
     RfRetransmitterContext,
@@ -54,10 +56,9 @@ use crate::layers::linklayers::is_secure_data_without_sbc;
 use crate::layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase, LinkLayerCapabilities};
 use history::LfnHistory;
 use zweidraehte_proto::address::IndividualAddress;
-use zweidraehte_proto::config::{MAX_APDU_LENGTH_RF, max_outgoing_msg_len};
 use zweidraehte_proto::encoding::rf;
-use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage};
+use zweidraehte_proto::messages::knx::max_outgoing_msg_len;
 use zweidraehte_proto::messages::knx::{AddressType, KnxMessageBuffer, ServiceType};
 
 /// Largest CRC-stripped telegram / internal frame we handle, in octets.
@@ -66,7 +67,7 @@ use zweidraehte_proto::messages::knx::{AddressType, KnxMessageBuffer, ServiceTyp
 /// [`rf::TELEGRAM_HEADER_OVERHEAD`] plus the largest APDU the device may
 /// configure. 96 gives [`MAX_SUPPORTED_APDU`] comfortable headroom above
 /// the RF profile default
-/// [`MAX_APDU_LENGTH_RF`](zweidraehte_proto::config::MAX_APDU_LENGTH_RF)
+/// [`MAX_APDU_LENGTH_RF`](crate::config::MAX_APDU_LENGTH_RF)
 /// (55) that every current RF device uses.
 const RF_FRAME_BUF: usize = 96;
 
@@ -571,13 +572,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::buffers::{BufferManager, DynBufferManager};
     use crate::context::{ApduLengthContext, BufferManagerContext};
     use crate::objects::tables::{AddrTab7Impl, Table};
     use const_default::ConstDefault;
     use core::cell::{Cell, RefCell};
     use embassy_futures::block_on;
     use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
-    use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
     use zweidraehte_proto::messages::knx::Confirm;
 
     // Internal CTRL bit 0x10 set = normal/installation; cleared = system broadcast.

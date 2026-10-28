@@ -3,7 +3,7 @@
 //! Device Management is mandatory; tunneling uses an enabled or disabled
 //! [`ConnectedHandler`] slot. Both dispatch to concrete handlers.
 
-use zweidraehte_proto::messages::buffers::DynBufferManager;
+use crate::buffers::DynBufferManager;
 use zweidraehte_proto::messages::knxip::substructs::{CRI, ConnectionType};
 use zweidraehte_proto::messages::knxip::{ConnectionStatus, KNXnetIPServiceType};
 

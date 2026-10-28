@@ -8,10 +8,10 @@ use heapless::Vec;
 
 use zweidraehte_platform::IpTransport;
 
+use crate::buffers::Buffer;
 use crate::ip::IpSecureStateView;
 use crate::layers::Inbox;
 use zweidraehte_proto::messages::{
-    buffers::Buffer,
     builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
     knx::*,
     knxip::*,

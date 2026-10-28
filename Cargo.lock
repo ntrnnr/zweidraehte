@@ -7168,7 +7168,6 @@ dependencies = [
  "bitfield",
  "const-default",
  "defmt",
- "embassy-sync",
  "heapless 0.9.2",
  "log",
  "paste",

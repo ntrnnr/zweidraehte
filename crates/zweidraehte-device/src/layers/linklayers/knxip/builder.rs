@@ -6,13 +6,13 @@ use heapless::Vec;
 
 use zweidraehte_platform::{IpTransport, TcpListenerOptions};
 
+use crate::buffers::Buffer;
 use crate::{
     DEFAULT_MULTICAST_ADDR, KNX_PORT, SYSTEM_SETUP_MULTICAST_ADDRESS,
     layers::transport::cemi::CemiTransportLayerEndpoints,
     layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase, LinkLayerCapabilities},
 };
 use zweidraehte_proto::messages::{
-    buffers::Buffer,
     builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
     knxip::substructs,
 };

@@ -2,7 +2,7 @@
 
 use heapless::Vec;
 
-use zweidraehte_proto::messages::buffers::{Buffer, DynBufferManager};
+use crate::buffers::{Buffer, DynBufferManager};
 use zweidraehte_proto::messages::knxip::substructs::{CRI, ConnectionType};
 use zweidraehte_proto::messages::knxip::{ConnectionStatus, KNXnetIPServiceType};
 

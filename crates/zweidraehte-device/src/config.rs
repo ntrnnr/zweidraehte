@@ -1,8 +1,7 @@
 //! KNX Stack Configuration
 //!
-//! This module re-exports protocol-level buffer constants from
-//! [`zweidraehte_proto::config`] and adds device-specific configuration macros
-//! for defining static KNX table configurations.
+//! This module exposes shared APDU limits, the full stack's buffer sizing
+//! policy and RF APDU recommendation, plus macros for static KNX tables.
 //!
 //! # Configuration Macros
 //!
@@ -38,8 +37,34 @@
 //! }
 //! ```
 
-// Re-export all protocol-level buffer constants from proto
-pub use zweidraehte_proto::config::*;
+// Keep the device configuration entry point while each value lives with its owner.
+pub use crate::buffers::{DEFAULT_HEADROOM, FRAME_OVERHEAD, buffer_size_for_apdu};
+pub use zweidraehte_proto::messages::apdu::limits::{MAX_APDU_LENGTH_EXTENDED, MAX_APDU_LENGTH_TP1_STANDARD};
+pub use zweidraehte_proto::messages::knx::max_outgoing_msg_len;
+
+/// Recommended `StackDefinition::MAX_APDU_LENGTH` for a KNX-RF System B device
+/// (mask 27B0h).
+///
+/// Like [`MAX_APDU_LENGTH_TP1_STANDARD`] / [`MAX_APDU_LENGTH_EXTENDED`], this is
+/// a value a device assigns to its compile-time `MAX_APDU_LENGTH` — which sizes
+/// the buffers and is what PID 56 reports. It is *not* enforced by the link
+/// layer; a device is free to choose another value (the RF link layer caps the
+/// physically framable ceiling at `knxrf::MAX_SUPPORTED_APDU`).
+///
+/// Unlike TP1, a KNX-RF Standard frame carries an 8-bit length field and splits
+/// the LSDU across multiple 16-octet data blocks (KNX 03/02/05 §6.1.2.4), so it
+/// is **not** limited to the 15-octet TP1 standard-frame APDU. The mask 27B0h
+/// profile (KNX 06/01/35 §3.2) mandates `APDU-length ≥ 15`; that 15 is a floor,
+/// not the value a real device reports.
+///
+/// We pick **55**, the established KNX long-frame APDU length, because the
+/// 15-octet floor is unusable with KNX Data Secure: the secure envelope costs
+/// [`apdu::secure::OVERHEAD`](zweidraehte_proto::messages::apdu::secure::OVERHEAD) = 13
+/// octets, so a 15-octet ceiling leaves only 2 octets of plaintext — too little
+/// for even a 1-octet secured `A_GroupValue_Write`. 55 leaves 42 octets of
+/// secure plaintext budget while still fitting the RF link layer's frame
+/// buffers (see `encoding::rf::max_telegram_len`).
+pub const MAX_APDU_LENGTH_RF: u16 = 55;
 
 // ============================================================================
 // Configuration Macros

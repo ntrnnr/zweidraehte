@@ -43,8 +43,8 @@ use core::fmt;
 
 use heapless::Vec;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
-pub use zweidraehte_proto::config::MAX_APDU_LENGTH_TP1_STANDARD;
 use zweidraehte_proto::encoding::tp1::{NPCI_HOP_COUNT_6, TP1_STD_CTRL_BASE, tp1_to_knx_bytes_no_checksum};
+pub use zweidraehte_proto::messages::apdu::limits::MAX_APDU_LENGTH_TP1_STANDARD;
 use zweidraehte_proto::messages::knx::{AddressType, Ctrl1Field, Ctrl2Field, FrameType};
 
 pub use zweidraehte_proto::messages::knx::{ApciCode, Tpci};

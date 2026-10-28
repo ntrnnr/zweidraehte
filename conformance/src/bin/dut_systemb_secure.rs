@@ -23,9 +23,9 @@ use zweidraehte_conformance::dut::systemb_stack::{ConformanceMemoryMap, device_i
 use zweidraehte_conformance::ipc::shm::SharedMemory;
 use zweidraehte_nv::Loaded;
 
+use zweidraehte_device::buffers::{BufferManager, DynBufferManager};
 use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::{Runner, Stack, StackResources};
-use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 
 // ============================================================================
 // Static Resources

@@ -13,7 +13,6 @@ const-default = { workspace = true }
 paste = { workspace = true }
 serde = { workspace = true }
 serde_with = { workspace = true }
-embassy-sync = { workspace = true, optional = true }
 defmt = { workspace = true, optional = true }
 log = { workspace = true, optional = true }
 heapless = { workspace = true }
@@ -35,17 +34,6 @@ log = ["dep:log", "zweidraehte-util/log", "zweidraehte-platform?/log"]
 alloc = []
 std = ["alloc", "zweidraehte-platform?/std"]
 knxip = ["dep:zweidraehte-platform"]
-# The pool-allocated message buffers (`Buffer`, `BufferManager`,
-# `DynBufferManager`) hand freed buffers back through an embassy channel,
-# which is the crate's only embassy dependency. Gated so synchronous
-# consumers (the microdevice stack, the client) that bring their own
-# storage get a zero-embassy dependency graph; the `MessageBuffer` trait
-# itself is always available.
-buffer-pool = ["dep:embassy-sync"]
-# Record the pool's allocation high-water mark and log every new peak.
-# Diagnostics for sizing `BufferManager<N>`; off in firmware so product
-# builds carry neither the counter nor the compare in the allocation path.
-pool-stats = ["buffer-pool"]
 # KNX USB interface framing (HID reports, USB Transfer Protocol, Bus
 # Access Server). Pure codec shared by the device stack's USB host link
 # layer and the client library's USB connector.

@@ -61,10 +61,11 @@ use embassy_time::{Instant, Timer};
 use crate::actor::Request;
 use busy::ChipBusyRequest;
 
+use crate::buffers::Buffer;
 use crate::context::{AddressTableContext, IndividualAddressContext, LinkLayerBufferContext, MaxRetryCountContext};
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::{
-    buffers::{Buffer, MessageBuffer},
+    buffers::MessageBuffer,
     builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage},
     knx::*,
 };

@@ -335,10 +335,10 @@ macro_rules! storage_task {
 
 #[cfg(test)]
 mod tests {
+    use crate::buffers::BufferManager;
     use core::cell::Cell;
     use core::future::Future;
     use core::task::{Context, Poll, Waker};
-    use zweidraehte_proto::messages::buffers::BufferManager;
 
     use embassy_sync::blocking_mutex::raw::NoopRawMutex;
     use embassy_sync::channel::Channel;

@@ -18,8 +18,9 @@ use zweidraehte_proto::AccessContext;
 /// Unlisted, which the Access Policies then govern. The legacy level is
 /// the full local-management grant; there is no A_Authorize on this path.
 const CEMI_M_PROP_ACCESS: AccessContext = AccessContext::MAX_ACCESS;
+use crate::buffers::{Buffer, DynBufferManager};
 use zweidraehte_proto::encoding::cemi::{CemiLocalMgmt, CemiMessageCode};
-use zweidraehte_proto::messages::buffers::{Buffer, DynBufferManager, MessageBuffer};
+use zweidraehte_proto::messages::buffers::MessageBuffer;
 use zweidraehte_proto::messages::knxip::substructs::{CRD, CRI, DeviceManagementCRD};
 use zweidraehte_proto::messages::knxip::{
     ConnectionStatus, DeviceConfigurationAck, DeviceConfigurationAckBuilder, DeviceConfigurationRequest,

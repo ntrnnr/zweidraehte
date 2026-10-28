@@ -10,6 +10,7 @@
 //! [`StackDefinition`] impl. The device's `State` type must implement
 //! [`HasDomainAddress`].
 
+use crate::buffers::Buffer;
 use crate::context::layer::ResponseTarget;
 use crate::{
     HasSecurityMode, StackState,
@@ -19,7 +20,6 @@ use crate::{
 };
 use zweidraehte_proto::messages::{
     apdu::device::{DomainAddressSerialNumberRead, DomainAddressSerialNumberResponse, DomainAddressSerialNumberWrite},
-    buffers::Buffer,
     knx::{ApciCode, KnxMessageBuffer, ServiceType},
 };
 

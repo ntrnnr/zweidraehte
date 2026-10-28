@@ -1,7 +1,25 @@
-//! The pool-allocated message buffers: [`Buffer`], [`BufferManager`]
-//! and [`DynBufferManager`]. Freed buffers travel back to the pool
-//! through an embassy channel, which is why this whole module sits
-//! behind the `buffer-pool` feature.
+//! Preallocated message buffers for the full device stack.
+//!
+//! Freed buffers return through an Embassy channel. Protocol codecs depend
+//! only on the shared [`MessageBuffer`] trait; this module owns pool storage,
+//! allocation and header headroom policy.
+//!
+//! # Buffer sizing
+//!
+//! Buffers cover the device's wire APDU ceiling, framing and header headroom.
+//! The Data Secure envelope consumes part of that same APDU budget, so secure
+//! frames do not require an additional envelope-sized allocation.
+//!
+//! ```
+//! use zweidraehte_device::buffers::buffer_size_for_apdu;
+//! use zweidraehte_proto::messages::apdu::limits::MAX_APDU_LENGTH_EXTENDED;
+//!
+//! const BUFFER_SIZE: usize = buffer_size_for_apdu(MAX_APDU_LENGTH_EXTENDED);
+//! assert_eq!(BUFFER_SIZE, 279);
+//! ```
+//!
+//! [`crate::StackResources`] uses [`crate::StackDefinition::BUFFER_SIZE`],
+//! which defaults to this calculation for the definition's APDU ceiling.
 
 use core::{
     cell::Cell,
@@ -14,8 +32,66 @@ use embassy_sync::{
     channel::{self, Channel, DynamicReceiver, DynamicSender},
 };
 
-use super::MessageBuffer;
-use crate::config::DEFAULT_HEADROOM;
+use zweidraehte_proto::messages::buffers::MessageBuffer;
+use zweidraehte_proto::util::packets::{SerializablePacket, SerializeBuffer};
+
+/// Frame overhead in bytes.
+///
+/// This is the maximum overhead for any KNX frame format that may be stored
+/// in a buffer. We use the cEMI header size since that's the largest:
+///
+/// **Internal format (6 bytes):**
+/// - Control byte: 1
+/// - Source address: 2
+/// - Destination address: 2
+/// - NPDU (hop count): 1
+///
+/// **cEMI format (9 bytes, without additional info):**
+/// - Message code: 1
+/// - Additional info length: 1 (value 0)
+/// - Control field 1: 1
+/// - Control field 2: 1
+/// - Source address: 2
+/// - Destination address: 2
+/// - NPDU length: 1
+///
+/// **Extended TP1 format (7 bytes):**
+/// - Control byte: 1
+/// - Extended control: 1
+/// - Source address: 2
+/// - Destination address: 2
+/// - Length: 1
+///
+/// Since received cEMI frames are copied into the buffer before conversion
+/// to internal format (which happens in-place), the buffer capacity must
+/// be able to hold the full cEMI frame.
+///
+/// **KNX-RF wire frames are intentionally excluded.** The RF block-1 header
+/// (length / C / Esc / RF-info + 6-octet SN/DoA = 10 octets) is larger than
+/// this, but RF wire telegrams never reach a pool buffer: the radio driver
+/// strips preamble, Manchester coding, and the FT3 block CRCs below the
+/// `RfTransceiver` boundary, and the RF link layer converts to the 6-octet
+/// internal header in its own scratch buffers before allocating from the pool.
+pub const FRAME_OVERHEAD: usize = 9;
+
+/// Default headroom for protocol headers.
+///
+/// This headroom is used for zero-copy prepending of headers:
+/// - cEMI expansion: 3 bytes (msg_code + add_info_len + ctrl2)
+/// - KNXnet/IP header: 6 bytes
+/// - Extra margin: 7 bytes
+pub const DEFAULT_HEADROOM: usize = 16;
+
+/// Calculate the required buffer size for a given maximum APDU length.
+///
+/// The buffer must be large enough to hold:
+/// - Frame overhead (9 bytes for cEMI compatibility)
+/// - Maximum APDU — this covers both plain and secure frames, since
+///   the Data Secure envelope is part of the APDU (see module docs).
+/// - Headroom for protocol headers (16 bytes)
+pub const fn buffer_size_for_apdu(max_apdu_length: u16) -> usize {
+    max_apdu_length as usize + FRAME_OVERHEAD + DEFAULT_HEADROOM
+}
 
 /// A message buffer managed by the [`BufferManager`].
 ///
@@ -27,7 +103,7 @@ use crate::config::DEFAULT_HEADROOM;
 /// its return channel are single-threaded. Requiring `Send` must fail:
 ///
 /// ```compile_fail
-/// use zweidraehte_proto::messages::buffers::Buffer;
+/// use zweidraehte_device::buffers::Buffer;
 /// fn require_send<T: Send>() {}
 /// require_send::<Buffer<'static>>();
 /// ```
@@ -153,8 +229,8 @@ impl core::fmt::Debug for Buffer<'_> {
     }
 }
 
-impl crate::util::packets::SerializeBuffer for Buffer<'_> {
-    fn serialize<P: crate::util::packets::SerializablePacket>(&mut self, packet: &P) -> (&mut [u8], &mut [u8]) {
+impl SerializeBuffer for Buffer<'_> {
+    fn serialize<P: SerializablePacket>(&mut self, packet: &P) -> (&mut [u8], &mut [u8]) {
         // Append after existing data (spare capacity starts here)
         let start = self.start + self.len;
         let full_buffer = unsafe { self.buffer.as_mut() };
@@ -400,7 +476,7 @@ impl<const NUM_BUFS: usize> BufferManager<NUM_BUFS> {
     /// cannot represent them:
     ///
     /// ```compile_fail
-    /// use zweidraehte_proto::{config::DEFAULT_HEADROOM, messages::buffers::BufferManager};
+    /// use zweidraehte_device::buffers::{DEFAULT_HEADROOM, BufferManager};
     /// let mut storage = [[0u8; DEFAULT_HEADROOM]; 256];
     /// // SAFETY: storage stays in place and outlives the pool.
     /// let _pool = unsafe { BufferManager::new(&mut storage) };
@@ -476,7 +552,7 @@ impl<const N: usize> BufferPool for BufferManager<N> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::messages::buffers::BufferError;
+    use zweidraehte_proto::messages::buffers::BufferError;
 
     #[test]
     fn maximum_pool_capacity_tracks_allocation_and_release() {
@@ -535,7 +611,7 @@ mod tests {
 
     #[test]
     fn cemi_encoding_uses_headroom_without_moving_the_payload() {
-        use crate::messages::knx::{KnxMessageBuffer, ServiceType};
+        use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
 
         let plain = [0xBC, 0x12, 0x34, 0x56, 0x78, 0xE0, 0x00, 0x81];
         for headroom in [2, 3] {

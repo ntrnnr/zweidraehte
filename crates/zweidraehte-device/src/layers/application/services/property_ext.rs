@@ -13,6 +13,7 @@
 //! type AlExtensions = (PropertyExtValueService, DomainAddressService);
 //! ```
 
+use crate::buffers::Buffer;
 use crate::{
     definition::StackDefinition,
     memory::{MemoryError, MemoryMap},
@@ -23,13 +24,13 @@ use crate::{
 };
 use zweidraehte_proto::messages::{
     apdu::{
+        limits::MAX_APDU_LENGTH_EXTENDED,
         memory::{MemoryExtendedAccess, MemoryExtendedResponse},
         property_ext::{
             FunctionPropertyExtHeader, FunctionPropertyExtResponse, PropertyExtValueHeader, PropertyExtValueResponse,
             PropertyExtValueWriteConRes, PropertyReturnCode,
         },
     },
-    buffers::Buffer,
     knx::{ApciCode, KnxMessageBuffer, ServiceType},
 };
 
@@ -194,7 +195,7 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
     // `BufferTooSmall` rather than being served or refused for a reason
     // the requester could act on. Data security 4.1.7 reads exactly as
     // many elements as one APDU holds, which is the case that found it.
-    const DATA_SCRATCH: usize = zweidraehte_proto::config::MAX_APDU_LENGTH_EXTENDED as usize;
+    const DATA_SCRATCH: usize = MAX_APDU_LENGTH_EXTENDED as usize;
     let mut data_buf = [0u8; DATA_SCRATCH];
 
     let payload_cap = ctx.base.response_payload_cap(PropertyExtValueResponse::msg_len(0)).min(DATA_SCRATCH);
@@ -894,7 +895,7 @@ fn handle_memory_ext_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
         return;
     }
 
-    const DATA_SCRATCH: usize = zweidraehte_proto::config::MAX_APDU_LENGTH_EXTENDED as usize;
+    const DATA_SCRATCH: usize = MAX_APDU_LENGTH_EXTENDED as usize;
     let mut data = [0u8; DATA_SCRATCH];
 
     let result = ctx.memory_map.read(ctx.base.state, request.address, &mut data[..count], ctx.base.access);

@@ -9,11 +9,11 @@ use embassy_sync::channel::DynamicSender;
 use heapless::Vec;
 
 use super::KnxNetIpContext;
+use crate::buffers::{Buffer, DynBufferManager};
 use crate::layers::linklayers::address_check::DeviceAddressChecker;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::knx::DestinationAddress;
 use zweidraehte_proto::messages::{
-    buffers::{Buffer, DynBufferManager},
     builder::IndicationMessage,
     knx::KnxMessageBuffer,
     knxip::{KNXnetIPServiceType, substructs},

@@ -13,6 +13,7 @@ use embassy_sync::{
     signal::Signal,
 };
 
+use crate::buffers::{Buffer, DynBufferManager};
 use crate::{
     actor::Request,
     definition::StackDefinition,
@@ -24,7 +25,6 @@ use crate::{
 };
 use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::messages::{
-    buffers::{Buffer, DynBufferManager},
     builder::{MessageBuilder, direction, state},
     knx::{ApciCode, DestinationAddress, KnxMessageBuffer, ServiceType},
 };

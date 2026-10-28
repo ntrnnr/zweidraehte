@@ -37,6 +37,7 @@ use std::collections::BTreeMap;
 use static_cell::StaticCell;
 
 use zweidraehte_device::StackDefinition;
+use zweidraehte_device::buffers::{BufferManager, DynBufferManager};
 use zweidraehte_device::context::layer::LayerContext;
 use zweidraehte_device::objects::interface::{
     FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, PropertyDescriptionResponse,
@@ -44,7 +45,6 @@ use zweidraehte_device::objects::interface::{
 };
 use zweidraehte_proto::dpt::{PDT_Function, PropertyDataDefinition};
 use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
-use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 
 use spec::{Caller, Expected, Kind};
 

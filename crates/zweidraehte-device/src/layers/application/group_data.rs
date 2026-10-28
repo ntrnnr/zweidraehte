@@ -7,6 +7,7 @@
 //! - Read-on-init cycle for uninitialized communication objects
 //! - TL confirmation tracking for pending group sends
 
+use crate::buffers::{Buffer, DynBufferManager};
 use crate::{
     DiagnosticsView, HasDiagnosticsContext, StackDefinition, StackState,
     context::layer::LayerContext,
@@ -26,7 +27,6 @@ use crate::{
 use embassy_sync::pubsub::PubSubBehavior;
 use zweidraehte_proto::messages::{
     apdu::group_value::{GroupValueReadRequest, GroupValueWriteRequest},
-    buffers::{Buffer, DynBufferManager},
     builder::MessageBuilder,
     knx::*,
 };
@@ -371,8 +371,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             // return code for group services — silently drop + warn.
             let response_len = object_size + msg_offset;
             let secure_envelope = matches!(response_security, RequiredSecurity::Auth | RequiredSecurity::AuthConf);
-            let max_msg_len =
-                zweidraehte_proto::config::max_outgoing_msg_len(self.state.max_apdu_length(), secure_envelope);
+            let max_msg_len = max_outgoing_msg_len(self.state.max_apdu_length(), secure_envelope);
             if response_len > max_msg_len {
                 warn!(
                     "AL GroupValueResponse for ASAP {} would exceed APDU ceiling ({} > {}); dropping",
@@ -548,8 +547,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             // Group services have no wire-level return code, so the
             // rejection surfaces through the CO status only.
             let secure_envelope = matches!(send_security, RequiredSecurity::Auth | RequiredSecurity::AuthConf);
-            let max_msg_len =
-                zweidraehte_proto::config::max_outgoing_msg_len(self.state.max_apdu_length(), secure_envelope);
+            let max_msg_len = max_outgoing_msg_len(self.state.max_apdu_length(), secure_envelope);
             if msg_len > max_msg_len {
                 warn!(
                     "AL GroupValue {} for ASAP {} would exceed APDU ceiling ({} > {})",
@@ -851,7 +849,7 @@ impl<D: StackDefinition> GroupValueAddressedSender for GroupDataProvider<'_, D> 
         // against `effective_apdu_budget`, but the trait is exposed to
         // any consumer — defend here so a future caller cannot push an
         // over-spec frame onto the bus.
-        let max_msg_len = zweidraehte_proto::config::max_outgoing_msg_len(self.state.max_apdu_length(), false);
+        let max_msg_len = max_outgoing_msg_len(self.state.max_apdu_length(), false);
         if msg_len > max_msg_len {
             warn!(
                 "GroupValueAddressedSender: write to TSAP {} ({} bytes) exceeds APDU ceiling ({})",

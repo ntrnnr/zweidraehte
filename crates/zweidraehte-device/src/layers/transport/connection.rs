@@ -4,9 +4,10 @@
 //! for managing connection-oriented transport layer communication per
 //! KNX specification 03/03/04.
 
+use crate::buffers::Buffer;
 use embassy_time::Instant;
 use zweidraehte_proto::address::IndividualAddress;
-use zweidraehte_proto::messages::{buffers::Buffer, knx::KnxMessageBuffer};
+use zweidraehte_proto::messages::knx::KnxMessageBuffer;
 use zweidraehte_proto::transport::ConnectionCore;
 
 pub use zweidraehte_proto::transport::ConnectionState;

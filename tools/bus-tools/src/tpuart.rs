@@ -9,9 +9,9 @@ use zweidraehte_platform::{
     serialport::{Options, Parity},
 };
 
+use zweidraehte_device::buffers::{Buffer, BufferManager};
 use zweidraehte_device::layers::linklayers::tpuart::TpUartLinkLayer;
 use zweidraehte_proto::messages::{
-    buffers::{Buffer, BufferManager},
     builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
     knx::{KnxMessageBuffer, ServiceType},
 };

@@ -28,6 +28,7 @@ mod restart_tests;
 pub use erase_policy::{EraseCodePolicy, PlainEraseCodes, SecureEraseCodes};
 
 use crate::access_policy::{AccessDecision, check_service_access, restart_access_policy, restart_required_level};
+use crate::buffers::{Buffer, DynBufferManager};
 use crate::context::layer::{LayerContext, ResponseTarget};
 use crate::objects::interface::PropertyError;
 use crate::service::{AlCtx, ApciHandler as _, Layer, ServiceCtx};
@@ -41,10 +42,7 @@ use crate::{
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::AccessSource;
 use zweidraehte_proto::HasConnectionAuth;
-use zweidraehte_proto::messages::{
-    buffers::{Buffer, DynBufferManager},
-    knx::*,
-};
+use zweidraehte_proto::messages::knx::*;
 
 // ============================================================================
 // Service Types
@@ -186,10 +184,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// [`ServiceCtx::effective_apdu_budget`](crate::service::ServiceCtx::effective_apdu_budget).
     fn effective_apdu_budget(&self, access_ctx: AccessContext) -> usize {
         use zweidraehte_proto::access::SecurityMode;
-        zweidraehte_proto::config::max_outgoing_msg_len(
-            self.state.max_apdu_length(),
-            access_ctx.security != SecurityMode::Plain,
-        )
+        max_outgoing_msg_len(self.state.max_apdu_length(), access_ctx.security != SecurityMode::Plain)
     }
 
     /// Access the unified device state.

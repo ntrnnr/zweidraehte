@@ -104,8 +104,8 @@ pub struct DeviceStatus {
 
 #[cfg(all(test, feature = "tp1"))]
 mod tests {
+    use crate::buffers::BufferManager;
     use core::cell::RefCell;
-    use zweidraehte_proto::messages::buffers::BufferManager;
 
     use embassy_sync::{blocking_mutex::raw::NoopRawMutex, channel::Channel};
     use zweidraehte_proto::{

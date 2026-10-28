@@ -1,11 +1,11 @@
 use heapless::Deque;
 
+use crate::buffers::Buffer;
 use crate::context::StackContext;
 use crate::context::layer::LayerContext;
 use crate::objects::interface::{HasDeviceObject, HasRoutingCount};
 use crate::service::Layer;
 use crate::{StackDefinition, StackState};
-use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::knx::*;
 
 /// Network layer for the KNX stack.

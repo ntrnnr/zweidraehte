@@ -9,9 +9,9 @@
 //! and [`HasSeqStore`](crate::storage::HasSeqStore); consumers bound on them
 //! directly.
 
+use crate::buffers::DynBufferManager;
 use crate::objects::interface::PropertyServiceHandler;
 use crate::objects::tables::{AddressTable, HasLoadStateMachine};
-use zweidraehte_proto::messages::buffers::DynBufferManager;
 
 /// Provides access to the buffer manager for allocating and freeing message buffers.
 pub trait BufferManagerContext {

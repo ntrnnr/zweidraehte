@@ -480,12 +480,12 @@ mod memory_map {
 mod objects {
     use super::*;
     use static_cell::StaticCell;
+    use zweidraehte_device::buffers::{BufferManager, DynBufferManager};
     use zweidraehte_device::objects::interface::{
         FullPropertyReadRequest, FullPropertyWriteRequest, PropertyError, PropertyServiceHandler, pid,
     };
     use zweidraehte_device::objects::tables::{HasLoadStateMachine, LoadEvent, LoadState};
     use zweidraehte_proto::dpt::InterfaceObjectType;
-    use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 
     /// All assertions live in one function: the buffer manager lives in a
     /// `StaticCell`, whose `init` panics on a second call.

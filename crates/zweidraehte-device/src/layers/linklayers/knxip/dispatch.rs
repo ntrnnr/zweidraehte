@@ -5,6 +5,7 @@
 use crate::ip::IpSecureStateView;
 use core::net::SocketAddrV4;
 
+use crate::buffers::Buffer;
 use crate::layers::linklayers::knxip::context::IpAdditionalIndividualAddressContext;
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
@@ -12,7 +13,7 @@ use embassy_sync::{
 };
 use embassy_time::{Duration, Instant};
 use zweidraehte_proto::messages::{
-    buffers::{Buffer, MessageBuffer},
+    buffers::MessageBuffer,
     builder::{ConfirmationExt, IndicationMessage, RequestMessage},
     knxip::*,
 };
