@@ -1,4 +1,4 @@
-//! Pure access policy for KNX memory regions.
+//! Permissions and access checks for KNX memory regions.
 //!
 //! A memory map still owns storage and address dispatch. This module only
 //! answers the question that is common to every implementation: whether one
@@ -139,26 +139,33 @@ impl MemoryRegion {
 #[must_use]
 pub const fn memory_regions_valid(regions: &[MemoryRegion]) -> bool {
     let mut i = 0;
+
     while i < regions.len() {
         let region = regions[i];
         let start = u64::from(region.start);
         let end = start + region.length as u64;
+
         if region.length == 0 || end > 0x01_00_00_00 {
             return false;
         }
 
         let mut j = i + 1;
+
         while j < regions.len() {
             let other = regions[j];
             let other_start = u64::from(other.start);
             let other_end = other_start + other.length as u64;
+
             if start < other_end && other_start < end {
                 return false;
             }
+
             j += 1;
         }
+
         i += 1;
     }
+
     true
 }
 
@@ -200,6 +207,7 @@ pub fn check_memory_access(
                 return Some(Err(MemoryError::WriteProtected));
             }
         }
+
         return Some(Err(MemoryError::AccessDenied));
     }
 
@@ -230,6 +238,7 @@ pub fn memory_access_allowed(
             return end <= region.end() && region.permission(operation).allows(access_level, max_access_levels);
         }
     }
+
     false
 }
 
