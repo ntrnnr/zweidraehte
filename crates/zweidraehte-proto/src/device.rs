@@ -38,16 +38,18 @@ pub enum MaskFamily {
     /// - ComObject indices start at 1
     /// - Generates address/association tables
     SystemB,
-    /// BIM masks (0912, 091A)
+    /// Legacy coupler/router profiles (0912: Coupler 1.2, 091A: KNXnet/IP Router).
+    /// This is a project grouping, not a KNX profile collection name.
     /// - Absolute memory segments
     /// - DefaultProcedure load style
     /// - No ComObject table
-    Bim,
-    /// BIM M masks (0920, 2920)
+    CouplerLegacy,
+    /// Coupler Model 2.0 masks (0920, 2920).
+    /// TODO: Verify the 0920 assignment; the local spec only lists 2920 as standardized.
     /// - Absolute memory segments
     /// - MergedProcedure load style
     /// - No ComObject table
-    BimM,
+    CouplerModel2,
 }
 
 impl MaskFamily {
@@ -63,8 +65,8 @@ impl MaskFamily {
             0x0020 | 0x0021 | 0x0025 => Some(MaskFamily::Bcu2),
             0x0701 | 0x0705 | 0x2705 | 0x5705 | 0x0700 => Some(MaskFamily::System7),
             0x07B0 | 0x17B0 | 0x27B0 | 0x57B0 => Some(MaskFamily::SystemB),
-            0x0912 | 0x091A => Some(MaskFamily::Bim),
-            0x0920 | 0x2920 => Some(MaskFamily::BimM),
+            0x0912 | 0x091A => Some(MaskFamily::CouplerLegacy),
+            0x0920 | 0x2920 => Some(MaskFamily::CouplerModel2),
             _ => None,
         }
     }

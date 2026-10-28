@@ -48,16 +48,18 @@ impl MaskFamilyExt for MaskFamily {
             MaskFamily::Bcu2 => "DefaultProcedure",
             MaskFamily::System7 => "ProductProcedure",
             MaskFamily::SystemB => "MergedProcedure",
-            MaskFamily::Bim => "DefaultProcedure",
-            MaskFamily::BimM => "MergedProcedure",
+            MaskFamily::CouplerLegacy => "DefaultProcedure",
+            MaskFamily::CouplerModel2 => "MergedProcedure",
         }
     }
 
     fn data_segment_type(&self) -> DataSegmentType {
         match self {
-            MaskFamily::Bcu1 | MaskFamily::Bcu2 | MaskFamily::System7 | MaskFamily::Bim | MaskFamily::BimM => {
-                DataSegmentType::Absolute
-            }
+            MaskFamily::Bcu1
+            | MaskFamily::Bcu2
+            | MaskFamily::System7
+            | MaskFamily::CouplerLegacy
+            | MaskFamily::CouplerModel2 => DataSegmentType::Absolute,
             MaskFamily::SystemB => DataSegmentType::Relative,
         }
     }
@@ -71,14 +73,18 @@ impl MaskFamilyExt for MaskFamily {
         // do the BCU-era families.
         match self {
             MaskFamily::SystemB => 1,
-            MaskFamily::Bcu1 | MaskFamily::Bcu2 | MaskFamily::System7 | MaskFamily::Bim | MaskFamily::BimM => 0,
+            MaskFamily::Bcu1
+            | MaskFamily::Bcu2
+            | MaskFamily::System7
+            | MaskFamily::CouplerLegacy
+            | MaskFamily::CouplerModel2 => 0,
         }
     }
 
     fn has_com_object_table(&self) -> bool {
         match self {
             MaskFamily::Bcu1 | MaskFamily::Bcu2 | MaskFamily::System7 | MaskFamily::SystemB => true,
-            MaskFamily::Bim | MaskFamily::BimM => false,
+            MaskFamily::CouplerLegacy | MaskFamily::CouplerModel2 => false,
         }
     }
 
@@ -90,7 +96,7 @@ impl MaskFamilyExt for MaskFamily {
 /// Type of data segment used by the mask.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataSegmentType {
-    /// Absolute memory addresses (System 7, BIM)
+    /// Absolute memory addresses (BCU1, BCU2, System 7 and coupler families)
     Absolute,
     /// Relative segments with load state machines (System B)
     Relative,

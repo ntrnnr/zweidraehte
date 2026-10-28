@@ -790,7 +790,7 @@ mod tests {
         assert_eq!(MaskFamily::from_mask_version(0x0701), Some(MaskFamily::System7)); // 0701 is System7
         assert_eq!(MaskFamily::from_mask_version(0x07B0), Some(MaskFamily::SystemB));
         assert_eq!(MaskFamily::from_mask_version(0x57B0), Some(MaskFamily::SystemB)); // 57B0 maps to SystemB
-        assert_eq!(MaskFamily::from_mask_version(0x0912), Some(MaskFamily::Bim)); // 0912 is Bim
+        assert_eq!(MaskFamily::from_mask_version(0x0912), Some(MaskFamily::CouplerLegacy));
     }
 
     #[test]

@@ -2488,8 +2488,8 @@ impl MtxmlGenerator {
             // is the whole procedure, so an empty product contribution is
             // even correct); a BCU2 ProductProcedure would need the task
             // records of a real BCU2 firmware, which we do not produce.
-            MaskFamily::Bcu1 | MaskFamily::Bcu2 | MaskFamily::Bim | MaskFamily::BimM => {
-                Self::build_bim_load_procedures()
+            MaskFamily::Bcu1 | MaskFamily::Bcu2 | MaskFamily::CouplerLegacy | MaskFamily::CouplerModel2 => {
+                Self::build_empty_load_procedures()
             }
         })
     }
@@ -2750,9 +2750,8 @@ impl MtxmlGenerator {
         })
     }
 
-    /// Build load procedures for BIM devices.
-    fn build_bim_load_procedures() -> LoadProcedures {
-        // BIM devices have their own load mechanism
+    /// Leave the product contribution empty for families without generated procedures.
+    fn build_empty_load_procedures() -> LoadProcedures {
         LoadProcedures { procedures: vec![] }
     }
 
