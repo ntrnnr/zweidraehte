@@ -74,7 +74,9 @@ fn stack() -> Stack<'static, Definition> {
 }
 
 #[test]
-#[should_panic(expected = "buffer size must cover the device's maximum APDU and framing")]
+#[should_panic(
+    expected = "buffer size must cover the device's maximum APDU, framing and the link layer's wire framing"
+)]
 fn undersized_definition_cannot_back_the_advertised_apdu_limit() {
     let _ = StackResources::<Tp1<AmbientDevice<16>>>::new();
 }

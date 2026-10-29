@@ -240,6 +240,16 @@ impl<
     const TBS: usize,
 > LinkLayerBuilderBase for IpInterfaceLinkLayerBuilder<W, R, D, MS, MTS, MC, TC, MX, TBS>
 {
+    /// The KNX/IP side passes whole KNXnet/IP frames through pool buffers,
+    /// as the plain KNX/IP builder does (see its `WIRE_FRAME_OVERHEAD`).
+    const WIRE_FRAME_OVERHEAD: usize = zweidraehte_proto::messages::knxip::KNXNETIP_HEADER_SIZE
+        + zweidraehte_proto::messages::knxip::CONNECTION_HEADER_SIZE
+        + if <<D::Features as features::FeatureSet>::IpSecure as super::knxip::secure::IpSecureFeature>::ENABLED {
+            super::knxip::secure::SECURE_WRAPPER_OVERHEAD
+        } else {
+            0
+        };
+
     type Resources = IpInterfaceResources<D>;
     type LLEndpoints<'a> = CemiTransportLayerEndpoints<'a>;
 
