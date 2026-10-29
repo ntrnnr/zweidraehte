@@ -802,3 +802,54 @@ fn flash_log_record_index_follows_compaction() {
     state.apply_section(REC_SMALL, 0, &record(4, 5)).expect("record");
     assert!(!store.record_matches(&state, REC_SMALL).expect("compare"));
 }
+
+/// A byte medium that counts its writes and syncs.
+struct CountingBytes {
+    inner: crate::mock::MockBytes,
+    writes: std::rc::Rc<core::cell::Cell<usize>>,
+    syncs: std::rc::Rc<core::cell::Cell<usize>>,
+}
+
+impl crate::ByteIo for CountingBytes {
+    type Error = ();
+
+    fn read_at(&self, off: u32, buf: &mut [u8]) -> Result<(), ()> {
+        self.inner.read_at(off, buf)
+    }
+
+    fn write_at(&mut self, off: u32, data: &[u8]) -> Result<(), ()> {
+        self.writes.set(self.writes.get() + 1);
+        self.inner.write_at(off, data)
+    }
+
+    fn sync(&mut self) -> Result<(), ()> {
+        self.syncs.set(self.syncs.get() + 1);
+        Ok(())
+    }
+}
+
+/// A byte store syncs its medium once per unit of work, not per chunk: a
+/// file-backed medium pays one fsync per flush, while a flush that spans
+/// many chunks still ends durable before `flush` returns.
+#[test]
+fn byte_nv_syncs_once_per_flush() {
+    let medium = Bytes::medium();
+    let writes = std::rc::Rc::new(core::cell::Cell::new(0));
+    let syncs = std::rc::Rc::new(core::cell::Cell::new(0));
+    let mut store = ByteNv::new(
+        CountingBytes { inner: medium.open_bytes(), writes: writes.clone(), syncs: syncs.clone() },
+        0,
+        1024,
+    );
+    let state = TestState::new(300);
+    assert_eq!(store.load(&state), Ok(Loaded::Fresh));
+    assert_eq!(syncs.get(), 1, "formatting a fresh medium ends with one sync");
+
+    let flusher = Flusher::new();
+    let (writes_before, syncs_before) = (writes.get(), syncs.get());
+    state.write(IMG_LARGE, 0, &[7; 300]);
+    state.write(IMG_SMALL, 0, &[9; 20]);
+    flusher.flush(&state, &mut store).expect("flush");
+    assert!(writes.get() - writes_before > 2, "the flush spans several chunk writes");
+    assert_eq!(syncs.get() - syncs_before, 1, "one sync for the whole flush");
+}

@@ -162,6 +162,11 @@ impl<A: NvStore, B: NvStore, R: Routes> NvStore for SplitNv<A, B, R> {
         }
     }
 
+    fn commit(&mut self) -> Result<(), NvError<Self::Error>> {
+        self.first.commit().map_err(|e| lift(e, SplitError::First))?;
+        self.second.commit().map_err(|e| lift(e, SplitError::Second))
+    }
+
     fn needs_compaction(&self) -> bool {
         self.first.needs_compaction() || self.second.needs_compaction()
     }

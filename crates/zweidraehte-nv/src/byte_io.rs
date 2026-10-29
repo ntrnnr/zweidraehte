@@ -22,4 +22,15 @@ pub trait ByteIo {
 
     /// Write `data` starting at `off`.
     fn write_at(&mut self, off: u32, data: &[u8]) -> Result<(), Self::Error>;
+
+    /// Make every write so far durable.
+    ///
+    /// Stores call this once at the end of a unit of work (a flush, a
+    /// format, a compaction) instead of after every write, so a medium that
+    /// buffers writes (a file) pays one sync per flush rather than one per
+    /// chunk. A medium whose writes are durable as they complete (FRAM,
+    /// MRAM, shared memory) keeps the default.
+    fn sync(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }

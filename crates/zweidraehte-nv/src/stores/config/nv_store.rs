@@ -80,6 +80,14 @@ pub trait NvStore {
     fn record_matches<S: PersistentSections>(&mut self, state: &S, id: SectionId)
     -> Result<bool, NvError<Self::Error>>;
 
+    /// Make everything [`persist`](Self::persist) wrote since the last
+    /// commit durable. The [`Flusher`] calls it once per flush, after its
+    /// last `persist`; a store whose writes are durable as they complete
+    /// keeps the default.
+    fn commit(&mut self) -> Result<(), NvError<Self::Error>> {
+        Ok(())
+    }
+
     /// Whether the store needs or would benefit from
     /// [`compact`](Self::compact). A flash store may return
     /// [`NeedsMaintenance`](NvError::NeedsMaintenance) from `persist`
@@ -168,7 +176,10 @@ impl Flusher {
             }
         });
 
-        let result = self.persist_changes(state, store, &ranges);
+        // One commit for the whole flush: the response that caused the
+        // change leaves only after `flush` returns, so it is still durable
+        // first, at one medium sync instead of one per written chunk.
+        let result = self.persist_changes(state, store, &ranges).and_then(|()| store.commit());
         if result.is_err() {
             self.resync.set(true);
         }

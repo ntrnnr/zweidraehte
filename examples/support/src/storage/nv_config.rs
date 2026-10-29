@@ -2,9 +2,9 @@
 //!
 //! The device state's persistent sections live in a [`ByteNv`] image in a
 //! plain file, the host twin of a FRAM-backed device: every section at a
-//! fixed offset, written in place and synced before the response that
-//! caused the change leaves the device (the router flushes through the
-//! [`NvConfig`] in the device's stores struct).
+//! fixed offset, written in place and synced once per flush, before the
+//! response that caused the change leaves the device (the router flushes
+//! through the [`NvConfig`] in the device's stores struct).
 //!
 //! The image is binary. [`dump_config`] prints what a file holds, section by
 //! section, for the shells' `--dump-config` flag.
@@ -31,7 +31,9 @@ pub type LinuxConfigNv = NvConfig<ByteNv<FileByteIo>>;
 /// Open (creating if absent) the config file at `path`. The sections are
 /// applied at boot with [`NvConfig::load`].
 pub fn open_config_nv(path: impl AsRef<Path>) -> io::Result<LinuxConfigNv> {
-    let io = FileByteIo::open(path, u64::from(CONFIG_FILE_LEN))?;
+    // The config store commits once per flush (`ByteIo::sync`); syncing
+    // every 32-byte chunk would stall the stack for seconds per download.
+    let io = FileByteIo::open_synced_on_commit(path, u64::from(CONFIG_FILE_LEN))?;
     Ok(NvConfig::new(ByteNv::new(io, 0, CONFIG_FILE_LEN)))
 }
 

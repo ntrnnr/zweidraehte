@@ -59,8 +59,17 @@ const REGION_SIZE: usize = LinuxSiatStore::REGION_LEN;
 /// stores over it read a region without their magic as a fresh device, so
 /// a new file starts from factory defaults. Shared by the sequence/SIAT
 /// store and the config image.
+///
+/// Durability differs by user. The sequence, SIAT and mc_timer stores have
+/// no commit point of their own, so [`open`](Self::open) syncs every write
+/// (a lost counter would open a replay window). The config image is written
+/// in 32-byte chunks and committed once per flush through
+/// [`ByteIo::sync`], so [`open_synced_on_commit`](Self::open_synced_on_commit)
+/// leaves the syncing to that: a 29 KiB parameter image would otherwise cost
+/// ~900 fsyncs (1.5 s on ext4) while the single-threaded stack waits.
 pub struct FileByteIo {
     file: std::fs::File,
+    sync_each_write: bool,
 }
 
 impl FileByteIo {
@@ -71,13 +80,23 @@ impl FileByteIo {
     /// bytes, which is exactly the blank-medium state the layouts expect.
     /// An existing file keeps its contents.
     pub fn open(path: impl AsRef<Path>, len: u64) -> std::io::Result<Self> {
+        Self::open_with(path, len, true)
+    }
+
+    /// Like [`open`](Self::open), but writes become durable only at
+    /// [`ByteIo::sync`], for a store that commits its own units of work.
+    pub fn open_synced_on_commit(path: impl AsRef<Path>, len: u64) -> std::io::Result<Self> {
+        Self::open_with(path, len, false)
+    }
+
+    fn open_with(path: impl AsRef<Path>, len: u64, sync_each_write: bool) -> std::io::Result<Self> {
         let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
 
         if file.metadata()?.len() < len {
             file.set_len(len)?;
         }
 
-        Ok(Self { file })
+        Ok(Self { file, sync_each_write })
     }
 }
 
@@ -92,6 +111,10 @@ impl ByteIo for FileByteIo {
         self.file.write_all_at(data, off as u64)?;
         // Flush the write to disk so a crash between sends can't lose the
         // persisted counter and open a replay window on the next boot.
+        if self.sync_each_write { self.file.sync_data() } else { Ok(()) }
+    }
+
+    fn sync(&mut self) -> Result<(), Self::Error> {
         self.file.sync_data()
     }
 }

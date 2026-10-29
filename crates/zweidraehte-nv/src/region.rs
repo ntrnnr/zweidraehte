@@ -81,6 +81,10 @@ impl<Io: ByteIo> ByteIo for Region<Io> {
         let at = self.absolute(off, data.len());
         self.io.write_at(at, data)
     }
+
+    fn sync(&mut self) -> Result<(), Self::Error> {
+        self.io.sync()
+    }
 }
 
 #[cfg(test)]

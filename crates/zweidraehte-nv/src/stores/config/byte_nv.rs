@@ -105,6 +105,10 @@ impl<M: ByteIo> ByteNv<M> {
         self.medium.read_at(self.base + at, buf).map_err(NvError::Io)
     }
 
+    fn sync(&mut self) -> Result<(), NvError<M::Error>> {
+        self.medium.sync().map_err(NvError::Io)
+    }
+
     fn write(&mut self, at: u32, data: &[u8]) -> Result<(), NvError<M::Error>> {
         self.medium.write_at(self.base + at, data).map_err(NvError::Io)
     }
@@ -387,6 +391,7 @@ impl<M: ByteIo> NvStore for ByteNv<M> {
         self.check_layout(state)?;
         if !self.header_matches(state)? {
             self.format(state)?;
+            self.sync()?;
             return Ok(Loaded::Fresh);
         }
 
@@ -411,6 +416,8 @@ impl<M: ByteIo> NvStore for ByteNv<M> {
             Ok(())
         })?;
 
+        // A control Record rewritten above for a stale image CRC.
+        self.sync()?;
         Ok(Loaded::Restored)
     }
 
@@ -463,6 +470,11 @@ impl<M: ByteIo> NvStore for ByteNv<M> {
                 self.write_image_range(state, section, at, 0, section.len)?;
                 self.write_image_crc(state, section, at)
             }
-        })
+        })?;
+        self.sync()
+    }
+
+    fn commit(&mut self) -> Result<(), NvError<M::Error>> {
+        self.sync()
     }
 }
