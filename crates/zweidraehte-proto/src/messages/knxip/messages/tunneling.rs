@@ -71,6 +71,10 @@ mod raw {
     }
 }
 
+/// Size of the connection header that tunnelling and device-management
+/// requests carry between the KNXnet/IP header and the cEMI frame.
+pub const CONNECTION_HEADER_SIZE: usize = core::mem::size_of::<raw::TunnelingHeader>();
+
 // ============================================================================
 // Tunneling Feature IDs (KNX spec 03/08/04 §4.6 Table 3)
 // ============================================================================

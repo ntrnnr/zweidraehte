@@ -14,7 +14,7 @@ use crate::{
 };
 use zweidraehte_proto::messages::{
     builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
-    knxip::substructs,
+    knxip::{CONNECTION_HEADER_SIZE, KNXNETIP_HEADER_SIZE, substructs},
 };
 
 use super::definition::KnxNetIpDefinition;
@@ -425,6 +425,19 @@ impl<
     const REQUIRES_MC_TIMER: bool = <<D::Features as FeatureSet>::Routing as RoutingFeature>::ENABLED
         && <<D::Features as FeatureSet>::IpSecure as IpSecureFeature>::ENABLED;
 
+    /// The largest frame a pool buffer receives is a connection-oriented
+    /// one (tunnelling or device management over TCP): KNXnet/IP header and
+    /// connection header in front of the cEMI frame, all inside a
+    /// SECURE_WRAPPER when IP Secure is on. The TCP reader and the secure
+    /// scratch paths copy those frames into pool buffers whole.
+    const WIRE_FRAME_OVERHEAD: usize = KNXNETIP_HEADER_SIZE
+        + CONNECTION_HEADER_SIZE
+        + if <<D::Features as FeatureSet>::IpSecure as IpSecureFeature>::ENABLED {
+            super::secure::SECURE_WRAPPER_OVERHEAD
+        } else {
+            0
+        };
+
     type Resources = KnxNetIpResources<D::Features>;
     type LLEndpoints<'a> = CemiTransportLayerEndpoints<'a>;
 
@@ -473,5 +486,34 @@ where
     ) -> ! {
         let mut link_layer = self.build(resources, context, ll_endpoints, ind_tx, conf_tx, NoSubnetLink);
         link_layer.run(req_rx).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::buffers::{DEFAULT_HEADROOM, FRAME_OVERHEAD, TPCI_LEN, buffer_size_for_apdu, buffer_size_for_link};
+    use zweidraehte_proto::messages::apdu::limits::MAX_APDU_LENGTH_EXTENDED;
+
+    /// ETS reads PID 56 = 254 and then writes the application with 249-byte
+    /// `MemoryExtended_Write`s: TPCI/APCI (2) + count (1) + address (3) +
+    /// 249 data = a 255-octet TPDU. Over KNXnet/IP device management on TCP
+    /// that is a 274-byte frame, 312 inside an IP Secure session; the TCP
+    /// reader copies it whole into a pool buffer after the default headroom.
+    /// Sized without the TPCI octet and the KNXnet/IP framing, the buffer
+    /// held 263 bytes and `set_len` panicked.
+    #[test]
+    fn largest_ets_frames_fit() {
+        let apdu = MAX_APDU_LENGTH_EXTENDED;
+        let cemi = FRAME_OVERHEAD + TPCI_LEN + usize::from(apdu);
+        assert_eq!(cemi, 264);
+        assert_eq!(buffer_size_for_apdu(apdu) - DEFAULT_HEADROOM, cemi, "a bare cEMI frame fits exactly");
+
+        let plain = KNXNETIP_HEADER_SIZE + CONNECTION_HEADER_SIZE;
+        assert_eq!(plain + cemi, 274, "the frame from the ETS capture");
+        assert!(buffer_size_for_link(apdu, plain) - DEFAULT_HEADROOM >= 274);
+
+        let secure = plain + super::super::secure::SECURE_WRAPPER_OVERHEAD;
+        assert!(buffer_size_for_link(apdu, secure) - DEFAULT_HEADROOM >= 274 + 38);
     }
 }

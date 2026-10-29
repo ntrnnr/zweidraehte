@@ -34,8 +34,8 @@ use crate::connector::{ConnectorInfo, KnxConnector};
 /// and §3.4.2).
 const LOCAL_MGMT_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Transfer frame buffer size: 8-byte header + largest KNX frame (263).
-const TRANSFER_BUF_SIZE: usize = 271;
+/// Transfer frame buffer size: 8-byte header + largest KNX frame (264).
+const TRANSFER_BUF_SIZE: usize = 272;
 
 // Local device management addresses on the interface (03/06/03; same
 // values the device stack's USB link layer uses).

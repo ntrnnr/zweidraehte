@@ -13,8 +13,9 @@ pub const MAX_REPORT_SIZE: usize = 64;
 /// Maximum payload per HID report (after 3-byte header)
 pub const MAX_PAYLOAD_SIZE: usize = 61;
 
-/// Maximum KNX frame size (extended frame format on TP1)
-pub const MAX_KNX_FRAME_SIZE: usize = 263;
+/// Maximum KNX frame size: a cEMI frame with the largest extended-frame
+/// APDU (9-byte cEMI header + TPCI + 254 APDU octets).
+pub const MAX_KNX_FRAME_SIZE: usize = 264;
 
 /// Maximum number of HID reports needed for largest KNX frame
 pub const MAX_REPORTS: usize = 5;

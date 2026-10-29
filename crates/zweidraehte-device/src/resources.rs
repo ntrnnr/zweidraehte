@@ -4,7 +4,7 @@ use core::mem::MaybeUninit;
 
 use crate::buffers::BufferPool;
 use crate::{
-    config::buffer_size_for_apdu, context::layer::LayerContext, definition::StackDefinition,
+    config::buffer_size_for_link, context::layer::LayerContext, definition::StackDefinition,
     layers::LinkLayerBuilderBase, stack_core::StackCore,
 };
 
@@ -67,8 +67,12 @@ impl<D: StackDefinition, const BUF_SZ: usize> StackResources<D, BUF_SZ> {
     /// overhead, or if `BUF_SZ` differs from the definition's size.
     pub fn new() -> Self {
         assert!(
-            D::BUFFER_SIZE >= buffer_size_for_apdu(D::MAX_APDU_LENGTH),
-            "buffer size must cover the device's maximum APDU and framing"
+            D::BUFFER_SIZE
+                >= buffer_size_for_link(
+                    D::MAX_APDU_LENGTH,
+                    <D::LLB as crate::layers::LinkLayerBuilderBase>::WIRE_FRAME_OVERHEAD
+                ),
+            "buffer size must cover the device's maximum APDU, framing and the link layer's wire framing"
         );
         assert_eq!(BUF_SZ, D::BUFFER_SIZE, "buffer size must match StackDefinition::BUFFER_SIZE");
 

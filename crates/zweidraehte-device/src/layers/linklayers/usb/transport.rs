@@ -42,7 +42,7 @@ pub struct UsbCemiTransportResources {
     /// Frame reassembly buffer
     pub(crate) reassembly: MaybeUninit<ReassemblyBuffer>,
     /// Transfer frame buffer (header + cEMI)
-    pub(crate) transfer_buf: MaybeUninit<[u8; 271]>, // 8 header + 263 max frame
+    pub(crate) transfer_buf: MaybeUninit<[u8; 272]>, // 8 header + 264 max frame
 }
 
 impl UsbCemiTransportResources {
@@ -61,7 +61,7 @@ impl UsbCemiTransportResources {
             rx_report: self.rx_report.write([0u8; MAX_REPORT_SIZE]),
             tx_report: self.tx_report.write([0u8; MAX_REPORT_SIZE]),
             reassembly: self.reassembly.write(ReassemblyBuffer::new()),
-            transfer_buf: self.transfer_buf.write([0u8; 271]),
+            transfer_buf: self.transfer_buf.write([0u8; 272]),
         }
     }
 }
@@ -85,7 +85,7 @@ pub struct InitializedResources<'a> {
     pub rx_report: &'a mut [u8; MAX_REPORT_SIZE],
     pub tx_report: &'a mut [u8; MAX_REPORT_SIZE],
     pub reassembly: &'a mut ReassemblyBuffer,
-    pub transfer_buf: &'a mut [u8; 271],
+    pub transfer_buf: &'a mut [u8; 272],
 }
 
 /// USB cEMI Transport
@@ -97,7 +97,7 @@ pub struct UsbCemiTransport<'a, D: UsbHidDevice> {
     rx_report: &'a mut [u8; MAX_REPORT_SIZE],
     tx_report: &'a mut [u8; MAX_REPORT_SIZE],
     reassembly: &'a mut ReassemblyBuffer,
-    transfer_buf: &'a mut [u8; 271],
+    transfer_buf: &'a mut [u8; 272],
 }
 
 impl<'a> UsbCemiTransport<'a, AsyncHidDevice> {

@@ -38,9 +38,12 @@ pub trait DeviceDefinition: 'static {
     /// Bytes per message buffer, including framing and headroom.
     ///
     /// May be increased without changing the advertised APDU limit. Values
-    /// below `buffer_size_for_apdu(Self::MAX_APDU_LENGTH)` are rejected when
-    /// constructing stack resources.
-    const BUFFER_SIZE: usize = config::buffer_size_for_apdu(Self::MAX_APDU_LENGTH);
+    /// below the default (APDU, framing, headroom and the link layer's wire
+    /// framing) are rejected when constructing stack resources.
+    const BUFFER_SIZE: usize = config::buffer_size_for_link(
+        Self::MAX_APDU_LENGTH,
+        <Self::LinkLayer as crate::layers::LinkLayerBuilderBase>::WIRE_FRAME_OVERHEAD,
+    );
 
     /// Optional Device Descriptor Type 2.
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = None;

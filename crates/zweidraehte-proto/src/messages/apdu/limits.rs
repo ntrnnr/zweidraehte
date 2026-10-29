@@ -4,8 +4,10 @@
 
 /// Maximum APDU length for standard TP1 without Extended Frame Format.
 ///
-/// This is the baseline APDU size supported by all TP1 devices.
-/// Standard frames can carry TPCI (1 byte) + up to 14 bytes of payload = 15 bytes.
+/// This is the baseline APDU size supported by all TP1 devices. Like every
+/// APDU length here it excludes the TPCI octet: a standard frame's 4-bit
+/// length field allows TPCI + 15 octets (e.g. a 14-byte DPT 16 string:
+/// TPCI/APCI + APCI + 14 data octets).
 pub const MAX_APDU_LENGTH_TP1_STANDARD: u16 = 15;
 
 /// Maximum APDU length for TP1 with Extended Frame Format (EFF).

@@ -38,7 +38,7 @@
 //! ```
 
 // Keep the device configuration entry point while each value lives with its owner.
-pub use crate::buffers::{DEFAULT_HEADROOM, FRAME_OVERHEAD, buffer_size_for_apdu};
+pub use crate::buffers::{DEFAULT_HEADROOM, FRAME_OVERHEAD, TPCI_LEN, buffer_size_for_apdu, buffer_size_for_link};
 pub use zweidraehte_proto::messages::apdu::limits::{MAX_APDU_LENGTH_EXTENDED, MAX_APDU_LENGTH_TP1_STANDARD};
 pub use zweidraehte_proto::messages::knx::max_outgoing_msg_len;
 

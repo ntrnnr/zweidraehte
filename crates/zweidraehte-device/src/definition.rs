@@ -104,10 +104,14 @@ pub trait StackDefinition: Copy + 'static {
 
     /// Maximum wire APDU length for compile-time buffer allocation.
     ///
-    /// This is the complete APDU size measured from the TPCI octet. The actual
-    /// buffer size is calculated by [`config::buffer_size_for_apdu()`] which adds:
+    /// Counted after the TPCI octet, as PID 56 and the NPDU length field
+    /// count it: 254 allows TPDUs of TPCI + 254 octets. The actual buffer
+    /// size is calculated by [`config::buffer_size_for_link()`] which adds:
+    /// - The TPCI octet (1 byte)
     /// - Frame overhead (9 bytes): space for a complete cEMI header
     /// - Headroom (16 bytes): for header prepending
+    /// - The link layer's own framing kept in pool buffers
+    ///   ([`LinkLayerBuilderBase::WIRE_FRAME_OVERHEAD`](crate::layers::LinkLayerBuilderBase::WIRE_FRAME_OVERHEAD))
     ///
     /// [`Self::BUFFER_SIZE`] derives its default from this limit; resource
     /// declarations need no size argument.
@@ -127,9 +131,12 @@ pub trait StackDefinition: Copy + 'static {
     ///
     /// [`StackResources`](crate::StackResources) uses this size. Increase it
     /// here when a device needs additional storage; this does not change the
-    /// advertised APDU limit. Values below
-    /// `buffer_size_for_apdu(Self::MAX_APDU_LENGTH)` are rejected at construction.
-    const BUFFER_SIZE: usize = config::buffer_size_for_apdu(Self::MAX_APDU_LENGTH);
+    /// advertised APDU limit. Values below the default are rejected at
+    /// construction.
+    const BUFFER_SIZE: usize = config::buffer_size_for_link(
+        Self::MAX_APDU_LENGTH,
+        <Self::LLB as crate::layers::LinkLayerBuilderBase>::WIRE_FRAME_OVERHEAD,
+    );
 
     /// Device descriptor type 2 (14 bytes, optional).
     ///

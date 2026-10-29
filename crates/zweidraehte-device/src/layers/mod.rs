@@ -70,6 +70,17 @@ pub trait LinkLayerBuilderBase: Sized {
     /// Whether this link layer can send IP Secure routing traffic.
     const REQUIRES_MC_TIMER: bool = false;
 
+    /// Bytes of wire framing this link layer keeps in pool buffers around
+    /// a cEMI frame.
+    ///
+    /// KNX/IP reads and writes complete KNXnet/IP frames (headers and, with
+    /// IP Secure, the SECURE_WRAPPER) through pool buffers, so a maximum
+    /// APDU needs that much more room than the cEMI frame alone. Link layers
+    /// that convert in their own scratch storage keep the default of 0.
+    /// [`StackDefinition::BUFFER_SIZE`](crate::StackDefinition::BUFFER_SIZE)
+    /// adds this to its default, and stack resources reject smaller buffers.
+    const WIRE_FRAME_OVERHEAD: usize = 0;
+
     /// The resource type required by this link layer implementation.
     ///
     /// Examples: socket pools for KNX/IP, empty structs for mock link layers.

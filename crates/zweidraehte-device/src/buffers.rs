@@ -6,20 +6,29 @@
 //!
 //! # Buffer sizing
 //!
-//! Buffers cover the device's wire APDU ceiling, framing and header headroom.
-//! The Data Secure envelope consumes part of that same APDU budget, so secure
-//! frames do not require an additional envelope-sized allocation.
+//! Buffers cover the device's wire APDU ceiling, the TPCI octet in front of
+//! it, framing and header headroom. The Data Secure envelope consumes part of
+//! that same APDU budget, so secure frames do not require an additional
+//! envelope-sized allocation.
 //!
 //! ```
 //! use zweidraehte_device::buffers::buffer_size_for_apdu;
 //! use zweidraehte_proto::messages::apdu::limits::MAX_APDU_LENGTH_EXTENDED;
 //!
+//! // 254 APDU + 1 TPCI + 9 cEMI header + 16 headroom.
 //! const BUFFER_SIZE: usize = buffer_size_for_apdu(MAX_APDU_LENGTH_EXTENDED);
-//! assert_eq!(BUFFER_SIZE, 279);
+//! assert_eq!(BUFFER_SIZE, 280);
 //! ```
 //!
+//! Link layers that keep whole wire frames in pool buffers (KNX/IP stores
+//! complete KNXnet/IP frames, IP Secure wrapper included) declare that
+//! framing as
+//! [`LinkLayerBuilderBase::WIRE_FRAME_OVERHEAD`](crate::layers::LinkLayerBuilderBase::WIRE_FRAME_OVERHEAD);
+//! [`buffer_size_for_link`] adds it on top.
+//!
 //! [`crate::StackResources`] uses [`crate::StackDefinition::BUFFER_SIZE`],
-//! which defaults to this calculation for the definition's APDU ceiling.
+//! which defaults to [`buffer_size_for_link`] for the definition's APDU
+//! ceiling and link layer.
 
 use core::{
     cell::Cell,
@@ -82,15 +91,35 @@ pub const FRAME_OVERHEAD: usize = 9;
 /// - Extra margin: 7 bytes
 pub const DEFAULT_HEADROOM: usize = 16;
 
+/// The TPCI octet in front of every APDU.
+///
+/// APDU lengths (`MAX_APDU_LENGTH`, PID 56, the NPDU length field) count the
+/// octets *after* the TPCI octet: an extended frame with NPDU length 254
+/// carries TPCI + 254 APDU octets. ETS relies on that and sends
+/// 255-octet TPDUs to a device that reports 254.
+pub const TPCI_LEN: usize = 1;
+
 /// Calculate the required buffer size for a given maximum APDU length.
 ///
 /// The buffer must be large enough to hold:
 /// - Frame overhead (9 bytes for cEMI compatibility)
+/// - The TPCI octet ([`TPCI_LEN`])
 /// - Maximum APDU — this covers both plain and secure frames, since
 ///   the Data Secure envelope is part of the APDU (see module docs).
 /// - Headroom for protocol headers (16 bytes)
+///
+/// This is the minimum for link layers that convert their wire format in
+/// their own scratch storage. Use [`buffer_size_for_link`] when the link
+/// layer stores whole wire frames in pool buffers.
 pub const fn buffer_size_for_apdu(max_apdu_length: u16) -> usize {
-    max_apdu_length as usize + FRAME_OVERHEAD + DEFAULT_HEADROOM
+    max_apdu_length as usize + TPCI_LEN + FRAME_OVERHEAD + DEFAULT_HEADROOM
+}
+
+/// Buffer size for a given maximum APDU length on a link layer that adds
+/// `wire_frame_overhead` bytes of its own framing around the cEMI frame
+/// (see [`LinkLayerBuilderBase::WIRE_FRAME_OVERHEAD`](crate::layers::LinkLayerBuilderBase::WIRE_FRAME_OVERHEAD)).
+pub const fn buffer_size_for_link(max_apdu_length: u16, wire_frame_overhead: usize) -> usize {
+    buffer_size_for_apdu(max_apdu_length) + wire_frame_overhead
 }
 
 /// A message buffer managed by the [`BufferManager`].
