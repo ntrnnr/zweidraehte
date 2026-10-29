@@ -250,6 +250,9 @@ impl<
             0
         };
 
+    /// The device's domain is its KNX/IP routing domain.
+    const ANSWERS_DOMAIN_ADDRESS_SERIAL_NUMBER_READ: bool = false;
+
     type Resources = IpInterfaceResources<D>;
     type LLEndpoints<'a> = CemiTransportLayerEndpoints<'a>;
 

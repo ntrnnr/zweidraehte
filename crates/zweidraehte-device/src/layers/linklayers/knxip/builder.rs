@@ -438,6 +438,8 @@ impl<
             0
         };
 
+    const ANSWERS_DOMAIN_ADDRESS_SERIAL_NUMBER_READ: bool = false;
+
     type Resources = KnxNetIpResources<D::Features>;
     type LLEndpoints<'a> = CemiTransportLayerEndpoints<'a>;
 

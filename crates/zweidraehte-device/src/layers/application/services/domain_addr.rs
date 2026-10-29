@@ -95,7 +95,10 @@ where
 /// Handle `A_DomainAddressSerialNumber_Read.ind`.
 ///
 /// Matches on serial number and responds with the device's serial number
-/// and current domain address.
+/// and current domain address. On media where the service is void (KNX/IP,
+/// see
+/// [`LinkLayerBuilderBase::ANSWERS_DOMAIN_ADDRESS_SERIAL_NUMBER_READ`](crate::layers::LinkLayerBuilderBase::ANSWERS_DOMAIN_ADDRESS_SERIAL_NUMBER_READ))
+/// the device claims the request and stays silent.
 ///
 /// Wire format (incoming): APCI(2) + serial(6)
 /// Wire format (response): APCI(2) + serial(6) + domain_address(N)
@@ -121,9 +124,15 @@ where
         return;
     }
 
-    debug!("AL DomainAddressSerialNumberRead: serial matches, sending response");
+    if !<D::LLB as crate::layers::LinkLayerBuilderBase>::ANSWERS_DOMAIN_ADDRESS_SERIAL_NUMBER_READ {
+        debug!("AL DomainAddressSerialNumberRead: void on this medium, not answering");
+        return;
+    }
 
     let doa_len = <D::State as HasDomainAddress>::DOMAIN_ADDRESS_LENGTH;
+
+    debug!("AL DomainAddressSerialNumberRead: serial matches, sending response");
+
     let resp_len = DomainAddressSerialNumberResponse::MSG_LEN_NO_DOA + doa_len;
 
     let serial: &[u8; 6] = ctx.base.state.serial_number();

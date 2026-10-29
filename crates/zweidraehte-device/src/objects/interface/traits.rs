@@ -1142,7 +1142,8 @@ pub trait HasDomainAddress {
     /// Domain address length in bytes.
     ///
     /// This determines how many bytes are included in
-    /// `A_DomainAddressSerialNumber_Response` and expected in
+    /// `A_DomainAddressSerialNumber_Response` (where the medium answers the
+    /// read) and expected in
     /// `A_DomainAddressSerialNumber_Write`.
     const DOMAIN_ADDRESS_LENGTH: usize;
 

@@ -81,6 +81,17 @@ pub trait LinkLayerBuilderBase: Sized {
     /// adds this to its default, and stack resources reject smaller buffers.
     const WIRE_FRAME_OVERHEAD: usize = 0;
 
+    /// Whether `A_DomainAddressSerialNumber_Read` is answered on this
+    /// medium.
+    ///
+    /// 03/03/07 §3.3.6 defines the response for KNX-PL110 and KNX-RF; AN193
+    /// §2.2.4.1 marks the service void on KNX/IP, whose domain is the routing
+    /// multicast group (reported by discovery and PID 63) plus, with IP
+    /// Secure, a backbone key that "shall not be readable" (03/08/09
+    /// §2.3.1.2.2). KNX/IP link layers set this to `false`; the device then
+    /// claims the request and stays silent.
+    const ANSWERS_DOMAIN_ADDRESS_SERIAL_NUMBER_READ: bool = true;
+
     /// The resource type required by this link layer implementation.
     ///
     /// Examples: socket pools for KNX/IP, empty structs for mock link layers.
