@@ -15,7 +15,7 @@ use crate::context::layer::ResponseTarget;
 use crate::{
     HasSecurityMode, StackState,
     definition::StackDefinition,
-    objects::interface::HasDomainAddress,
+    objects::interface::{HasDomainAddress, SECURE_DOMAIN_ADDRESS_LENGTH},
     service::{AlCtx, ApciHandler},
 };
 use zweidraehte_proto::messages::{
@@ -157,22 +157,21 @@ where
 /// For KNX/IP, the domain address is the 4-byte routing multicast address
 /// (see KNX IP Communication Medium spec, section 4.3.5.3.4).
 ///
-/// # Future secure variant
+/// # KNX IP Secure
 ///
-/// KNX/IP Secure adds a 21-byte DASN_Write variant (spec 03/03/07
-/// §3.3.7 Figure 32) carrying:
+/// KNX IP Secure adds a 21-byte form (03/03/07 §3.3.7 Figure 32):
 ///
 /// ```text
 /// multicast(4) + routing_security_version(1) + backbone_key(16)
 /// ```
 ///
-/// The 21-byte form is only legal inside an
-/// authenticated + encrypted `S-A_Data-PDU`, and handling it needs
-/// state slots for the Backbone Key (PID 91) and the Routing Security
-/// Version, plus Secure Application Layer integration. Out of scope
-/// for the current non-secure IP path; the handler currently reads
-/// exactly `DOMAIN_ADDRESS_LENGTH` bytes and silently ignores any
-/// trailing payload.
+/// ETS commissions a factory-new device for a secure backbone with it,
+/// before it switches to secure routing itself, so a device that drops the
+/// key is unreachable afterwards. The form "shall always be sent wrapped as
+/// S-A_Data-PDU with authentication and confidentiality"; AN193 §2.2.4.1
+/// gives it `00C/00C`: only the Tool with A+C, in either security mode.
+/// Devices without IP Secure storage keep the plain behaviour and use only
+/// the multicast address.
 fn handle_domain_address_serial_number_write<D>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>)
 where
     D: StackDefinition,
@@ -198,17 +197,33 @@ where
         return;
     }
 
-    // Access policy 3FF/00C: everyone can write when security mode is off;
-    // when security mode is on, only Tool A+C can write.
     use zweidraehte_proto::access::AccessPolicy;
     let security_on = ctx.base.state.security_mode_enabled();
+    let doa = DomainAddressSerialNumberWrite::domain_address(buf);
+
+    // The 21-octet form carries the backbone key: Tool with A+C only, in
+    // either security mode (AN193 §2.2.4.1 `00C/00C`). The device applies
+    // what it can store (see `HasDomainAddress::set_domain_address`).
+    if doa.len() == SECURE_DOMAIN_ADDRESS_LENGTH {
+        if !AccessPolicy::TOOL_ONLY.can_write(&ctx.base.access, security_on) {
+            debug!("AL DomainAddressSerialNumberWrite (IP Secure) denied: needs the Tool Key with A+C");
+            return;
+        }
+
+        debug!("AL DomainAddressSerialNumberWrite: setting IP Secure domain address");
+        ctx.base.state.set_domain_address(doa);
+
+        return;
+    }
+
+    // Access policy 3FF/00C: everyone can write when security mode is off;
+    // when security mode is on, only Tool A+C can write.
     if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&ctx.base.access, security_on) {
         debug!("AL DomainAddressSerialNumberWrite denied by access policy");
         return;
     }
 
     let doa_len = <D::State as HasDomainAddress>::DOMAIN_ADDRESS_LENGTH;
-    let doa = DomainAddressSerialNumberWrite::domain_address(buf);
     if doa.len() >= doa_len {
         debug!("AL DomainAddressSerialNumberWrite: setting domain address ({} bytes)", doa_len);
         ctx.base.state.set_domain_address(&doa[..doa_len]);

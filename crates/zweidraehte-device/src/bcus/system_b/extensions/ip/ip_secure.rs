@@ -17,6 +17,7 @@ use core::cell::{Cell, RefCell};
 use crate::StackDefinition;
 use crate::bcus::system_b::{Extension, ExtensionState};
 use crate::ip::{HasIpSecureView, IpSecureStateView};
+use crate::logging::warn;
 use crate::objects::interface::{
     FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult, PropertyError,
     WriteResponse, interface_object_augment, pid,
@@ -744,7 +745,7 @@ use super::{IpInterfaceAugmentBundle, IpInterfaceExtension};
 use crate::IpPlatform;
 use crate::ip::HasIpExtensionState;
 use crate::objects::comm::HasGoSecurityView;
-use crate::objects::interface::HasDomainAddress;
+use crate::objects::interface::{HasDomainAddress, SECURE_DOMAIN_ADDRESS_LENGTH};
 use crate::{HasRoutingMulticastRebind, HasSecurityMode};
 use zweidraehte_proto::address::IndividualAddress;
 
@@ -841,14 +842,53 @@ impl<const N: usize, const CAPS: u16, const MAX_PW: usize, const MAX_TU: usize> 
     }
 }
 
-forward_to_field! {
-    impl<[
-        const N: usize, const CAPS: u16, const MAX_PW: usize, const MAX_TU: usize,
-    ]> HasDomainAddress for IpSecureInterfaceExtension<N, CAPS, MAX_PW, MAX_TU> {
-        const DOMAIN_ADDRESS_LENGTH: usize = IpInterfaceExtension::<N, CAPS>::DOMAIN_ADDRESS_LENGTH;
-        out fn domain_address(&self, buf: &mut [u8]);
-        set fn set_domain_address(&self, addr: &[u8]);
-    } => self.ip
+impl<const N: usize, const CAPS: u16, const MAX_PW: usize, const MAX_TU: usize> HasDomainAddress
+    for IpSecureInterfaceExtension<N, CAPS, MAX_PW, MAX_TU>
+{
+    const DOMAIN_ADDRESS_LENGTH: usize = IpInterfaceExtension::<N, CAPS>::DOMAIN_ADDRESS_LENGTH;
+
+    fn domain_address(&self, buf: &mut [u8]) {
+        self.ip.domain_address(buf);
+    }
+
+    /// The 4-octet form sets the routing multicast address; the 21-octet
+    /// form is the whole KNX/IP domain configuration. ETS commissions a
+    /// factory-new device for a secure backbone with the latter, before it
+    /// can reach the device over secure routing at all.
+    ///
+    /// Each part goes through the same setter and link-layer event as its
+    /// property (03/08/09 §2.3.1.2.3, §2.3.1.5.4): the multicast address
+    /// rebinds the routing socket (PID 63), a different backbone key resets
+    /// the multicast timer (PID 91, event E11), and a changed Routing
+    /// security version starts or stops the timer synchronization (PID 94).
+    fn set_domain_address(&self, addr: &[u8]) {
+        let Ok(doa) = <&[u8; SECURE_DOMAIN_ADDRESS_LENGTH]>::try_from(addr) else {
+            self.ip.set_domain_address(addr);
+            return;
+        };
+
+        let (multicast, rest) = doa.split_at(4);
+        let (version, key) = (rest[0], &rest[1..]);
+
+        // 00h plain allowed, 01h secured, above reserved (§2.3.1.5.4):
+        // reject the whole write rather than apply part of a domain.
+        if version > 1 {
+            warn!("IP Secure domain address with reserved routing security version {}, ignored", version);
+            return;
+        }
+
+        self.ip.set_domain_address(multicast);
+
+        let key: [u8; 16] = key.try_into().expect("21 = 4 + 1 + 16");
+
+        if self.ip_secure.set_backbone_key(key) {
+            let _ = self.ip_secure.mc_sync_events.try_send(crate::ip::IpSecureSyncEvent::BackboneKeyChanged);
+        }
+
+        if self.ip_secure.set_secured_service_family(ServiceFamily::Routing, version) == Some(true) {
+            let _ = self.ip_secure.mc_sync_events.try_send(crate::ip::IpSecureSyncEvent::RoutingConfigChanged);
+        }
+    }
 }
 
 /// `Augment<D>` bundle: the plain IP-interface bundle (tunnelling + IP
@@ -1012,5 +1052,64 @@ mod persistence {
             |s| s.tunnelling_users.borrow_mut().write_entries(0, &[1, 1]).expect("fits"),
             |s| s.tunnelling_users.borrow().clone(),
         );
+    }
+}
+
+#[cfg(test)]
+mod secure_domain_address {
+    use super::*;
+    use crate::ip::{IpSecureStateView, IpSecureSyncEvent};
+
+    type Extension = IpSecureInterfaceExtension<1, 0, 4, 4>;
+
+    /// `A_DomainAddressSerialNumber_Write` with the 21-octet domain address
+    /// as ETS sends it to a factory-new device: multicast address, routing
+    /// security version 1 and the backbone key.
+    fn doa(multicast: [u8; 4], version: u8, key: [u8; 16]) -> [u8; SECURE_DOMAIN_ADDRESS_LENGTH] {
+        let mut doa = [0u8; SECURE_DOMAIN_ADDRESS_LENGTH];
+        doa[..4].copy_from_slice(&multicast);
+        doa[4] = version;
+        doa[5..].copy_from_slice(&key);
+        doa
+    }
+
+    fn events(extension: &Extension) -> Vec<IpSecureSyncEvent> {
+        core::iter::from_fn(|| extension.ip_secure.mc_sync_events.try_receive().ok()).collect()
+    }
+
+    #[test]
+    fn provisions_the_secure_domain_like_the_properties() {
+        let extension = Extension::new(IpSecureResources { fdsk: [0xF0; 16] });
+        assert_eq!(extension.ip_secure.backbone_key(), [0; 16], "factory state");
+
+        extension.set_domain_address(&doa([224, 0, 23, 13], 1, [0x5A; 16]));
+
+        let mut multicast = [0u8; 4];
+        extension.domain_address(&mut multicast);
+        assert_eq!(multicast, [224, 0, 23, 13]);
+        assert_eq!(extension.ip_secure.backbone_key(), [0x5A; 16]);
+        assert_eq!(extension.ip_secure.secured_service_family(ServiceFamily::Routing), 1);
+        assert_eq!(
+            events(&extension),
+            [IpSecureSyncEvent::BackboneKeyChanged, IpSecureSyncEvent::RoutingConfigChanged],
+            "the link layer restarts the timer synchronization (03/08/09 §2.3.1.2.3)"
+        );
+
+        // Rewriting the same domain is event E12: no restart.
+        extension.set_domain_address(&doa([224, 0, 23, 13], 1, [0x5A; 16]));
+        assert!(events(&extension).is_empty());
+
+        // A reserved version changes nothing, not even the multicast address.
+        extension.set_domain_address(&doa([224, 0, 23, 99], 2, [0x77; 16]));
+        let mut multicast = [0u8; 4];
+        extension.domain_address(&mut multicast);
+        assert_eq!(multicast, [224, 0, 23, 13]);
+        assert_eq!(extension.ip_secure.backbone_key(), [0x5A; 16]);
+        assert!(events(&extension).is_empty());
+
+        // Version 0 makes routing plain again and stops the synchronization.
+        extension.set_domain_address(&doa([224, 0, 23, 13], 0, [0x5A; 16]));
+        assert_eq!(extension.ip_secure.secured_service_family(ServiceFamily::Routing), 0);
+        assert_eq!(events(&extension), [IpSecureSyncEvent::RoutingConfigChanged]);
     }
 }

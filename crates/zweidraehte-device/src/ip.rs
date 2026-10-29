@@ -142,7 +142,7 @@ pub trait HasAdditionalIas {
 /// Configuration events the secure-routing timer sync must react to,
 /// pushed from the property write handlers (AL task) to the KNX/IP
 /// link-layer runtime through [`IpSecureStateView::mc_sync_event_channel`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpSecureSyncEvent {
     /// PID 91 was written with a *different* key — event E11 of the
     /// timer sync state machine (03/08/09 §2.2.2.3.2.5): the mc_timer

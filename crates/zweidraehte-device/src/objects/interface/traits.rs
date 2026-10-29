@@ -1154,6 +1154,15 @@ pub trait HasDomainAddress {
 
     /// Set the domain address.
     ///
-    /// `addr` is exactly [`DOMAIN_ADDRESS_LENGTH`](Self::DOMAIN_ADDRESS_LENGTH) bytes.
+    /// `addr` is [`DOMAIN_ADDRESS_LENGTH`](Self::DOMAIN_ADDRESS_LENGTH)
+    /// bytes, or the 21-octet KNX IP Secure form
+    /// ([`SECURE_DOMAIN_ADDRESS_LENGTH`]: multicast address, routing security
+    /// version, backbone key — 03/03/07 §3.3.7 Figure 32). Implementations
+    /// take the part they store; one with IP Secure storage applies all of
+    /// it.
     fn set_domain_address(&self, addr: &[u8]);
 }
+
+/// Length of the KNX IP Secure domain address in
+/// `A_DomainAddressSerialNumber_Write` (03/03/07 §3.3.7 Figure 32).
+pub const SECURE_DOMAIN_ADDRESS_LENGTH: usize = 21;
