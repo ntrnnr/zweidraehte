@@ -401,6 +401,18 @@ where
                 }
                 // Rebind request from `IpExtensionState::set_*`
                 Either4::Fourth(Either3::Second(new_addr)) => {
+                    // E11 is a *new and different* multicast address
+                    // (03/08/09 §2.2.2.3.2.5); rewriting the current one
+                    // changes nothing. ETS rewrites PID 66 with the
+                    // unchanged group in every download: restarting the
+                    // sync then would withhold secure routing traffic
+                    // (the response to that very write included) for the
+                    // whole acquisition window, and ETS retries forever.
+                    if F::Routing::multicast_addr(&self.routing) == Some(new_addr) {
+                        trace!("KNX/IP: routing multicast unchanged ({}), no rebind", new_addr);
+                        continue;
+                    }
+
                     self.apply_routing_multicast_rebind(new_addr);
                     // Changing the multicast group is timer sync event
                     // E11 → A7: restart the synchronization (without
