@@ -858,7 +858,7 @@ impl<const N: usize, const CAPS: u16, const MAX_PW: usize, const MAX_TU: usize> 
     ///
     /// Each part goes through the same setter and link-layer event as its
     /// property (03/08/09 §2.3.1.2.3, §2.3.1.5.4): the multicast address
-    /// rebinds the routing socket (PID 63), a different backbone key resets
+    /// rebinds the routing socket (PID 66), a different backbone key resets
     /// the multicast timer (PID 91, event E11), and a changed Routing
     /// security version starts or stops the timer synchronization (PID 94).
     fn set_domain_address(&self, addr: &[u8]) {

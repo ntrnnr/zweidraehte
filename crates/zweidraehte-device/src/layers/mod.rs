@@ -86,7 +86,7 @@ pub trait LinkLayerBuilderBase: Sized {
     ///
     /// 03/03/07 §3.3.6 defines the response for KNX-PL110 and KNX-RF; AN193
     /// §2.2.4.1 marks the service void on KNX/IP, whose domain is the routing
-    /// multicast group (reported by discovery and PID 63) plus, with IP
+    /// multicast group (reported by discovery and PID 66) plus, with IP
     /// Secure, a backbone key that "shall not be readable" (03/08/09
     /// §2.3.1.2.2). KNX/IP link layers set this to `false`; the device then
     /// claims the request and stays silent.
